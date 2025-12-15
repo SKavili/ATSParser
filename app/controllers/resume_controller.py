@@ -11,15 +11,13 @@ from app.repositories.resume_repo import ResumeRepository
 from app.models.resume_models import ResumeUpload, ResumeUploadResponse
 from app.utils.cleaning import sanitize_filename
 from app.utils.logging import get_logger
-from app.config import settings
-import uuid
 
 logger = get_logger(__name__)
 
 
 class ResumeController:
     """Controller for handling resume upload and processing."""
-    
+
     def __init__(
         self,
         resume_parser: ResumeParser,
@@ -208,10 +206,9 @@ class ResumeController:
                 extra={
                     "error": str(e),
                     "error_type": type(e).__name__,
-                    "file_name": file.filename if file else None,
+                    "file_name": getattr(file, "filename", None) if file else None,
                     "file_size": len(file_content) if 'file_content' in locals() else None,
                 },
                 exc_info=True
             )
             raise HTTPException(status_code=500, detail=f"Failed to process resume: {str(e)}")
-

@@ -1,6 +1,7 @@
 """Configuration management using Pydantic Settings."""
 import os
 from typing import Optional
+from urllib.parse import quote_plus
 from pydantic_settings import BaseSettings
 from pydantic import Field, field_validator
 
@@ -47,8 +48,22 @@ class Settings(BaseSettings):
     @property
     def mysql_url(self) -> str:
         """Generate MySQL connection URL."""
-        return f"mysql+aiomysql://{self.mysql_user}:{self.mysql_password}@{self.mysql_host}:{self.mysql_port}/{self.mysql_database}?charset=utf8mb4"
-    
+        
+        # URL encode username and password to handle special characters
+        encoded_user = quote_plus(self.mysql_user)
+        encoded_password = quote_plus(self.mysql_password) if self.mysql_password else ""
+        
+        # Build connection string
+        if encoded_password:
+            auth = f"{encoded_user}:{encoded_password}"
+        else:
+            auth = encoded_user
+            
+        return (
+            f"mysql+aiomysql://{auth}"
+            f"@{self.mysql_host}:{self.mysql_port}/{self.mysql_database}"
+            "?charset=utf8mb4"
+        )
     @property
     def use_pinecone(self) -> bool:
         """Check if Pinecone should be used."""
