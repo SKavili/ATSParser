@@ -13,6 +13,7 @@ class ResumeMetadata(Base):
     id = Column(Integer, primary_key=True, autoincrement=True)
     candidatename = Column(String(255), nullable=True)
     jobrole = Column(String(255), nullable=True)
+    designation = Column(String(255), nullable=True)  # Current or most recent job title
     experience = Column(String(100), nullable=True)
     domain = Column(String(255), nullable=True)
     mobile = Column(String(50), nullable=True)
@@ -28,5 +29,5 @@ class ResumeMetadata(Base):
     )
     
     def __repr__(self) -> str:
-        return f"<ResumeMetadata(id={self.id}, candidatename={self.candidatename}, filename={self.filename})>"
+        return f"<ResumeMetadata(id={self.id}, candidatename={self.candidatename}, designation={self.designation}, filename={self.filename})>"
 

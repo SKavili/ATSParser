@@ -18,6 +18,7 @@ class ResumeUploadResponse(BaseModel):
     id: int
     candidateName: str
     jobrole: str
+    designation: Optional[str] = None  # Current or most recent job title
     experience: str
     domain: str
     mobile: str

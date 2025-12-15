@@ -29,7 +29,7 @@ async def get_resume_controller(
     resume_parser = ResumeParser()
     embedding_service = EmbeddingService()
     resume_repo = ResumeRepository(session)
-    return ResumeController(resume_parser, embedding_service, vector_db, resume_repo)
+    return ResumeController(resume_parser, embedding_service, vector_db, resume_repo, session)
 
 
 async def get_job_controller(

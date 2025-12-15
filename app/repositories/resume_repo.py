@@ -23,9 +23,11 @@ class ResumeRepository:
             self.session.add(resume)
             await self.session.commit()
             await self.session.refresh(resume)
+            # Convert filename to string to avoid any LogRecord conflicts
+            filename_str = str(resume.filename) if resume.filename else ""
             logger.info(
                 f"Created resume record: id={resume.id}",
-                extra={"resume_id": resume.id, "file_name": resume.filename}
+                extra={"resume_id": resume.id, "file_name": filename_str}
             )
             return resume
         except IntegrityError as e:
@@ -47,6 +49,13 @@ class ResumeRepository:
             query = query.limit(limit)
         result = await self.session.execute(query)
         return list(result.scalars().all())
+    
+    async def get_by_filename(self, filename: str) -> Optional[ResumeMetadata]:
+        """Get resume by filename (for duplicate detection)."""
+        result = await self.session.execute(
+            select(ResumeMetadata).where(ResumeMetadata.filename == filename)
+        )
+        return result.scalar_one_or_none()
     
     async def update(self, resume_id: int, update_data: dict) -> Optional[ResumeMetadata]:
         """Update resume record."""

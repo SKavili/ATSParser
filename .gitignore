@@ -54,3 +54,5 @@ Thumbs.db
 # Alembic
 alembic.ini.bak
 
+Resumes/
+

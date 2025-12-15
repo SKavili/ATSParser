@@ -23,34 +23,41 @@ except ImportError:
     logger.warning("OLLAMA Python client not available, using HTTP API directly")
 
 MASTER_PROMPT = """
-You are a strict JSON-output resume parser. Input: the raw text of a resume (or OCR text).
+ROLE:
+You are an ATS resume parsing expert specializing in US IT staffing profiles.
 
-Output: a single-line JSON object with these keys:
+CONTEXT:
+Candidate profiles and resumes may be unstructured and inconsistently formatted.
+Designation refers to the candidate's explicitly stated current or most recent job title.
 
+TASK:
+Extract the candidate's designation (job title) from the profile text.
+
+SELECTION RULES (IN ORDER OF PRIORITY):
+1. If a title is explicitly marked as "current", "present", or equivalent, select that.
+2. Else, select the title associated with the most recent experience entry.
+3. Else, select the designation mentioned in the resume headline or summary.
+4. If multiple titles appear at the same level, select the first occurrence.
+
+CONSTRAINTS:
+- Extract only one designation.
+- Preserve the designation exactly as written.
+- Do not infer or normalize titles.
+- Do not include company names, skills, durations, or locations.
+- Ignore aspirational, desired, or target roles.
+
+ANTI-HALLUCINATION RULES:
+- If no explicit designation is found, return null.
+- Never guess or infer a designation.
+- Do not derive designation from skills, certifications, or projects.
+
+OUTPUT FORMAT:
+Return only valid JSON. No additional text.
+
+JSON SCHEMA:
 {
-  "candidateName": string | null,
-  "mobile": string | null,
-  "email": string | null,
-  "education": string | null,
-  "experience": string | null,           # e.g., "5 years" or "3y 6m"
-  "domain": string | null,               # e.g., "Fintech, Healthcare"
-  "jobrole": string | null,              # best-matched role title
-  "skillset": [string],                  # list of normalized skills
-  "filename": string | null,
-  "summary": string | null
+  "designation": "string | null"
 }
-
-Rules:
-- Always return valid JSON and nothing else.
-- If a field is missing, set it to null or [] (for skillset).
-- Normalize phone numbers to E.164 if possible; otherwise return cleaned digits.
-- Lowercase emails but return original case for names.
-- Extract skills as an array of single tokens or short phrases.
-- Provide a short 1-2 sentence summary of the candidate in `summary`.
-
-Example:
-Input: <resume_text_here>
-Output: {"candidateName":"Jane Doe", "mobile":"+14155552671", ...}
 """
 
 
@@ -139,8 +146,13 @@ class ResumeParser:
                 )
                 model_to_use = available_model
             
-            # Prepare prompt
-            prompt = f"{MASTER_PROMPT}\n\nInput: {resume_text[:10000]}\n\nOutput:"
+            # Prepare prompt - be very explicit about JSON-only output
+            prompt = f"""{MASTER_PROMPT}
+
+Input resume text:
+{resume_text[:10000]}
+
+Output (JSON only, no other text):"""
             
             # Try using OLLAMA Python client first (handles API differences automatically)
             if OLLAMA_CLIENT_AVAILABLE:
@@ -150,7 +162,9 @@ class ResumeParser:
                     loop = asyncio.get_event_loop()
                     def _generate():
                         # Create fresh OLLAMA client for each request
-                        client = ollama.Client(host=self.ollama_host)
+                        # Remove http:// or https:// from host for OLLAMA client
+                        host = self.ollama_host.replace("http://", "").replace("https://", "").replace(":11434", "")
+                        client = ollama.Client(host=host if host else None)
                         response = client.generate(
                             model=model_to_use,
                             prompt=prompt,
@@ -159,7 +173,9 @@ class ResumeParser:
                                 "top_p": 0.9,
                             }
                         )
-                        return {"response": response.get("response", "")}
+                        # OLLAMA Python client returns response in "response" field
+                        response_text = response.get("response", "") or response.get("text", "")
+                        return {"response": response_text}
                     
                     result = await loop.run_in_executor(None, _generate)
                     logger.info("Successfully used OLLAMA Python client")
@@ -192,6 +208,11 @@ class ResumeParser:
                         )
                         response.raise_for_status()
                         result = response.json()
+                        # Extract response text from /api/generate format
+                        if "response" in result:
+                            result = {"response": result["response"]}
+                        elif "text" in result:
+                            result = {"response": result["text"]}
                         logger.info("Successfully used /api/generate endpoint")
                     except httpx.HTTPStatusError as e:
                         if e.response.status_code != 404:
@@ -286,6 +307,11 @@ class ResumeParser:
                             )
                             response.raise_for_status()
                             result = response.json()
+                            # Extract response text from /api/generate format
+                            if "response" in result:
+                                result = {"response": result["response"]}
+                            elif "text" in result:
+                                result = {"response": result["text"]}
                             logger.info("Successfully used simplified /api/generate endpoint")
                         except Exception as e:
                             last_error = e
@@ -348,32 +374,45 @@ class ResumeParser:
                                 f"Last error: {last_error}"
                             )
                 
-                # Extract JSON from response
-                raw_output = result.get("response", "")
+                # Extract JSON from response - handle different OLLAMA response formats
+                raw_output = ""
+                if isinstance(result, dict):
+                    # Try different possible response fields
+                    raw_output = (
+                        result.get("response", "") or 
+                        result.get("text", "") or 
+                        result.get("content", "") or
+                        str(result.get("message", {}).get("content", "")) if isinstance(result.get("message"), dict) else ""
+                    )
+                else:
+                    raw_output = str(result)
+                
+                # Log raw output for debugging (first 500 chars)
+                logger.debug(
+                    f"Raw OLLAMA response for {filename}",
+                    extra={"raw_output_preview": raw_output[:500]}
+                )
+                
                 parsed_data = self._extract_json(raw_output)
                 
-                # Add filename if missing
-                if not parsed_data.get("filename"):
-                    parsed_data["filename"] = filename
+                # Ensure designation field exists (even if null)
+                if "designation" not in parsed_data:
+                    parsed_data["designation"] = None
                 
-                # Normalize fields
-                parsed_data["mobile"] = normalize_phone(parsed_data.get("mobile"))
-                parsed_data["email"] = normalize_email(parsed_data.get("email"))
-                
-                # Normalize skillset
-                skills = parsed_data.get("skillset", [])
-                if isinstance(skills, str):
-                    skills = extract_skills(skills)
-                parsed_data["skillset"] = skills
-                
-                # Normalize text fields
-                for field in ["candidateName", "jobrole", "experience", "domain", "education"]:
-                    if field in parsed_data:
-                        parsed_data[field] = normalize_text(parsed_data[field])
+                # Preserve designation exactly as written (no normalization per requirements)
+                # Just ensure it's a string or null
+                if parsed_data["designation"] is not None:
+                    parsed_data["designation"] = str(parsed_data["designation"]).strip()
+                    if not parsed_data["designation"]:
+                        parsed_data["designation"] = None
                 
                 logger.info(
                     f"Parsed resume: {filename}",
-                    extra={"file_name": filename, "candidate": parsed_data.get("candidateName")}
+                    extra={
+                        "file_name": filename, 
+                        "designation": parsed_data.get("designation"),
+                        "raw_output_length": len(raw_output)
+                    }
                 )
                 
                 return parsed_data
@@ -413,31 +452,72 @@ class ResumeParser:
     
     def _extract_json(self, text: str) -> Dict:
         """Extract JSON object from LLM response."""
-        # Try to find JSON in the response
-        json_match = re.search(r'\{.*\}', text, re.DOTALL)
+        if not text:
+            logger.warning("Empty response from LLM")
+            return {"designation": None}
+        
+        # Clean the text - remove markdown code blocks if present
+        cleaned_text = text.strip()
+        if cleaned_text.startswith("```json"):
+            cleaned_text = cleaned_text[7:]
+        elif cleaned_text.startswith("```"):
+            cleaned_text = cleaned_text[3:]
+        if cleaned_text.endswith("```"):
+            cleaned_text = cleaned_text[:-3]
+        cleaned_text = cleaned_text.strip()
+        
+        # Try to find JSON in the response (look for { ... } pattern with proper nesting)
+        # This regex finds the first { and matches until the corresponding }
+        json_match = re.search(r'\{[^{}]*(?:\{[^{}]*\}[^{}]*)*\}', cleaned_text, re.DOTALL)
         if json_match:
             try:
-                return json.loads(json_match.group())
-            except json.JSONDecodeError:
-                pass
+                json_str = json_match.group()
+                parsed = json.loads(json_str)
+                logger.debug(f"Successfully extracted JSON: {parsed}")
+                return parsed
+            except json.JSONDecodeError as e:
+                # Try a more aggressive extraction - find all { } pairs
+                try:
+                    # Find the first { and try to match balanced braces
+                    start_idx = cleaned_text.find('{')
+                    if start_idx != -1:
+                        brace_count = 0
+                        end_idx = start_idx
+                        for i in range(start_idx, len(cleaned_text)):
+                            if cleaned_text[i] == '{':
+                                brace_count += 1
+                            elif cleaned_text[i] == '}':
+                                brace_count -= 1
+                                if brace_count == 0:
+                                    end_idx = i + 1
+                                    break
+                        if brace_count == 0:
+                            json_str = cleaned_text[start_idx:end_idx]
+                            parsed = json.loads(json_str)
+                            logger.debug(f"Successfully extracted JSON with balanced braces: {parsed}")
+                            return parsed
+                except (json.JSONDecodeError, ValueError) as e2:
+                    logger.warning(f"Failed to parse extracted JSON: {e2}", extra={"json_str": json_str[:200] if 'json_str' in locals() else 'N/A'})
         
-        # Try parsing the whole text
+        # Try parsing the whole cleaned text
         try:
-            return json.loads(text.strip())
+            parsed = json.loads(cleaned_text)
+            logger.debug(f"Successfully parsed full text as JSON: {parsed}")
+            return parsed
         except json.JSONDecodeError:
-            logger.warning("Failed to parse JSON from LLM response", extra={"response": text[:500]})
-            # Return default structure
-            return {
-                "candidateName": None,
-                "mobile": None,
-                "email": None,
-                "education": None,
-                "experience": None,
-                "domain": None,
-                "jobrole": None,
-                "skillset": [],
-                "filename": None,
-                "summary": None,
+            pass
+        
+        # If all parsing fails, log the issue
+        logger.warning(
+            "Failed to parse JSON from LLM response", 
+            extra={
+                "response_preview": text[:500],
+                "response_length": len(text)
             }
+        )
+        # Return default structure with only designation
+        return {
+            "designation": None,
+        }
 
 
