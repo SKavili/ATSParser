@@ -1,21 +1,22 @@
 @echo off
-REM Script to test resume upload with a sample resume file
+setlocal enabledelayedexpansion
+REM Script to test resume upload with multiple resume files from a folder
 
-set RESUME_FILE=C:\ATS\Sathish Kumar ch Power platform resume.pdf
+set RESUME_FOLDER=D:\Ats_ollama\ATSParser\Resumes
 set API_URL=http://localhost:8000/api/v1/upload-resume
 
 echo ========================================
-echo   Testing Resume Upload
+echo   Testing Resume Upload (Multiple Files)
 echo ========================================
 echo.
-echo Resume File: %RESUME_FILE%
+echo Resume Folder: %RESUME_FOLDER%
 echo API URL: %API_URL%
 echo.
 
-REM Check if resume file exists
-if not exist "%RESUME_FILE%" (
-    echo [ERROR] Resume file not found at: %RESUME_FILE%
-    echo Please check the file path.
+REM Check if resume folder exists
+if not exist "%RESUME_FOLDER%" (
+    echo [ERROR] Resume folder not found at: %RESUME_FOLDER%
+    echo Please check the folder path.
     pause
     exit /b 1
 )
@@ -31,20 +32,88 @@ if errorlevel 1 (
     exit /b 1
 )
 
-echo [INFO] Uploading resume...
+echo [INFO] Scanning folder for resume files...
 echo.
 
+REM Counter for processed files
+set /a FILE_COUNT=0
+set /a SUCCESS_COUNT=0
+set /a FAILED_COUNT=0
+
+REM Process PDF files
+for %%F in ("%RESUME_FOLDER%\*.pdf") do (
+    set /a FILE_COUNT+=1
+    call :ProcessFile "%%F"
+)
+
+REM Process DOC files
+for %%F in ("%RESUME_FOLDER%\*.doc") do (
+    set /a FILE_COUNT+=1
+    call :ProcessFile "%%F"
+)
+
+REM Process DOCX files
+for %%F in ("%RESUME_FOLDER%\*.docx") do (
+    set /a FILE_COUNT+=1
+    call :ProcessFile "%%F"
+)
+
+REM Process TXT files
+for %%F in ("%RESUME_FOLDER%\*.txt") do (
+    set /a FILE_COUNT+=1
+    call :ProcessFile "%%F"
+)
+
+echo.
+echo ========================================
+echo   Upload Summary
+echo ========================================
+echo Total files found: !FILE_COUNT!
+echo Successfully uploaded: !SUCCESS_COUNT!
+echo Failed: !FAILED_COUNT!
+echo ========================================
+pause
+exit /b 0
+
+:ProcessFile
+set "RESUME_FILE=%~1"
+set "FILENAME=%~nx1"
+
+echo.
+echo [!FILE_COUNT!] Processing: %FILENAME%
+echo ----------------------------------------
+
+REM Extract candidate name from filename (remove extension, replace underscores/hyphens with spaces)
+set "CANDIDATE_NAME=%FILENAME%"
+set "CANDIDATE_NAME=%CANDIDATE_NAME:.pdf=%"
+set "CANDIDATE_NAME=%CANDIDATE_NAME:.doc=%"
+set "CANDIDATE_NAME=%CANDIDATE_NAME:.docx=%"
+set "CANDIDATE_NAME=%CANDIDATE_NAME:.txt=%"
+set "CANDIDATE_NAME=%CANDIDATE_NAME:_= %"
+set "CANDIDATE_NAME=%CANDIDATE_NAME:-= %"
+
+REM Default job role (you can modify this or extract from filename)
+set "JOB_ROLE=Developer"
+
+echo Candidate Name: %CANDIDATE_NAME%
+echo Job Role: %JOB_ROLE%
+echo.
+
+REM Upload the file
 curl -X POST "%API_URL%" ^
   -H "accept: application/json" ^
   -H "Content-Type: multipart/form-data" ^
   -F "file=@%RESUME_FILE%" ^
-  -F "candidate_name=Sathish Kumar CH" ^
-  -F "job_role=Power Platform Developer"
+  -F "candidate_name=%CANDIDATE_NAME%" ^
+  -F "job_role=%JOB_ROLE%"
 
-echo.
-echo.
-echo ========================================
-echo   Upload Complete
-echo ========================================
-pause
+if errorlevel 1 (
+    echo [ERROR] Failed to upload: %FILENAME%
+    set /a FAILED_COUNT+=1
+) else (
+    echo [SUCCESS] Uploaded: %FILENAME%
+    set /a SUCCESS_COUNT+=1
+)
+
+goto :eof
 
