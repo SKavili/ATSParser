@@ -33,6 +33,13 @@ class Settings(BaseSettings):
     ollama_host: str = Field("http://localhost:11434", alias="OLLAMA_HOST")
     ollama_api_key: Optional[str] = Field(None, alias="OLLAMA_API_KEY")
     
+    # Memory Optimization Settings
+    embedding_batch_size: int = Field(5, alias="EMBEDDING_BATCH_SIZE")
+    max_file_size_mb: int = Field(10, alias="MAX_FILE_SIZE_MB")
+    max_resume_text_length: int = Field(50000, alias="MAX_RESUME_TEXT_LENGTH")
+    job_cache_max_size: int = Field(100, alias="JOB_CACHE_MAX_SIZE")
+    enable_memory_cleanup: bool = Field(True, alias="ENABLE_MEMORY_CLEANUP")
+    
     # Monitoring
     sentry_dsn: Optional[str] = Field(None, alias="SENTRY_DSN")
     log_level: str = Field("INFO", alias="LOG_LEVEL")

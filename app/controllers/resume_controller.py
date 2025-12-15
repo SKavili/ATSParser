@@ -1,4 +1,5 @@
 """Controller for resume-related operations."""
+import gc
 from typing import Optional
 from fastapi import UploadFile, HTTPException
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -11,6 +12,13 @@ from app.repositories.resume_repo import ResumeRepository
 from app.models.resume_models import ResumeUpload, ResumeUploadResponse
 from app.utils.cleaning import sanitize_filename
 from app.utils.logging import get_logger
+from app.config import settings
+from app.constants.resume_status import (
+    STATUS_PENDING, STATUS_PROCESSING, STATUS_COMPLETED,
+    get_failure_status, FAILURE_FILE_TOO_LARGE, FAILURE_INVALID_FILE_TYPE,
+    FAILURE_EMPTY_FILE, FAILURE_INSUFFICIENT_TEXT, FAILURE_EXTRACTION_ERROR,
+    FAILURE_DESIGNATION_EXTRACTION_FAILED, FAILURE_DATABASE_ERROR, FAILURE_UNKNOWN_ERROR
+)
 
 logger = get_logger(__name__)
 
@@ -43,18 +51,96 @@ class ResumeController:
             allowed_extensions = {'.pdf', '.docx', '.doc', '.txt'}
             file_ext = '.' + file.filename.split('.')[-1].lower() if '.' in file.filename else ''
             if file_ext not in allowed_extensions:
+                # Create record with failed status for invalid file type
+                try:
+                    db_record = {
+                        "candidatename": None,
+                        "jobrole": None,
+                        "designation": None,
+                        "experience": None,
+                        "domain": None,
+                        "mobile": None,
+                        "email": None,
+                        "education": None,
+                        "filename": safe_filename,
+                        "skillset": "",
+                        "status": get_failure_status(FAILURE_INVALID_FILE_TYPE),
+                    }
+                    resume_metadata = await self.resume_repo.create(db_record)
+                    logger.warning(
+                        f"Invalid file type rejected, created record with failed status: {resume_metadata.id}",
+                        extra={"resume_id": resume_metadata.id, "file_name": safe_filename, "file_ext": file_ext}
+                    )
+                except Exception as e:
+                    logger.error(f"Failed to create record for invalid file: {e}", extra={"error": str(e)})
+                
                 raise HTTPException(
                     status_code=400,
                     detail=f"Invalid file type. Allowed: {', '.join(allowed_extensions)}"
                 )
             
-            # Read file content
+            # Read file content with size limit check
             file_content = await file.read()
             if not file_content:
+                # Create record with failed status for empty file
+                try:
+                    db_record = {
+                        "candidatename": None,
+                        "jobrole": None,
+                        "designation": None,
+                        "experience": None,
+                        "domain": None,
+                        "mobile": None,
+                        "email": None,
+                        "education": None,
+                        "filename": safe_filename,
+                        "skillset": "",
+                        "status": get_failure_status(FAILURE_EMPTY_FILE),
+                    }
+                    resume_metadata = await self.resume_repo.create(db_record)
+                    logger.warning(
+                        f"Empty file rejected, created record with failed status: {resume_metadata.id}",
+                        extra={"resume_id": resume_metadata.id, "file_name": safe_filename}
+                    )
+                except Exception as e:
+                    logger.error(f"Failed to create record for empty file: {e}", extra={"error": str(e)})
+                
                 raise HTTPException(status_code=400, detail="Empty file")
             
-            # Sanitize filename
-            safe_filename = sanitize_filename(file.filename or "resume.pdf")
+            # Check file size limit (memory optimization)
+            file_size_mb = len(file_content) / (1024 * 1024)
+            if file_size_mb > settings.max_file_size_mb:
+                # Create record with failed status for file too large
+                try:
+                    db_record = {
+                        "candidatename": None,
+                        "jobrole": None,
+                        "designation": None,
+                        "experience": None,
+                        "domain": None,
+                        "mobile": None,
+                        "email": None,
+                        "education": None,
+                        "filename": safe_filename,
+                        "skillset": "",
+                        "status": get_failure_status(FAILURE_FILE_TOO_LARGE),
+                    }
+                    resume_metadata = await self.resume_repo.create(db_record)
+                    logger.warning(
+                        f"File too large rejected, created record with failed status: {resume_metadata.id}",
+                        extra={"resume_id": resume_metadata.id, "file_name": safe_filename, "file_size_mb": file_size_mb}
+                    )
+                except Exception as e:
+                    logger.error(f"Failed to create record for large file: {e}", extra={"error": str(e)})
+                
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"File too large: {file_size_mb:.2f}MB. Maximum allowed: {settings.max_file_size_mb}MB"
+                )
+            
+            # Sanitize filename (already done above, but ensure it's set)
+            if 'safe_filename' not in locals():
+                safe_filename = sanitize_filename(file.filename or "resume.pdf")
             
             # Check if file with same filename already exists
             existing_resume = await self.resume_repo.get_by_filename(safe_filename)
@@ -76,14 +162,48 @@ class ResumeController:
                     education=existing_resume.education or "",
                     filename=existing_resume.filename,
                     skillset=existing_resume.skillset or "",
+                    status=existing_resume.status or STATUS_PENDING,
                     created_at=existing_resume.created_at.isoformat() if existing_resume.created_at else "",
                 )
             
             # Extract text from file
-            resume_text = await self.resume_parser.extract_text(file_content, safe_filename)
+            try:
+                resume_text = await self.resume_parser.extract_text(file_content, safe_filename)
+            except Exception as e:
+                # Update status to failed for extraction error
+                await self.resume_repo.update(
+                    resume_metadata.id,
+                    {"status": get_failure_status(FAILURE_EXTRACTION_ERROR)}
+                )
+                logger.error(
+                    f"Text extraction failed for resume {resume_metadata.id}: {e}",
+                    extra={"resume_id": resume_metadata.id, "file_name": safe_filename, "error": str(e)}
+                )
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"Failed to extract text from file: {str(e)}"
+                )
+            
+            # Clear file_content from memory early (memory optimization)
+            if settings.enable_memory_cleanup:
+                del file_content
+                gc.collect()
             
             if not resume_text or len(resume_text.strip()) < 50:
+                # Update status to failed for insufficient text
+                await self.resume_repo.update(
+                    resume_metadata.id,
+                    {"status": get_failure_status(FAILURE_INSUFFICIENT_TEXT)}
+                )
                 raise HTTPException(status_code=400, detail="Could not extract sufficient text from resume")
+            
+            # Limit text length to prevent excessive memory usage
+            if len(resume_text) > settings.max_resume_text_length:
+                logger.warning(
+                    f"Resume text truncated from {len(resume_text)} to {settings.max_resume_text_length} characters",
+                    extra={"original_length": len(resume_text), "truncated_length": settings.max_resume_text_length}
+                )
+                resume_text = resume_text[:settings.max_resume_text_length]
             
             # Merge metadata if provided
             candidate_name = None
@@ -92,7 +212,7 @@ class ResumeController:
                 candidate_name = metadata.candidate_name
                 job_role = metadata.job_role
             
-            # Prepare database record (without designation initially)
+            # Prepare database record (without designation initially, status = processing)
             db_record = {
                 "candidatename": candidate_name,
                 "jobrole": job_role,
@@ -104,6 +224,7 @@ class ResumeController:
                 "education": None,
                 "filename": safe_filename,
                 "skillset": "",
+                "status": STATUS_PROCESSING,  # Set to processing when starting
             }
             
             # Save to database first
@@ -181,6 +302,18 @@ class ResumeController:
                     f"Stored {len(vectors_to_store)} embeddings for resume {resume_metadata.id}",
                     extra={"resume_id": resume_metadata.id, "vector_count": len(vectors_to_store)}
                 )
+                # Clear embeddings from memory after storing
+                if settings.enable_memory_cleanup:
+                    del vectors_to_store
+                    del chunk_embeddings
+                    gc.collect()
+            
+            # Update status to completed on success
+            await self.resume_repo.update(
+                resume_metadata.id,
+                {"status": STATUS_COMPLETED}
+            )
+            await self.resume_repo.session.refresh(resume_metadata)
             
             # Build response
             return ResumeUploadResponse(
@@ -195,12 +328,26 @@ class ResumeController:
                 education=resume_metadata.education or "",
                 filename=resume_metadata.filename,
                 skillset=resume_metadata.skillset or "",
+                status=resume_metadata.status or STATUS_PENDING,
                 created_at=resume_metadata.created_at.isoformat() if resume_metadata.created_at else "",
             )
         
         except HTTPException:
             raise
         except Exception as e:
+            # Update status to failed if we have a resume_metadata record
+            if 'resume_metadata' in locals() and resume_metadata and resume_metadata.id:
+                try:
+                    await self.resume_repo.update(
+                        resume_metadata.id,
+                        {"status": get_failure_status(FAILURE_UNKNOWN_ERROR)}
+                    )
+                except Exception as update_error:
+                    logger.error(
+                        f"Failed to update status after error: {update_error}",
+                        extra={"resume_id": resume_metadata.id, "error": str(update_error)}
+                    )
+            
             logger.error(
                 f"Error uploading resume: {e}",
                 extra={

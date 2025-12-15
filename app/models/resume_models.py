@@ -26,6 +26,7 @@ class ResumeUploadResponse(BaseModel):
     education: str
     filename: str
     skillset: str
+    status: Optional[str] = None  # Processing status
     created_at: str
     
     class Config:

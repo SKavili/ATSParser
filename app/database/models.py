@@ -21,6 +21,7 @@ class ResumeMetadata(Base):
     education = Column(Text, nullable=True)
     filename = Column(String(512), nullable=False)
     skillset = Column(Text, nullable=True)
+    status = Column(String(50), nullable=True, default="pending")  # Processing status
     created_at = Column(TIMESTAMP, server_default=func.current_timestamp())
     updated_at = Column(
         TIMESTAMP,
@@ -29,5 +30,5 @@ class ResumeMetadata(Base):
     )
     
     def __repr__(self) -> str:
-        return f"<ResumeMetadata(id={self.id}, candidatename={self.candidatename}, designation={self.designation}, filename={self.filename})>"
+        return f"<ResumeMetadata(id={self.id}, candidatename={self.candidatename}, designation={self.designation}, filename={self.filename}, status={self.status})>"
 

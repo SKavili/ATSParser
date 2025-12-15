@@ -1,5 +1,6 @@
 """Service for generating embeddings using OLLAMA."""
 import asyncio
+import gc
 from typing import List, Optional
 import httpx
 from httpx import Timeout
@@ -124,31 +125,48 @@ class EmbeddingService:
     
     async def generate_chunk_embeddings(self, text: str, metadata: Optional[dict] = None) -> List[dict]:
         """
-        Generate embeddings for text chunks.
+        Generate embeddings for text chunks in memory-efficient batches.
         Returns list of dicts with 'embedding', 'text', and 'metadata'.
         """
         chunks = self.chunk_text(text)
+        batch_size = settings.embedding_batch_size
         logger.info(
-            f"Generating embeddings for {len(chunks)} chunks",
-            extra={"chunk_count": len(chunks), "text_length": len(text)}
+            f"Generating embeddings for {len(chunks)} chunks (batch size: {batch_size})",
+            extra={"chunk_count": len(chunks), "text_length": len(text), "batch_size": batch_size}
         )
         
         embeddings = []
-        for idx, chunk in enumerate(chunks):
-            try:
-                embedding = await self.generate_embedding(chunk)
-                embeddings.append({
-                    "embedding": embedding,
-                    "text": chunk,
-                    "chunk_index": idx,
-                    "metadata": metadata or {},
-                })
-            except Exception as e:
-                logger.error(
-                    f"Failed to generate embedding for chunk {idx}: {e}",
-                    extra={"chunk_index": idx, "error": str(e)}
-                )
-                # Continue with other chunks
+        
+        # Process chunks in batches to reduce memory usage
+        for batch_start in range(0, len(chunks), batch_size):
+            batch_end = min(batch_start + batch_size, len(chunks))
+            batch_chunks = chunks[batch_start:batch_end]
+            
+            batch_embeddings = []
+            for idx, chunk in enumerate(batch_chunks):
+                chunk_idx = batch_start + idx
+                try:
+                    embedding = await self.generate_embedding(chunk)
+                    batch_embeddings.append({
+                        "embedding": embedding,
+                        "text": chunk,
+                        "chunk_index": chunk_idx,
+                        "metadata": metadata or {},
+                    })
+                except Exception as e:
+                    logger.error(
+                        f"Failed to generate embedding for chunk {chunk_idx}: {e}",
+                        extra={"chunk_index": chunk_idx, "error": str(e)}
+                    )
+                    # Continue with other chunks
+            
+            embeddings.extend(batch_embeddings)
+            
+            # Memory cleanup after each batch
+            if settings.enable_memory_cleanup:
+                del batch_chunks
+                del batch_embeddings
+                gc.collect()
         
         return embeddings
 

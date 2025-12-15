@@ -1,8 +1,10 @@
 """
 Script to process all resumes from the Resumes directory one by one.
 Extracts designation for each resume and saves to database.
+Memory-optimized for low-memory systems.
 """
 import asyncio
+import gc
 import sys
 from pathlib import Path
 from typing import List, Optional
@@ -16,6 +18,13 @@ from app.repositories.resume_repo import ResumeRepository
 from app.database.connection import async_session_maker
 from app.utils.cleaning import sanitize_filename
 from app.utils.logging import get_logger
+from app.config import settings
+from app.constants.resume_status import (
+    STATUS_PENDING, STATUS_PROCESSING, STATUS_COMPLETED,
+    get_failure_status, FAILURE_FILE_TOO_LARGE, FAILURE_EMPTY_FILE,
+    FAILURE_INSUFFICIENT_TEXT, FAILURE_EXTRACTION_ERROR,
+    FAILURE_DESIGNATION_EXTRACTION_FAILED, FAILURE_DATABASE_ERROR, FAILURE_UNKNOWN_ERROR
+)
 
 logger = get_logger(__name__)
 
@@ -55,56 +64,142 @@ async def process_single_resume(
         "success": False,
         "resume_id": None,
         "designation": None,
+        "status": None,
         "error": None
     }
     
-    try:
-        # Read file content
-        print(f"\n[1/4] Reading file: {filename}")
-        file_content = file_path.read_bytes()
-        if not file_content:
-            raise ValueError("Empty file")
-        print(f"      ✅ File read successfully ({len(file_content)} bytes)")
+    # Get database session early to handle failures
+    async with async_session_maker() as session:
+        resume_repo = ResumeRepository(session)
+        resume_metadata = None
         
-        # Extract text from file
-        print(f"\n[2/4] Extracting text from file...")
-        resume_text = await resume_parser.extract_text(file_content, safe_filename)
-        
-        if not resume_text or len(resume_text.strip()) < 50:
-            raise ValueError("Could not extract sufficient text from resume")
-        
-        print(f"      ✅ Text extracted successfully ({len(resume_text)} characters)")
-        print(f"      Preview: {resume_text[:150]}...")
-        
-        # Create database record
-        print(f"\n[3/4] Creating database record...")
-        db_record = {
-            "candidatename": None,
-            "jobrole": None,
-            "designation": None,  # Will be extracted and updated
-            "experience": None,
-            "domain": None,
-            "mobile": None,
-            "email": None,
-            "education": None,
-            "filename": safe_filename,
-            "skillset": "",
-        }
-        
-        # Get database session
-        async with async_session_maker() as session:
-            resume_repo = ResumeRepository(session)
+        try:
+            # Read file content with size check
+            print(f"\n[1/4] Reading file: {filename}")
+            file_content = file_path.read_bytes()
+            if not file_content:
+                # Create record with failed status
+                db_record = {
+                    "candidatename": None,
+                    "jobrole": None,
+                    "designation": None,
+                    "experience": None,
+                    "domain": None,
+                    "mobile": None,
+                    "email": None,
+                    "education": None,
+                    "filename": safe_filename,
+                    "skillset": "",
+                    "status": get_failure_status(FAILURE_EMPTY_FILE),
+                }
+                resume_metadata = await resume_repo.create(db_record)
+                result["resume_id"] = resume_metadata.id
+                raise ValueError("Empty file")
+            
+            # Check file size limit
+            file_size_mb = len(file_content) / (1024 * 1024)
+            if file_size_mb > settings.max_file_size_mb:
+                # Create record with failed status
+                db_record = {
+                    "candidatename": None,
+                    "jobrole": None,
+                    "designation": None,
+                    "experience": None,
+                    "domain": None,
+                    "mobile": None,
+                    "email": None,
+                    "education": None,
+                    "filename": safe_filename,
+                    "skillset": "",
+                    "status": get_failure_status(FAILURE_FILE_TOO_LARGE),
+                }
+                resume_metadata = await resume_repo.create(db_record)
+                result["resume_id"] = resume_metadata.id
+                raise ValueError(f"File too large: {file_size_mb:.2f}MB. Maximum: {settings.max_file_size_mb}MB")
+            
+            print(f"      ✅ File read successfully ({len(file_content)} bytes, {file_size_mb:.2f}MB)")
+            
+            # Create database record with processing status
+            print(f"\n[2/4] Creating database record...")
+            db_record = {
+                "candidatename": None,
+                "jobrole": None,
+                "designation": None,  # Will be extracted and updated
+                "experience": None,
+                "domain": None,
+                "mobile": None,
+                "email": None,
+                "education": None,
+                "filename": safe_filename,
+                "skillset": "",
+                "status": STATUS_PROCESSING,  # Set to processing
+            }
             resume_metadata = await resume_repo.create(db_record)
             result["resume_id"] = resume_metadata.id
             print(f"      ✅ Database record created (ID: {resume_metadata.id})")
             
+            # Extract text from file
+            print(f"\n[3/4] Extracting text from file...")
+            try:
+                resume_text = await resume_parser.extract_text(file_content, safe_filename)
+            except Exception as e:
+                # Update status to failed for extraction error
+                await resume_repo.update(
+                    resume_metadata.id,
+                    {"status": get_failure_status(FAILURE_EXTRACTION_ERROR)}
+                )
+                raise ValueError(f"Text extraction failed: {str(e)}")
+            
+            # Clear file_content from memory early
+            if settings.enable_memory_cleanup:
+                del file_content
+                gc.collect()
+            
+            if not resume_text or len(resume_text.strip()) < 50:
+                # Update status to failed for insufficient text
+                await resume_repo.update(
+                    resume_metadata.id,
+                    {"status": get_failure_status(FAILURE_INSUFFICIENT_TEXT)}
+                )
+                raise ValueError("Could not extract sufficient text from resume")
+            
+            # Limit text length
+            if len(resume_text) > settings.max_resume_text_length:
+                logger.warning(
+                    f"Resume text truncated from {len(resume_text)} to {settings.max_resume_text_length}",
+                    extra={"file_name": filename, "original_length": len(resume_text)}
+                )
+                resume_text = resume_text[:settings.max_resume_text_length]
+            
+            print(f"      ✅ Text extracted successfully ({len(resume_text)} characters)")
+            print(f"      Preview: {resume_text[:150]}...")
+            
             # Extract and save designation
             print(f"\n[4/4] Extracting designation using OLLAMA...")
             designation_service = DesignationService(session)
-            designation = await designation_service.extract_and_save_designation(
-                resume_text=resume_text,
-                resume_id=resume_metadata.id,
-                filename=safe_filename
+            try:
+                designation = await designation_service.extract_and_save_designation(
+                    resume_text=resume_text,
+                    resume_id=resume_metadata.id,
+                    filename=safe_filename
+                )
+            except Exception as e:
+                # Update status to failed for designation extraction error
+                await resume_repo.update(
+                    resume_metadata.id,
+                    {"status": get_failure_status(FAILURE_DESIGNATION_EXTRACTION_FAILED)}
+                )
+                logger.error(
+                    f"Designation extraction failed for resume {resume_metadata.id}: {e}",
+                    extra={"resume_id": resume_metadata.id, "file_name": filename, "error": str(e)}
+                )
+                # Don't fail the whole process, just log it
+                designation = None
+            
+            # Update status to completed on success
+            await resume_repo.update(
+                resume_metadata.id,
+                {"status": STATUS_COMPLETED}
             )
             
             # Refresh to get updated designation
@@ -116,20 +211,59 @@ async def process_single_resume(
                 print(f"      ✅ Designation extracted and saved: '{designation}'")
             else:
                 print(f"      ⚠️  No designation found (saved as NULL)")
-        
-        print(f"\n✅ SUCCESS: {filename} processed successfully")
-        print(f"   Resume ID: {result['resume_id']}")
-        print(f"   Designation: {result['designation']}")
-        
-    except Exception as e:
-        result["error"] = str(e)
-        result["success"] = False
-        print(f"\n❌ ERROR processing {filename}: {e}")
-        logger.error(
-            f"Error processing resume {filename}: {e}",
-            extra={"file_name": filename, "error": str(e), "error_type": type(e).__name__},  # Use file_name instead of filename (reserved in LogRecord)
-            exc_info=True
-        )
+            
+            # Memory cleanup after processing each file
+            if settings.enable_memory_cleanup:
+                del resume_text
+                gc.collect()
+            
+            result["status"] = resume_metadata.status
+            print(f"\n✅ SUCCESS: {filename} processed successfully")
+            print(f"   Resume ID: {result['resume_id']}")
+            print(f"   Designation: {result['designation']}")
+            print(f"   Status: {result['status']}")
+            
+        except Exception as e:
+            result["error"] = str(e)
+            result["success"] = False
+            
+            # Update status to failed if we have a record
+            if resume_metadata and resume_metadata.id:
+                try:
+                    # Determine failure reason from error message
+                    error_str = str(e).lower()
+                    if "too large" in error_str or "file size" in error_str:
+                        failure_reason = FAILURE_FILE_TOO_LARGE
+                    elif "empty" in error_str:
+                        failure_reason = FAILURE_EMPTY_FILE
+                    elif "insufficient" in error_str or "extract" in error_str:
+                        failure_reason = FAILURE_INSUFFICIENT_TEXT
+                    elif "extraction" in error_str:
+                        failure_reason = FAILURE_EXTRACTION_ERROR
+                    else:
+                        failure_reason = FAILURE_UNKNOWN_ERROR
+                    
+                    await resume_repo.update(
+                        resume_metadata.id,
+                        {"status": get_failure_status(failure_reason)}
+                    )
+                    await session.refresh(resume_metadata)
+                    result["status"] = resume_metadata.status
+                except Exception as update_error:
+                    logger.error(
+                        f"Failed to update status after error: {update_error}",
+                        extra={"resume_id": resume_metadata.id if resume_metadata else None, "error": str(update_error)}
+                    )
+            
+            print(f"\n❌ ERROR processing {filename}: {e}")
+            if resume_metadata and resume_metadata.id:
+                print(f"   Resume ID: {result['resume_id']}")
+                print(f"   Status: {result.get('status', 'unknown')}")
+            logger.error(
+                f"Error processing resume {filename}: {e}",
+                extra={"file_name": filename, "error": str(e), "error_type": type(e).__name__},
+                exc_info=True
+            )
     
     return result
 
@@ -191,6 +325,10 @@ async def process_all_resumes():
                 total_files=total_files
             )
             results.append(result)
+            
+            # Memory cleanup between files
+            if settings.enable_memory_cleanup:
+                gc.collect()
         except Exception as e:
             print(f"\n❌ FATAL ERROR processing {file_path.name}: {e}")
             results.append({
@@ -200,6 +338,9 @@ async def process_all_resumes():
                 "designation": None,
                 "error": str(e)
             })
+            # Cleanup on error too
+            if settings.enable_memory_cleanup:
+                gc.collect()
     
     # Print summary
     print(f"\n{'='*80}")
@@ -217,12 +358,14 @@ async def process_all_resumes():
     print(f"{'='*80}\n")
     
     for i, result in enumerate(results, 1):
-        status = "✅" if result["success"] else "❌"
-        print(f"{i}. {status} {result['filename']}")
+        status_icon = "✅" if result["success"] else "❌"
+        print(f"{i}. {status_icon} {result['filename']}")
         if result["success"]:
             print(f"   Resume ID: {result['resume_id']}")
             print(f"   Designation: {result['designation'] or 'NULL'}")
+            print(f"   Status: {result.get('status', 'unknown')}")
         else:
+            print(f"   Status: {result.get('status', 'unknown')}")
             print(f"   Error: {result['error']}")
         print()
     
