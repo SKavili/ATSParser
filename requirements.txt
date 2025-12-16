@@ -29,6 +29,8 @@ python-docx==1.1.0
 PyPDF2==3.0.1
 olefile==0.46
 tika==1.24
+# Removed: textract (installation issues, not working)
+# Note: Apache Tika is the primary method for .doc file processing
 
 sentry-sdk==1.38.0
 

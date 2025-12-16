@@ -8,35 +8,26 @@ from typing import Optional
 from docx import Document
 import PyPDF2
 
-from app.services.fileconverter import convert_doc_to_docx_in_memory, PANDOC_AVAILABLE
 from app.utils.logging import get_logger
 from app.utils.safe_logger import safe_extra
 
 logger = get_logger(__name__)
 
-# Try to import textract for .doc file support
-try:
-    import textract
-    TEXTTRACT_AVAILABLE = True
-except ImportError:
-    TEXTTRACT_AVAILABLE = False
-    logger.debug("textract not available. Will use alternative methods for .doc files.")
-
-# Try to import Apache Tika for .doc file support
+# Try to import Apache Tika for .doc file support (PRIMARY METHOD - Currently Working)
 try:
     from tika import parser as tika_parser
     TIKA_AVAILABLE = True
 except ImportError:
     TIKA_AVAILABLE = False
-    logger.debug("Apache Tika not available. Will use alternative methods for .doc files.")
+    logger.warning("Apache Tika not available. .doc files cannot be processed without Tika.")
 
-# Try to import olefile for .doc file support (alternative method)
+# Try to import olefile for .doc file support (fallback method)
 try:
     import olefile
     OLEFILE_AVAILABLE = True
 except ImportError:
     OLEFILE_AVAILABLE = False
-    logger.debug("olefile not available. Will use alternative methods for .doc files.")
+    logger.debug("olefile not available. Will use Tika only for .doc files.")
 
 # Check for antiword command-line tool
 ANTIWORD_AVAILABLE = shutil.which("antiword") is not None
@@ -125,68 +116,54 @@ class ResumeParser:
     def _extract_doc_text(self, file_content: bytes) -> str:
         """
         Extract text from DOC file (older Microsoft Word format).
-        Uses multiple methods in order of reliability:
-        1. Pandoc conversion to .docx (GREAT IDEA - convert then process as .docx)
-        2. LibreOffice headless conversion (most reliable for production)
-        3. antiword (good for plain-text extraction)
-        4. Apache Tika (read text with layout)
-        5. textract (if available)
-        6. python-docx fallback (might work for some files)
-        7. olefile (basic binary extraction)
+        Uses methods in order of reliability:
+        1. Apache Tika (PRIMARY - Currently Working)
+        2. LibreOffice headless conversion (if available)
+        3. antiword (if available)
+        4. python-docx fallback (might work for some files)
+        5. olefile (basic binary extraction - fallback)
         """
-        # Method 0: Convert .doc to .docx then process (GREAT IDEA!)
-        # Use LibreOffice to convert .doc to .docx, then process as .docx
-        if LIBREOFFICE_AVAILABLE:
-            try:
-                conversion_msg = (
-                    "$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$\n"
-                    "$$$$$$$$$$$$$$$$$$$$  CONVERTING .DOC TO .DOCX  $$$$$$$$$$$$$$$$$$$$$$$$$$$$$$\n"
-                    "$$$  Converting .doc file to .docx using LibreOffice\n"
-                    "$$$  Then processing as .docx file\n"
-                    "$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$"
-                )
-                print(conversion_msg)  # Print to console for visibility
-                logger.info(conversion_msg)
-                # Convert .doc to .docx in memory
-                docx_content = convert_doc_to_docx_in_memory(file_content)
-                if docx_content:
-                    # Process the converted .docx content as a regular .docx file
-                    text = self._extract_docx_text(docx_content)
-                    if text.strip():
-                        success_msg = (
-                            "$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$\n"
-                            "$$$$$$$$$$$$$$$$$$$$$$  CONVERSION SUCCESSFUL  $$$$$$$$$$$$$$$$$$$$$$$$$$$$$$\n"
-                            f"$$$  Successfully converted .doc to .docx and extracted text\n"
-                            f"$$$  Extracted {len(text)} characters of text\n"
-                            "$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$"
-                        )
-                        print(success_msg)
-                        logger.info(
-                            success_msg,
-                            extra={"extraction_method": "libreoffice_conversion", "text_length": len(text)}
-                        )
-                        return text
-            except Exception as conversion_error:
-                warning_msg = (
-                    "$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$\n"
-                    "$$$$$$$$$$$$$$$$$$$$$$$$  CONVERSION FAILED  $$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$\n"
-                    f"$$$  Error: {conversion_error}\n"
-                    "$$$  Falling back to alternative methods...\n"
-                    "$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$"
-                )
-                print(warning_msg)
-                logger.warning(
-                    warning_msg,
-                    extra={"error": str(conversion_error)}
-                )
-        
-        # Create temporary file for .doc content (for other methods)
+        # Create temporary file for .doc content
         with tempfile.NamedTemporaryFile(delete=False, suffix='.doc') as temp_file:
             temp_file.write(file_content)
             temp_doc_path = temp_file.name
         
         try:
-            # Method 1: LibreOffice headless conversion (MOST RELIABLE FOR PRODUCTION)
+            # Method 1: Apache Tika (PRIMARY METHOD - Currently Working)
+            if TIKA_AVAILABLE:
+                try:
+                    tika_msg = (
+                        "$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$\n"
+                        "$$$$$$$$$$$$$$$$$$$$$$$$  USING APACHE TIKA  $$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$\n"
+                        "$$$  Extracting text from .doc file using Apache Tika\n"
+                        "$$$  This is the PRIMARY method for processing .doc files\n"
+                        "$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$"
+                    )
+                    print(tika_msg)
+                    logger.info(tika_msg)
+                    parsed = tika_parser.from_file(temp_doc_path)
+                    if parsed and 'content' in parsed and parsed['content']:
+                        text = parsed['content'].strip()
+                        if text:
+                            success_msg = (
+                                "$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$\n"
+                                "$$$$$$$$$$$$$$$$$$$$$$  APACHE TIKA SUCCESS  $$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$\n"
+                                f"$$$  Successfully extracted {len(text)} characters using Apache Tika\n"
+                                "$$$  METHOD USED: Apache Tika (tika-python library)\n"
+                                "$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$"
+                            )
+                            print(success_msg)
+                            logger.info(
+                                success_msg,
+                                extra={"extraction_method": "apache_tika", "text_length": len(text)}
+                            )
+                            return text
+                except Exception as tika_error:
+                    error_msg = f"Apache Tika extraction failed: {tika_error}"
+                    print(f"[WARNING] {error_msg}")
+                    logger.warning(error_msg)
+            
+            # Method 2: LibreOffice headless conversion (if available)
             if LIBREOFFICE_AVAILABLE:
                 try:
                     lo_msg = (
@@ -243,7 +220,7 @@ class ResumeParser:
                 except Exception as lo_error:
                     logger.debug(f"LibreOffice conversion failed: {lo_error}")
             
-            # Method 2: antiword (GOOD FOR PLAIN-TEXT EXTRACTION)
+            # Method 3: antiword (if available)
             if ANTIWORD_AVAILABLE:
                 try:
                     antiword_msg = (
@@ -279,52 +256,7 @@ class ResumeParser:
                 except Exception as aw_error:
                     logger.debug(f"antiword extraction failed: {aw_error}")
             
-            # Method 3: Apache Tika (READ TEXT WITH LAYOUT)
-            if TIKA_AVAILABLE:
-                try:
-                    tika_msg = (
-                        "$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$\n"
-                        "$$$$$$$$$$$$$$$$$$$$$$$$  USING APACHE TIKA  $$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$\n"
-                        "$$$  Extracting text from .doc file using Apache Tika\n"
-                        "$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$"
-                    )
-                    print(tika_msg)
-                    logger.info(tika_msg)
-                    parsed = tika_parser.from_file(temp_doc_path)
-                    if parsed and 'content' in parsed and parsed['content']:
-                        text = parsed['content'].strip()
-                        if text:
-                            success_msg = (
-                                "$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$\n"
-                                "$$$$$$$$$$$$$$$$$$$$$$  APACHE TIKA SUCCESS  $$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$\n"
-                                f"$$$  Successfully extracted {len(text)} characters using Apache Tika\n"
-                                "$$$  METHOD USED: Apache Tika (tika-python library)\n"
-                                "$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$"
-                            )
-                            print(success_msg)
-                            logger.info(
-                                success_msg,
-                                extra={"extraction_method": "apache_tika", "text_length": len(text)}
-                            )
-                            return text
-                except Exception as tika_error:
-                    error_msg = f"Apache Tika extraction failed: {tika_error}"
-                    print(f"[WARNING] {error_msg}")
-                    logger.debug(error_msg)
-            
-            # Method 4: textract (if available)
-            if TEXTTRACT_AVAILABLE:
-                try:
-                    logger.info("Attempting .doc extraction using textract")
-                    extracted_bytes = textract.process(temp_doc_path)
-                    text = extracted_bytes.decode('utf-8', errors='ignore')
-                    if text.strip():
-                        logger.info("Successfully extracted .doc file using textract")
-                        return text
-                except Exception as textract_error:
-                    logger.debug(f"textract extraction failed: {textract_error}")
-            
-            # Method 5: Try python-docx as fallback (might work for some .doc files that are actually .docx)
+            # Method 4: Try python-docx as fallback (might work for some .doc files that are actually .docx)
             try:
                 logger.debug("Attempting .doc extraction using python-docx fallback")
                 doc_file = BytesIO(file_content)
@@ -347,10 +279,10 @@ class ResumeParser:
             except Exception as fallback_error:
                 logger.debug(f"python-docx fallback failed: {fallback_error}")
             
-            # Method 6: Try to extract using olefile (for binary .doc files)
+            # Method 5: Try to extract using olefile (for binary .doc files - last resort)
             if OLEFILE_AVAILABLE:
                 try:
-                    logger.debug("Attempting .doc extraction using olefile")
+                    logger.debug("Attempting .doc extraction using olefile (last resort)")
                     # .doc files are OLE compound documents
                     ole = olefile.OleFileIO(BytesIO(file_content))
                     # Try to find WordDocument stream
@@ -389,21 +321,16 @@ class ResumeParser:
             # If all methods fail, raise an error with helpful message
             raise ValueError(
                 "Failed to extract text from .doc file using all available methods.\n"
-                "Installation options (in order of reliability):\n"
-                "1. Pandoc: BEST OPTION - Converts .doc to .docx then processes\n"
-                "   - Windows: Download from https://pandoc.org/installing.html\n"
-                "   - Linux: sudo apt-get install pandoc\n"
-                "   - macOS: brew install pandoc\n"
+                "Installation options:\n"
+                "1. Apache Tika: pip install tika (REQUIRES Java runtime) - PRIMARY METHOD\n"
                 "2. LibreOffice (headless): Most reliable for production\n"
                 "   - Windows: Download from https://www.libreoffice.org/\n"
                 "   - Linux: sudo apt-get install libreoffice\n"
                 "3. antiword: Good for plain-text extraction\n"
                 "   - Windows: Download from http://www.winfield.demon.nl/\n"
                 "   - Linux: sudo apt-get install antiword\n"
-                "4. Apache Tika: pip install tika (requires Java)\n"
-                "5. textract: pip install textract (may require system dependencies)\n"
-                "6. olefile: pip install olefile (basic support, already installed)\n"
-                "7. Convert .doc files to .docx format before processing"
+                "4. olefile: pip install olefile (basic support, already installed)\n"
+                "5. Convert .doc files to .docx format before processing"
             )
         finally:
             # Clean up temp file
