@@ -11,6 +11,14 @@ from app.config import settings
 class JSONFormatter(logging.Formatter):
     """JSON formatter for structured logging."""
     
+    # Reserved LogRecord attributes that cannot be overwritten
+    RESERVED_ATTRS = {
+        'name', 'msg', 'args', 'created', 'filename', 'funcName', 
+        'levelname', 'levelno', 'lineno', 'module', 'msecs', 'message',
+        'pathname', 'process', 'processName', 'relativeCreated', 'thread',
+        'threadName', 'exc_info', 'exc_text', 'stack_info', 'taskName'
+    }
+    
     def format(self, record: logging.LogRecord) -> str:
         """Format log record as JSON."""
         log_data: Dict[str, Any] = {
@@ -29,11 +37,9 @@ class JSONFormatter(logging.Formatter):
         
         # Add any extra attributes from the record
         # These can be added using logger.info("message", extra={"key": "value"})
+        # IMPORTANT: Filter out reserved attributes to prevent "Attempt to overwrite" errors
         for key, value in record.__dict__.items():
-            if key not in ['name', 'msg', 'args', 'created', 'filename', 'funcName', 
-                          'levelname', 'levelno', 'lineno', 'module', 'msecs', 'message',
-                          'pathname', 'process', 'processName', 'relativeCreated', 'thread',
-                          'threadName', 'exc_info', 'exc_text', 'stack_info', 'message']:
+            if key not in self.RESERVED_ATTRS:
                 log_data[key] = value
         
         return json.dumps(log_data)

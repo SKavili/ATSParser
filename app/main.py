@@ -19,6 +19,19 @@ from app.utils.logging import setup_logging, get_logger
 setup_logging()
 logger = get_logger(__name__)
 
+# Force import of fileconverter to trigger pandoc detection at startup
+try:
+    from app.services import fileconverter
+    print("\n" + "="*80)
+    print("FILE CONVERTER MODULE LOADED")
+    print(f"Pandoc Available: {fileconverter.PANDOC_AVAILABLE}")
+    if fileconverter.PANDOC_AVAILABLE:
+        pandoc_path = __import__('shutil').which("pandoc")
+        print(f"Pandoc Path: {pandoc_path}")
+    print("="*80 + "\n")
+except Exception as e:
+    logger.warning(f"Failed to import fileconverter: {e}")
+
 # Initialize Sentry if DSN provided
 if settings.sentry_dsn:
     sentry_sdk.init(
