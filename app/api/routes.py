@@ -49,6 +49,7 @@ async def upload_resume(
     candidate_name: Optional[str] = Form(None),
     job_role: Optional[str] = Form(None),
     source: Optional[str] = Form(None),
+    extract_modules: Optional[str] = Form("all"),
     controller: ResumeController = Depends(get_resume_controller)
 ):
     """
@@ -59,13 +60,32 @@ async def upload_resume(
     - candidate_name: Optional candidate name
     - job_role: Optional job role
     - source: Optional source identifier
+    - extract_modules: Modules to extract (default: "all")
+        Options:
+        - "all" - Extract all modules (default)
+        - "1" or "designation" - Extract designation only
+        - "2" or "name" - Extract name only
+        - "3" or "email" - Extract email only
+        - "4" or "mobile" - Extract mobile only
+        - "5" or "experience" - Extract experience only
+        - "6" or "domain" - Extract domain only
+        - "7" or "education" - Extract education only
+        - "8" or "skills" - Extract skills only
+        - Comma-separated: "1,2,3" or "designation,name,email" - Extract multiple modules
+    
+    Examples:
+    - extract_modules="all" - Extract all 8 modules
+    - extract_modules="1" - Extract only designation
+    - extract_modules="designation" - Extract only designation
+    - extract_modules="1,2,3" - Extract designation, name, and email
+    - extract_modules="designation,skills" - Extract designation and skills
     """
     metadata = ResumeUpload(
         candidateName=candidate_name,
         jobRole=job_role,
         source=source
     )
-    return await controller.upload_resume(file, metadata)
+    return await controller.upload_resume(file, metadata, extract_modules)
 
 
 @router.post("/create-job", response_model=JobCreateResponse, status_code=200)

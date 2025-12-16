@@ -58,7 +58,15 @@ class ResumeRepository:
         return result.scalar_one_or_none()
     
     async def update(self, resume_id: int, update_data: dict) -> Optional[ResumeMetadata]:
-        """Update resume record."""
+        """
+        Update resume record.
+        
+        This method is safe for concurrent updates because:
+        1. Each call reads the latest state from the database
+        2. Updates to different columns don't conflict
+        3. Each update commits independently as a separate transaction
+        4. SQLAlchemy handles concurrent updates to different fields safely
+        """
         resume = await self.get_by_id(resume_id)
         if not resume:
             return None
@@ -69,6 +77,6 @@ class ResumeRepository:
         
         await self.session.commit()
         await self.session.refresh(resume)
-        logger.info(f"Updated resume record: id={resume_id}")
+        logger.info(f"Updated resume record: id={resume_id}, fields: {list(update_data.keys())}")
         return resume
 

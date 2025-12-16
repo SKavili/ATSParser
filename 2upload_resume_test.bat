@@ -12,6 +12,40 @@ echo.
 echo Resume Folder: %RESUME_FOLDER%
 echo API URL: %API_URL%
 echo.
+echo ========================================
+echo   MODULE SELECTION MENU
+echo ========================================
+echo.
+echo Select which modules to extract:
+echo.
+echo   0 - Extract ALL modules (default)
+echo   1 - Designation only
+echo   2 - Name only
+echo   3 - Email only
+echo   4 - Mobile only
+echo   5 - Experience only
+echo   6 - Domain only
+echo   7 - Education only
+echo   8 - Skills only
+echo.
+echo   You can also select multiple modules:
+echo   Example: 1,2,3 or 1,8 or designation,skills
+echo.
+set /p MODULE_CHOICE="Enter your choice (0-8, comma-separated, or 'all'): "
+
+REM Default to "all" if empty
+if "!MODULE_CHOICE!"=="" set MODULE_CHOICE=0
+
+REM Convert choice to extract_modules format
+if "!MODULE_CHOICE!"=="0" (
+    set EXTRACT_MODULES=all
+) else (
+    set EXTRACT_MODULES=!MODULE_CHOICE!
+)
+
+echo.
+echo [INFO] Selected modules: !EXTRACT_MODULES!
+echo.
  
 REM Check if resume folder exists
 if not exist "%RESUME_FOLDER%" (
@@ -43,19 +77,19 @@ set /a FAILED_COUNT=0
 REM Process PDF files
 for %%F in ("%RESUME_FOLDER%\*.pdf") do (
     set /a FILE_COUNT+=1
-    call :ProcessFile "%%F"
+    call :ProcessFile "%%F" "!EXTRACT_MODULES!"
 )
 
 REM Process DOC files
 for %%F in ("%RESUME_FOLDER%\*.doc") do (
     set /a FILE_COUNT+=1
-    call :ProcessFile "%%F"
+    call :ProcessFile "%%F" "!EXTRACT_MODULES!"
 )
 
 REM Process DOCX files
 for %%F in ("%RESUME_FOLDER%\*.docx") do (
     set /a FILE_COUNT+=1
-    call :ProcessFile "%%F"
+    call :ProcessFile "%%F" "!EXTRACT_MODULES!"
 )
 
 REM Note: Only processing .pdf, .doc, .docx files (not .txt)
@@ -75,6 +109,7 @@ exit /b 0
 setlocal enabledelayedexpansion
 set "RESUME_FILE=%~1"
 set "FILENAME=%~nx1"
+set "EXTRACT_MODULES=%~2"
  
 echo.
 echo ========================================
@@ -82,7 +117,7 @@ echo [!FILE_COUNT!] Processing: !FILENAME!
 echo ========================================
 echo.
 echo [INFO] This file will be processed ONE BY ONE
-echo [INFO] Designation will be extracted using OLLAMA
+echo [INFO] Selected modules will be extracted using OLLAMA
 echo [INFO] Results will be saved to database
 echo.
  
@@ -101,16 +136,18 @@ set "JOB_ROLE=Developer"
  
 echo [INFO] Candidate Name: !CANDIDATE_NAME!
 echo [INFO] Job Role: !JOB_ROLE!
+echo [INFO] Modules to extract: !EXTRACT_MODULES!
 echo.
  
-REM Upload the file - this triggers designation extraction
-echo [INFO] Uploading to API and extracting designation...
+REM Upload the file - this triggers extraction based on selected modules
+echo [INFO] Uploading to API and extracting selected modules...
 curl -X POST "%API_URL%" ^
   -H "accept: application/json" ^
   -H "Content-Type: multipart/form-data" ^
   -F "file=@\"!RESUME_FILE!\"" ^
   -F "candidate_name=!CANDIDATE_NAME!" ^
-  -F "job_role=!JOB_ROLE!"
+  -F "job_role=!JOB_ROLE!" ^
+  -F "extract_modules=!EXTRACT_MODULES!"
  
 if errorlevel 1 (
     echo.
@@ -119,7 +156,7 @@ if errorlevel 1 (
 ) else (
     echo.
     echo [SUCCESS] Uploaded and processed: !FILENAME!
-    echo [INFO] Designation extraction completed (check server logs for details)
+    echo [INFO] Extraction completed for selected modules (check server logs for details)
     set /a SUCCESS_COUNT+=1
 )
 endlocal

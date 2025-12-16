@@ -7,7 +7,14 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.services.resume_parser import ResumeParser
 from app.services.embedding_service import EmbeddingService
 from app.services.vector_db_service import VectorDBService
-from app.services.designation_service import DesignationService
+from app.designation import DesignationService
+from app.skills import SkillsService
+from app.email import EmailService
+from app.mobile import MobileService
+from app.experience import ExperienceService
+from app.name import NameService
+from app.domain import DomainService
+from app.education import EducationService
 from app.repositories.resume_repo import ResumeRepository
 from app.models.resume_models import ResumeUpload, ResumeUploadResponse
 from app.utils.cleaning import sanitize_filename
@@ -39,14 +46,69 @@ class ResumeController:
         self.vector_db = vector_db
         self.resume_repo = resume_repo
         self.designation_service = DesignationService(session)
+        self.skills_service = SkillsService(session)
+        self.email_service = EmailService(session)
+        self.mobile_service = MobileService(session)
+        self.experience_service = ExperienceService(session)
+        self.name_service = NameService(session)
+        self.domain_service = DomainService(session)
+        self.education_service = EducationService(session)
+    
+    def _parse_extract_modules(self, extract_modules: Optional[str]) -> set:
+        """
+        Parse extract_modules parameter and return set of modules to extract.
+        
+        Args:
+            extract_modules: String like "all" or "designation,skills,name" or "1,2,3"
+        
+        Returns:
+            Set of module names to extract
+        """
+        if not extract_modules or extract_modules.lower().strip() == "all":
+            # Extract all modules
+            return {"designation", "name", "email", "mobile", "experience", "domain", "education", "skills"}
+        
+        # Map numbers to module names
+        module_map = {
+            "1": "designation",
+            "2": "name",
+            "3": "email",
+            "4": "mobile",
+            "5": "experience",
+            "6": "domain",
+            "7": "education",
+            "8": "skills",
+        }
+        
+        # Parse comma-separated list
+        modules = set()
+        parts = [p.strip().lower() for p in extract_modules.split(",")]
+        
+        for part in parts:
+            if not part:
+                continue
+            # Check if it's a number
+            if part in module_map:
+                modules.add(module_map[part])
+            # Check if it's a direct module name
+            elif part in {"designation", "name", "email", "mobile", "experience", "domain", "education", "skills"}:
+                modules.add(part)
+            else:
+                logger.warning(f"Unknown module option: {part}, ignoring")
+        
+        return modules
     
     async def upload_resume(
         self,
         file: UploadFile,
-        metadata: Optional[ResumeUpload] = None
+        metadata: Optional[ResumeUpload] = None,
+        extract_modules: Optional[str] = "all"
     ) -> ResumeUploadResponse:
         """Handle resume upload, parsing, and embedding."""
         try:
+            # Sanitize filename early
+            safe_filename = sanitize_filename(file.filename or "resume.pdf")
+            
             # Validate file type
             allowed_extensions = {'.pdf', '.docx', '.doc', '.txt'}
             file_ext = '.' + file.filename.split('.')[-1].lower() if '.' in file.filename else ''
@@ -138,10 +200,6 @@ class ResumeController:
                     detail=f"File too large: {file_size_mb:.2f}MB. Maximum allowed: {settings.max_file_size_mb}MB"
                 )
             
-            # Sanitize filename (already done above, but ensure it's set)
-            if 'safe_filename' not in locals():
-                safe_filename = sanitize_filename(file.filename or "resume.pdf")
-            
             # Check if file with same filename already exists
             existing_resume = await self.resume_repo.get_by_filename(safe_filename)
             if existing_resume:
@@ -165,6 +223,31 @@ class ResumeController:
                     status=existing_resume.status or STATUS_PENDING,
                     created_at=existing_resume.created_at.isoformat() if existing_resume.created_at else "",
                 )
+            
+            # Prepare database record first (before text extraction)
+            # This ensures resume_metadata exists for error handling
+            candidate_name = None
+            job_role = None
+            if metadata:
+                candidate_name = metadata.candidate_name
+                job_role = metadata.job_role
+            
+            db_record = {
+                "candidatename": candidate_name,
+                "jobrole": job_role,
+                "designation": None,  # Will be extracted and updated separately
+                "experience": None,
+                "domain": None,
+                "mobile": None,
+                "email": None,
+                "education": None,
+                "filename": safe_filename,
+                "skillset": "",
+                "status": STATUS_PROCESSING,  # Set to processing when starting
+            }
+            
+            # Save to database first (before text extraction for proper error handling)
+            resume_metadata = await self.resume_repo.create(db_record)
             
             # Extract text from file
             try:
@@ -205,71 +288,157 @@ class ResumeController:
                 )
                 resume_text = resume_text[:settings.max_resume_text_length]
             
-            # Merge metadata if provided
-            candidate_name = None
-            job_role = None
-            if metadata:
-                candidate_name = metadata.candidate_name
-                job_role = metadata.job_role
+            # Parse extract_modules parameter
+            # Accepts: "all" or comma-separated list like "designation,skills,name"
+            # Valid options: designation, name, email, mobile, experience, domain, education, skills
+            modules_to_extract = self._parse_extract_modules(extract_modules)
             
-            # Prepare database record (without designation initially, status = processing)
-            db_record = {
-                "candidatename": candidate_name,
-                "jobrole": job_role,
-                "designation": None,  # Will be extracted and updated separately
-                "experience": None,
-                "domain": None,
-                "mobile": None,
-                "email": None,
-                "education": None,
-                "filename": safe_filename,
-                "skillset": "",
-                "status": STATUS_PROCESSING,  # Set to processing when starting
-            }
-            
-            # Save to database first
-            resume_metadata = await self.resume_repo.create(db_record)
-            
-            # Extract and save designation using dedicated service
-            # This runs independently - if it fails, the resume upload still succeeds
+            # Extract and save selected profile fields using dedicated services (SEQUENTIAL)
+            # These run one by one - if any fails, the resume upload still succeeds
             logger.info(
-                f"🚀 STARTING DESIGNATION EXTRACTION PROCESS for resume ID {resume_metadata.id}",
-                extra={"resume_id": resume_metadata.id, "file_name": safe_filename}
+                f"🚀 STARTING PROFILE EXTRACTION PROCESS for resume ID {resume_metadata.id}",
+                extra={
+                    "resume_id": resume_metadata.id, 
+                    "file_name": safe_filename,
+                    "modules_to_extract": list(modules_to_extract)
+                }
             )
-            print(f"\n🚀 STARTING DESIGNATION EXTRACTION PROCESS")
+            print(f"\n🚀 STARTING PROFILE EXTRACTION PROCESS")
             print(f"   Resume ID: {resume_metadata.id}")
             print(f"   Filename: {safe_filename}")
+            print(f"   Modules to extract: {', '.join(sorted(modules_to_extract)) if modules_to_extract else 'None'}")
+            print(f"   [SESSION ISOLATION] Each extraction uses a fresh, isolated LLM context")
             
-            try:
-                designation = await self.designation_service.extract_and_save_designation(
-                    resume_text=resume_text,
-                    resume_id=resume_metadata.id,
-                    filename=safe_filename
-                )
-                # Refresh to get updated designation
-                await self.resume_repo.session.refresh(resume_metadata)
-                logger.info(
-                    f"✅ DESIGNATION EXTRACTION COMPLETED for resume ID {resume_metadata.id}",
-                    extra={
-                        "resume_id": resume_metadata.id, 
-                        "designation": designation,
-                        "designation_in_db": resume_metadata.designation
-                    }
-                )
-                print(f"\n✅ DESIGNATION EXTRACTION COMPLETED")
-                print(f"   Resume ID: {resume_metadata.id}")
-                print(f"   Extracted: {designation}")
-                print(f"   In Database: {resume_metadata.designation}\n")
-            except Exception as e:
-                # Log error but don't fail the upload
-                logger.error(
-                    f"❌ DESIGNATION EXTRACTION FAILED for resume ID {resume_metadata.id}, but upload succeeded: {e}",
-                    extra={"error": str(e), "resume_id": resume_metadata.id, "file_name": safe_filename},
-                    exc_info=True
-                )
-                print(f"\n❌ DESIGNATION EXTRACTION FAILED (upload still succeeded)")
-                print(f"   Resume ID: {resume_metadata.id}")
-                print(f"   Error: {e}\n")
+            # Sequential extraction with session isolation
+            # Each extraction creates a fresh HTTP client and includes system messages
+            # to ensure no context bleeding between extractions
+            # Extract designation (1)
+            if "designation" in modules_to_extract:
+                try:
+                    await self.designation_service.extract_and_save_designation(
+                        resume_text=resume_text,
+                        resume_id=resume_metadata.id,
+                        filename=safe_filename
+                    )
+                except Exception as e:
+                    logger.error(f"❌ DESIGNATION EXTRACTION FAILED: {e}", extra={"resume_id": resume_metadata.id, "error": str(e)})
+            
+            # Extract name (2)
+            if "name" in modules_to_extract:
+                try:
+                    await self.name_service.extract_and_save_name(
+                        resume_text=resume_text,
+                        resume_id=resume_metadata.id,
+                        filename=safe_filename
+                    )
+                except Exception as e:
+                    logger.error(f"❌ NAME EXTRACTION FAILED: {e}", extra={"resume_id": resume_metadata.id, "error": str(e)})
+            
+            # Extract email (3)
+            if "email" in modules_to_extract:
+                try:
+                    await self.email_service.extract_and_save_email(
+                        resume_text=resume_text,
+                        resume_id=resume_metadata.id,
+                        filename=safe_filename
+                    )
+                except Exception as e:
+                    logger.error(f"❌ EMAIL EXTRACTION FAILED: {e}", extra={"resume_id": resume_metadata.id, "error": str(e)})
+            
+            # Extract mobile (4)
+            if "mobile" in modules_to_extract:
+                try:
+                    await self.mobile_service.extract_and_save_mobile(
+                        resume_text=resume_text,
+                        resume_id=resume_metadata.id,
+                        filename=safe_filename
+                    )
+                except Exception as e:
+                    logger.error(f"❌ MOBILE EXTRACTION FAILED: {e}", extra={"resume_id": resume_metadata.id, "error": str(e)})
+            
+            # Extract experience (5)
+            if "experience" in modules_to_extract:
+                try:
+                    await self.experience_service.extract_and_save_experience(
+                        resume_text=resume_text,
+                        resume_id=resume_metadata.id,
+                        filename=safe_filename
+                    )
+                except Exception as e:
+                    logger.error(f"❌ EXPERIENCE EXTRACTION FAILED: {e}", extra={"resume_id": resume_metadata.id, "error": str(e)})
+            
+            # Extract domain (6)
+            if "domain" in modules_to_extract:
+                try:
+                    await self.domain_service.extract_and_save_domain(
+                        resume_text=resume_text,
+                        resume_id=resume_metadata.id,
+                        filename=safe_filename
+                    )
+                except Exception as e:
+                    logger.error(f"❌ DOMAIN EXTRACTION FAILED: {e}", extra={"resume_id": resume_metadata.id, "error": str(e)})
+            
+            # Extract education (7)
+            if "education" in modules_to_extract:
+                try:
+                    await self.education_service.extract_and_save_education(
+                        resume_text=resume_text,
+                        resume_id=resume_metadata.id,
+                        filename=safe_filename
+                    )
+                except Exception as e:
+                    logger.error(f"❌ EDUCATION EXTRACTION FAILED: {e}", extra={"resume_id": resume_metadata.id, "error": str(e)})
+            
+            # Extract skills (8)
+            if "skills" in modules_to_extract:
+                try:
+                    await self.skills_service.extract_and_save_skills(
+                        resume_text=resume_text,
+                        resume_id=resume_metadata.id,
+                        filename=safe_filename
+                    )
+                except Exception as e:
+                    logger.error(f"❌ SKILLS EXTRACTION FAILED: {e}", extra={"resume_id": resume_metadata.id, "error": str(e)})
+            
+            # All extractions completed - session contexts are automatically cleared
+            # Each extraction used a fresh HTTP client with isolated context
+            logger.info(
+                f"✅ PROFILE EXTRACTION PROCESS COMPLETED for resume ID {resume_metadata.id}",
+                extra={"resume_id": resume_metadata.id, "file_name": safe_filename}
+            )
+            print(f"\n✅ PROFILE EXTRACTION PROCESS COMPLETED")
+            print(f"   Resume ID: {resume_metadata.id}")
+            print(f"   [SESSION CLEARED] All extraction contexts have been isolated and cleared")
+            
+            # Final refresh to get all updated fields from database
+            await self.resume_repo.session.refresh(resume_metadata)
+            
+            # Log all extracted fields for verification
+            logger.info(
+                f"✅ PROFILE EXTRACTION COMPLETED for resume ID {resume_metadata.id}",
+                extra={
+                    "resume_id": resume_metadata.id,
+                    "candidatename": resume_metadata.candidatename,
+                    "designation": resume_metadata.designation,
+                    "email": resume_metadata.email,
+                    "mobile": resume_metadata.mobile,
+                    "experience": resume_metadata.experience,
+                    "domain": resume_metadata.domain,
+                    "education": resume_metadata.education[:100] if resume_metadata.education else None,
+                    "skillset": resume_metadata.skillset[:100] if resume_metadata.skillset else None,
+                }
+            )
+            print(f"\n✅ PROFILE EXTRACTION COMPLETED")
+            print(f"   Resume ID: {resume_metadata.id}")
+            print(f"   Name: {resume_metadata.candidatename}")
+            print(f"   Designation: {resume_metadata.designation}")
+            print(f"   Email: {resume_metadata.email}")
+            print(f"   Mobile: {resume_metadata.mobile}")
+            print(f"   Experience: {resume_metadata.experience}")
+            print(f"   Domain: {resume_metadata.domain}")
+            print(f"   Education: {resume_metadata.education[:50] if resume_metadata.education else None}...")
+            print(f"   Skills: {resume_metadata.skillset[:50] if resume_metadata.skillset else None}...")
+            print()
             
             # Generate embeddings for resume text
             chunk_embeddings = await self.embedding_service.generate_chunk_embeddings(
@@ -313,21 +482,40 @@ class ResumeController:
                 resume_metadata.id,
                 {"status": STATUS_COMPLETED}
             )
+            
+            # Final refresh to ensure all extracted fields are loaded from database
             await self.resume_repo.session.refresh(resume_metadata)
             
-            # Build response
+            # Verify all fields are updated (log for debugging)
+            logger.info(
+                f"📊 FINAL DATABASE STATE for resume ID {resume_metadata.id}",
+                extra={
+                    "resume_id": resume_metadata.id,
+                    "candidatename": resume_metadata.candidatename,
+                    "designation": resume_metadata.designation,
+                    "email": resume_metadata.email,
+                    "mobile": resume_metadata.mobile,
+                    "experience": resume_metadata.experience,
+                    "domain": resume_metadata.domain,
+                    "education": resume_metadata.education[:100] if resume_metadata.education else None,
+                    "skillset": resume_metadata.skillset[:100] if resume_metadata.skillset else None,
+                    "status": resume_metadata.status,
+                }
+            )
+            
+            # Build response with all extracted fields
             return ResumeUploadResponse(
                 id=resume_metadata.id,
                 candidateName=resume_metadata.candidatename or "",
                 jobrole=resume_metadata.jobrole or "",
-                designation=resume_metadata.designation,  # Extracted designation
-                experience=resume_metadata.experience or "",
-                domain=resume_metadata.domain or "",
-                mobile=resume_metadata.mobile or "",
-                email=resume_metadata.email or "",
-                education=resume_metadata.education or "",
+                designation=resume_metadata.designation or "",  # Extracted designation
+                experience=resume_metadata.experience or "",  # Extracted experience
+                domain=resume_metadata.domain or "",  # Extracted domain
+                mobile=resume_metadata.mobile or "",  # Extracted mobile
+                email=resume_metadata.email or "",  # Extracted email
+                education=resume_metadata.education or "",  # Extracted education
                 filename=resume_metadata.filename,
-                skillset=resume_metadata.skillset or "",
+                skillset=resume_metadata.skillset or "",  # Extracted skills
                 status=resume_metadata.status or STATUS_PENDING,
                 created_at=resume_metadata.created_at.isoformat() if resume_metadata.created_at else "",
             )

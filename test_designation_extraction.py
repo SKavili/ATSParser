@@ -6,7 +6,7 @@ from pathlib import Path
 # Add project root to path
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
-from app.services.designation_extractor import DesignationExtractor
+from app.designation import DesignationExtractor
 from app.utils.logging import get_logger
 
 logger = get_logger(__name__)

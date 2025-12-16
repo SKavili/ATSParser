@@ -2,7 +2,7 @@
 from typing import Optional
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.services.designation_extractor import DesignationExtractor
+from app.designation.designation_extractor import DesignationExtractor
 from app.repositories.resume_repo import ResumeRepository
 from app.utils.logging import get_logger
 

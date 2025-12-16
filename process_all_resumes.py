@@ -13,7 +13,7 @@ from typing import List, Optional
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from app.services.resume_parser import ResumeParser
-from app.services.designation_service import DesignationService
+from app.designation import DesignationService
 from app.repositories.resume_repo import ResumeRepository
 from app.database.connection import async_session_maker
 from app.utils.cleaning import sanitize_filename

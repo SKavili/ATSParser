@@ -1,75 +1,35 @@
-"""Service for parsing resumes using LLM."""
-import json
-import re
-from typing import Dict, Optional, Tuple
-import httpx
-from httpx import Timeout
+"""Service for parsing resumes and extracting text from files."""
+from io import BytesIO
+from typing import Optional
 from docx import Document
 import PyPDF2
-from io import BytesIO
 
-from app.config import settings
 from app.utils.logging import get_logger
-from app.utils.cleaning import normalize_phone, normalize_email, extract_skills, normalize_text
 
 logger = get_logger(__name__)
 
-# Try to import OLLAMA Python client
-try:
-    import ollama
-    OLLAMA_CLIENT_AVAILABLE = True
-except ImportError:
-    OLLAMA_CLIENT_AVAILABLE = False
-    logger.warning("OLLAMA Python client not available, using HTTP API directly")
-
-MASTER_PROMPT = """
-ROLE:
-You are an ATS resume parsing expert specializing in US IT staffing profiles.
-
-CONTEXT:
-Candidate profiles and resumes may be unstructured and inconsistently formatted.
-Designation refers to the candidate's explicitly stated current or most recent job title.
-
-TASK:
-Extract the candidate's designation (job title) from the profile text.
-
-SELECTION RULES (IN ORDER OF PRIORITY):
-1. If a title is explicitly marked as "current", "present", or equivalent, select that.
-2. Else, select the title associated with the most recent experience entry.
-3. Else, select the designation mentioned in the resume headline or summary.
-4. If multiple titles appear at the same level, select the first occurrence.
-
-CONSTRAINTS:
-- Extract only one designation.
-- Preserve the designation exactly as written.
-- Do not infer or normalize titles.
-- Do not include company names, skills, durations, or locations.
-- Ignore aspirational, desired, or target roles.
-
-ANTI-HALLUCINATION RULES:
-- If no explicit designation is found, return null.
-- Never guess or infer a designation.
-- Do not derive designation from skills, certifications, or projects.
-
-OUTPUT FORMAT:
-Return only valid JSON. No additional text.
-
-JSON SCHEMA:
-{
-  "designation": "string | null"
-}
-"""
-
 
 class ResumeParser:
-    """Service for parsing resume files using OLLAMA LLM."""
+    """Service for parsing resume files and extracting text."""
     
     def __init__(self):
-        self.ollama_host = settings.ollama_host
-        self.model = "llama3.1"
+        """Initialize ResumeParser."""
+        pass
     
     async def extract_text(self, file_content: bytes, filename: str) -> str:
-        """Extract text from uploaded file based on extension."""
+        """
+        Extract text from uploaded file based on extension.
+        
+        Args:
+            file_content: The binary content of the file
+            filename: Name of the file (used to determine file type)
+        
+        Returns:
+            Extracted text content as string
+        
+        Raises:
+            ValueError: If file type is not supported or extraction fails
+        """
         try:
             if filename.lower().endswith('.pdf'):
                 return self._extract_pdf_text(file_content)
@@ -78,446 +38,35 @@ class ResumeParser:
             elif filename.lower().endswith('.txt'):
                 return file_content.decode('utf-8', errors='ignore')
             else:
-                # Try as text
+                # Try as text for unknown extensions
                 return file_content.decode('utf-8', errors='ignore')
         except Exception as e:
-            logger.error(f"Error extracting text from {filename}: {e}", extra={"error": str(e)})
+            logger.error(f"Error extracting text from {filename}: {e}", extra={"error": str(e), "filename": filename})
             raise ValueError(f"Failed to extract text from file: {e}")
     
     def _extract_pdf_text(self, file_content: bytes) -> str:
         """Extract text from PDF file."""
-        pdf_file = BytesIO(file_content)
-        pdf_reader = PyPDF2.PdfReader(pdf_file)
-        text_parts = []
-        for page in pdf_reader.pages:
-            text_parts.append(page.extract_text())
-        return "\n".join(text_parts)
+        try:
+            pdf_file = BytesIO(file_content)
+            pdf_reader = PyPDF2.PdfReader(pdf_file)
+            text_parts = []
+            for page in pdf_reader.pages:
+                text_parts.append(page.extract_text())
+            return "\n".join(text_parts)
+        except Exception as e:
+            logger.error(f"Error extracting PDF text: {e}", extra={"error": str(e)})
+            raise ValueError(f"Failed to extract text from PDF: {e}")
     
     def _extract_docx_text(self, file_content: bytes) -> str:
         """Extract text from DOCX file."""
-        doc_file = BytesIO(file_content)
-        doc = Document(doc_file)
-        text_parts = []
-        for paragraph in doc.paragraphs:
-            text_parts.append(paragraph.text)
-        return "\n".join(text_parts)
-    
-    async def _check_ollama_connection(self) -> tuple[bool, Optional[str]]:
-        """Check if OLLAMA is accessible and running. Returns (is_connected, available_model)."""
         try:
-            # Create fresh client for each check
-            async with httpx.AsyncClient(timeout=Timeout(5.0)) as client:
-                # Try to access OLLAMA API tags endpoint
-                response = await client.get(f"{self.ollama_host}/api/tags")
-                if response.status_code == 200:
-                    models_data = response.json()
-                    models = models_data.get("models", [])
-                    # Check if llama3.1 is available
-                    for model in models:
-                        model_name = model.get("name", "")
-                        if "llama3.1" in model_name.lower() or "llama3" in model_name.lower():
-                            return True, model_name
-                    # Return first available model if llama3.1 not found
-                    if models:
-                        return True, models[0].get("name", "")
-                    return True, None
-                return False, None
+            doc_file = BytesIO(file_content)
+            doc = Document(doc_file)
+            text_parts = []
+            for paragraph in doc.paragraphs:
+                text_parts.append(paragraph.text)
+            return "\n".join(text_parts)
         except Exception as e:
-            logger.warning(f"Failed to check OLLAMA connection: {e}", extra={"error": str(e)})
-            return False, None
-    
-    async def parse_resume(self, resume_text: str, filename: str) -> Dict:
-        """Parse resume text using LLM and return structured data."""
-        try:
-            # Check OLLAMA connection first
-            is_connected, available_model = await self._check_ollama_connection()
-            if not is_connected:
-                raise RuntimeError(
-                    f"OLLAMA is not accessible at {self.ollama_host}. "
-                    "Please ensure OLLAMA is running. Start it with: ollama serve"
-                )
-            
-            # Use available model if llama3.1 not found
-            model_to_use = self.model
-            if available_model and "llama3.1" not in available_model.lower():
-                logger.warning(
-                    f"llama3.1 not found, using available model: {available_model}",
-                    extra={"available_model": available_model}
-                )
-                model_to_use = available_model
-            
-            # Prepare prompt - be very explicit about JSON-only output
-            prompt = f"""{MASTER_PROMPT}
-
-Input resume text:
-{resume_text[:10000]}
-
-Output (JSON only, no other text):"""
-            
-            # Try using OLLAMA Python client first (handles API differences automatically)
-            if OLLAMA_CLIENT_AVAILABLE:
-                try:
-                    import asyncio
-                    # OLLAMA client is synchronous, so we'll run it in executor
-                    loop = asyncio.get_event_loop()
-                    def _generate():
-                        # Create fresh OLLAMA client for each request
-                        # Remove http:// or https:// from host for OLLAMA client
-                        host = self.ollama_host.replace("http://", "").replace("https://", "").replace(":11434", "")
-                        client = ollama.Client(host=host if host else None)
-                        response = client.generate(
-                            model=model_to_use,
-                            prompt=prompt,
-                            options={
-                                "temperature": 0.1,
-                                "top_p": 0.9,
-                            }
-                        )
-                        # OLLAMA Python client returns response in "response" field
-                        response_text = response.get("response", "") or response.get("text", "")
-                        return {"response": response_text}
-                    
-                    result = await loop.run_in_executor(None, _generate)
-                    logger.info("Successfully used OLLAMA Python client")
-                except Exception as e:
-                    logger.warning(f"OLLAMA Python client failed, falling back to HTTP API: {e}", extra={"error": str(e)})
-                    result = None
-            else:
-                result = None
-            
-            # Fallback to HTTP API if Python client not available or failed
-            if result is None:
-                # Call OLLAMA API - create fresh client for each request
-                async with httpx.AsyncClient(timeout=Timeout(600.0)) as client:
-                    result = None
-                    last_error = None
-                    
-                    # Try 1: /api/generate (standard OLLAMA endpoint)
-                    try:
-                        response = await client.post(
-                            f"{self.ollama_host}/api/generate",
-                            json={
-                                "model": model_to_use,
-                                "prompt": prompt,
-                                "stream": False,
-                                "options": {
-                                    "temperature": 0.1,
-                                    "top_p": 0.9,
-                                }
-                            }
-                        )
-                        response.raise_for_status()
-                        result = response.json()
-                        # Extract response text from /api/generate format
-                        if "response" in result:
-                            result = {"response": result["response"]}
-                        elif "text" in result:
-                            result = {"response": result["text"]}
-                        logger.info("Successfully used /api/generate endpoint")
-                    except httpx.HTTPStatusError as e:
-                        if e.response.status_code != 404:
-                            raise
-                        last_error = e
-                        logger.warning("OLLAMA /api/generate returned 404, trying alternative endpoints")
-                
-                    # Try 2: /api/chat (newer OLLAMA versions)
-                    if result is None:
-                        try:
-                            logger.debug(
-                                f"Attempting OLLAMA /api/chat with model: {model_to_use}",
-                                extra={"model": model_to_use, "endpoint": "/api/chat"}
-                            )
-                            response = await client.post(
-                                f"{self.ollama_host}/api/chat",
-                                json={
-                                    "model": model_to_use,
-                                    "messages": [
-                                        {"role": "user", "content": prompt}
-                                    ],
-                                    "stream": False,
-                                    "options": {
-                                        "temperature": 0.1,
-                                        "top_p": 0.9,
-                                    }
-                                }
-                            )
-                            logger.debug(
-                                f"OLLAMA /api/chat response status: {response.status_code}",
-                                extra={"status_code": response.status_code}
-                            )
-                            response.raise_for_status()
-                            result = response.json()
-                            # Extract response from chat format
-                            if "message" in result and "content" in result["message"]:
-                                result = {"response": result["message"]["content"]}
-                            else:
-                                raise ValueError("Unexpected response format from OLLAMA chat API")
-                            logger.info("Successfully used /api/chat endpoint")
-                        except httpx.HTTPStatusError as e:
-                            error_details = {
-                                "status_code": e.response.status_code if e.response else None,
-                                "response_text": e.response.text[:500] if e.response else None,
-                                "endpoint": "/api/chat",
-                                "model": model_to_use,
-                            }
-                            if e.response.status_code != 404:
-                                logger.error(
-                                    f"OLLAMA /api/chat failed with status {e.response.status_code}: {e}",
-                                    extra=error_details,
-                                    exc_info=True
-                                )
-                                raise
-                            last_error = e
-                            logger.warning(
-                                "OLLAMA /api/chat returned 404, trying alternative endpoints",
-                                extra=error_details
-                            )
-                        except httpx.RequestError as e:
-                            last_error = e
-                            logger.error(
-                                f"Request error calling OLLAMA /api/chat: {e}",
-                                extra={
-                                    "error": str(e),
-                                    "error_type": type(e).__name__,
-                                    "endpoint": "/api/chat",
-                                    "model": model_to_use,
-                                },
-                                exc_info=True
-                            )
-                
-                    # Try 3: Direct model endpoint (some OLLAMA setups)
-                    if result is None:
-                        try:
-                            logger.debug(
-                                f"Attempting simplified OLLAMA /api/generate with model: {model_to_use}",
-                                extra={"model": model_to_use, "endpoint": "/api/generate (simplified)"}
-                            )
-                            # Some OLLAMA setups use /api/generate with different structure
-                            response = await client.post(
-                                f"{self.ollama_host}/api/generate",
-                                json={
-                                    "model": model_to_use,
-                                    "prompt": prompt,
-                                    "stream": False
-                                }
-                            )
-                            logger.debug(
-                                f"OLLAMA simplified /api/generate response status: {response.status_code}",
-                                extra={"status_code": response.status_code}
-                            )
-                            response.raise_for_status()
-                            result = response.json()
-                            # Extract response text from /api/generate format
-                            if "response" in result:
-                                result = {"response": result["response"]}
-                            elif "text" in result:
-                                result = {"response": result["text"]}
-                            logger.info("Successfully used simplified /api/generate endpoint")
-                        except Exception as e:
-                            last_error = e
-                            logger.warning(
-                                f"Simplified /api/generate also failed: {e}",
-                                extra={
-                                    "error": str(e),
-                                    "error_type": type(e).__name__,
-                                    "endpoint": "/api/generate (simplified)",
-                                    "model": model_to_use,
-                                },
-                                exc_info=True
-                            )
-                
-                    if result is None:
-                        # Final attempt: try using OLLAMA Python client if available
-                        if OLLAMA_CLIENT_AVAILABLE:
-                            try:
-                                import asyncio
-                                loop = asyncio.get_event_loop()
-                                def _generate():
-                                    # Remove http:// or https:// from host for OLLAMA client
-                                    host = self.ollama_host.replace("http://", "").replace("https://", "")
-                                    client = ollama.Client(host=host)
-                                    response = client.generate(
-                                        model=model_to_use,
-                                        prompt=prompt,
-                                        options={"temperature": 0.1, "top_p": 0.9}
-                                    )
-                                    return {"response": response.get("response", "")}
-                                result = await loop.run_in_executor(None, _generate)
-                                logger.info("Successfully used OLLAMA Python client as fallback")
-                            except Exception as e:
-                                logger.error(f"OLLAMA Python client also failed: {e}", extra={"error": str(e)})
-                                last_error = e
-                        
-                        if result is None:
-                            error_summary = {
-                                "ollama_host": self.ollama_host,
-                                "model_attempted": model_to_use,
-                                "available_model": available_model or "unknown",
-                                "last_error_type": type(last_error).__name__ if last_error else None,
-                                "last_error": str(last_error) if last_error else None,
-                            }
-                            if last_error and hasattr(last_error, "response"):
-                                error_summary["last_status_code"] = last_error.response.status_code if last_error.response else None
-                                error_summary["last_response_text"] = last_error.response.text[:500] if last_error.response else None
-                            
-                            logger.error(
-                                "All OLLAMA API endpoints failed",
-                                extra=error_summary,
-                                exc_info=True
-                            )
-                            raise RuntimeError(
-                                f"OLLAMA API endpoints not found. Tried /api/generate and /api/chat. "
-                                f"OLLAMA is running at {self.ollama_host} but endpoints return 404. "
-                                f"Please install OLLAMA Python client: pip install ollama "
-                                f"or check your OLLAMA installation and version. "
-                                f"Available model: {available_model or 'unknown'}. "
-                                f"Last error: {last_error}"
-                            )
-                
-                # Extract JSON from response - handle different OLLAMA response formats
-                raw_output = ""
-                if isinstance(result, dict):
-                    # Try different possible response fields
-                    raw_output = (
-                        result.get("response", "") or 
-                        result.get("text", "") or 
-                        result.get("content", "") or
-                        str(result.get("message", {}).get("content", "")) if isinstance(result.get("message"), dict) else ""
-                    )
-                else:
-                    raw_output = str(result)
-                
-                # Log raw output for debugging (first 500 chars)
-                logger.debug(
-                    f"Raw OLLAMA response for {filename}",
-                    extra={"raw_output_preview": raw_output[:500]}
-                )
-                
-                parsed_data = self._extract_json(raw_output)
-                
-                # Ensure designation field exists (even if null)
-                if "designation" not in parsed_data:
-                    parsed_data["designation"] = None
-                
-                # Preserve designation exactly as written (no normalization per requirements)
-                # Just ensure it's a string or null
-                if parsed_data["designation"] is not None:
-                    parsed_data["designation"] = str(parsed_data["designation"]).strip()
-                    if not parsed_data["designation"]:
-                        parsed_data["designation"] = None
-                
-                logger.info(
-                    f"Parsed resume: {filename}",
-                    extra={
-                        "file_name": filename, 
-                        "designation": parsed_data.get("designation"),
-                        "raw_output_length": len(raw_output)
-                    }
-                )
-                
-                return parsed_data
-                
-        except httpx.HTTPError as e:
-            error_details = {
-                "error": str(e),
-                "error_type": type(e).__name__,
-                "ollama_host": self.ollama_host,
-                "model": model_to_use,
-                "prompt_length": len(prompt),
-            }
-            if hasattr(e, "request"):
-                error_details["request_url"] = str(e.request.url) if e.request else None
-                error_details["request_method"] = e.request.method if e.request else None
-            if hasattr(e, "response"):
-                error_details["response_status"] = e.response.status_code if e.response else None
-                error_details["response_text"] = e.response.text[:500] if e.response else None
-            logger.error(
-                f"HTTP error calling OLLAMA: {e}",
-                extra=error_details,
-                exc_info=True
-            )
-            raise RuntimeError(f"Failed to parse resume with LLM: {e}")
-        except Exception as e:
-            logger.error(
-                f"Error parsing resume: {e}",
-                extra={
-                    "error": str(e),
-                    "error_type": type(e).__name__,
-                    "ollama_host": self.ollama_host,
-                    "model": model_to_use,
-                },
-                exc_info=True
-            )
-            raise
-    
-    def _extract_json(self, text: str) -> Dict:
-        """Extract JSON object from LLM response."""
-        if not text:
-            logger.warning("Empty response from LLM")
-            return {"designation": None}
-        
-        # Clean the text - remove markdown code blocks if present
-        cleaned_text = text.strip()
-        if cleaned_text.startswith("```json"):
-            cleaned_text = cleaned_text[7:]
-        elif cleaned_text.startswith("```"):
-            cleaned_text = cleaned_text[3:]
-        if cleaned_text.endswith("```"):
-            cleaned_text = cleaned_text[:-3]
-        cleaned_text = cleaned_text.strip()
-        
-        # Try to find JSON in the response (look for { ... } pattern with proper nesting)
-        # This regex finds the first { and matches until the corresponding }
-        json_match = re.search(r'\{[^{}]*(?:\{[^{}]*\}[^{}]*)*\}', cleaned_text, re.DOTALL)
-        if json_match:
-            try:
-                json_str = json_match.group()
-                parsed = json.loads(json_str)
-                logger.debug(f"Successfully extracted JSON: {parsed}")
-                return parsed
-            except json.JSONDecodeError as e:
-                # Try a more aggressive extraction - find all { } pairs
-                try:
-                    # Find the first { and try to match balanced braces
-                    start_idx = cleaned_text.find('{')
-                    if start_idx != -1:
-                        brace_count = 0
-                        end_idx = start_idx
-                        for i in range(start_idx, len(cleaned_text)):
-                            if cleaned_text[i] == '{':
-                                brace_count += 1
-                            elif cleaned_text[i] == '}':
-                                brace_count -= 1
-                                if brace_count == 0:
-                                    end_idx = i + 1
-                                    break
-                        if brace_count == 0:
-                            json_str = cleaned_text[start_idx:end_idx]
-                            parsed = json.loads(json_str)
-                            logger.debug(f"Successfully extracted JSON with balanced braces: {parsed}")
-                            return parsed
-                except (json.JSONDecodeError, ValueError) as e2:
-                    logger.warning(f"Failed to parse extracted JSON: {e2}", extra={"json_str": json_str[:200] if 'json_str' in locals() else 'N/A'})
-        
-        # Try parsing the whole cleaned text
-        try:
-            parsed = json.loads(cleaned_text)
-            logger.debug(f"Successfully parsed full text as JSON: {parsed}")
-            return parsed
-        except json.JSONDecodeError:
-            pass
-        
-        # If all parsing fails, log the issue
-        logger.warning(
-            "Failed to parse JSON from LLM response", 
-            extra={
-                "response_preview": text[:500],
-                "response_length": len(text)
-            }
-        )
-        # Return default structure with only designation
-        return {
-            "designation": None,
-        }
-
+            logger.error(f"Error extracting DOCX text: {e}", extra={"error": str(e)})
+            raise ValueError(f"Failed to extract text from DOCX: {e}")
 
