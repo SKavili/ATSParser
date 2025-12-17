@@ -3,7 +3,7 @@ import gc
 from typing import Optional
 from fastapi import UploadFile, HTTPException
 from sqlalchemy.ext.asyncio import AsyncSession
-
+ 
 from app.services.resume_parser import ResumeParser
 from app.services.embedding_service import EmbeddingService
 from app.services.vector_db_service import VectorDBService
@@ -26,13 +26,13 @@ from app.constants.resume_status import (
     FAILURE_EMPTY_FILE, FAILURE_INSUFFICIENT_TEXT, FAILURE_EXTRACTION_ERROR,
     FAILURE_DESIGNATION_EXTRACTION_FAILED, FAILURE_DATABASE_ERROR, FAILURE_UNKNOWN_ERROR
 )
-
+ 
 logger = get_logger(__name__)
-
-
+ 
+ 
 class ResumeController:
     """Controller for handling resume upload and processing."""
-
+ 
     def __init__(
         self,
         resume_parser: ResumeParser,
@@ -53,21 +53,21 @@ class ResumeController:
         self.name_service = NameService(session)
         self.domain_service = DomainService(session)
         self.education_service = EducationService(session)
-    
+   
     def _parse_extract_modules(self, extract_modules: Optional[str]) -> set:
         """
         Parse extract_modules parameter and return set of modules to extract.
-        
+       
         Args:
             extract_modules: String like "all" or "designation,skills,name" or "1,2,3"
-        
+       
         Returns:
             Set of module names to extract
         """
         if not extract_modules or extract_modules.lower().strip() == "all":
             # Extract all modules
             return {"designation", "name", "email", "mobile", "experience", "domain", "education", "skills"}
-        
+       
         # Map numbers to module names
         module_map = {
             "1": "designation",
@@ -79,11 +79,11 @@ class ResumeController:
             "7": "education",
             "8": "skills",
         }
-        
+       
         # Parse comma-separated list
         modules = set()
         parts = [p.strip().lower() for p in extract_modules.split(",")]
-        
+       
         for part in parts:
             if not part:
                 continue
@@ -95,9 +95,9 @@ class ResumeController:
                 modules.add(part)
             else:
                 logger.warning(f"Unknown module option: {part}, ignoring")
-        
+       
         return modules
-    
+   
     async def upload_resume(
         self,
         file: UploadFile,
@@ -108,7 +108,7 @@ class ResumeController:
         try:
             # Sanitize filename early
             safe_filename = sanitize_filename(file.filename or "resume.pdf")
-            
+           
             # Validate file type
             allowed_extensions = {'.pdf', '.docx', '.doc', '.txt'}
             file_ext = '.' + file.filename.split('.')[-1].lower() if '.' in file.filename else ''
@@ -135,12 +135,12 @@ class ResumeController:
                     )
                 except Exception as e:
                     logger.error(f"Failed to create record for invalid file: {e}", extra={"error": str(e)})
-                
+               
                 raise HTTPException(
                     status_code=400,
                     detail=f"Invalid file type. Allowed: {', '.join(allowed_extensions)}"
                 )
-            
+           
             # Read file content with size limit check
             file_content = await file.read()
             if not file_content:
@@ -166,9 +166,9 @@ class ResumeController:
                     )
                 except Exception as e:
                     logger.error(f"Failed to create record for empty file: {e}", extra={"error": str(e)})
-                
+               
                 raise HTTPException(status_code=400, detail="Empty file")
-            
+           
             # Check file size limit (memory optimization)
             file_size_mb = len(file_content) / (1024 * 1024)
             if file_size_mb > settings.max_file_size_mb:
@@ -194,12 +194,12 @@ class ResumeController:
                     )
                 except Exception as e:
                     logger.error(f"Failed to create record for large file: {e}", extra={"error": str(e)})
-                
+               
                 raise HTTPException(
                     status_code=400,
                     detail=f"File too large: {file_size_mb:.2f}MB. Maximum allowed: {settings.max_file_size_mb}MB"
                 )
-            
+           
             # Check if file with same filename already exists
             existing_resume = await self.resume_repo.get_by_filename(safe_filename)
             if existing_resume:
@@ -223,7 +223,7 @@ class ResumeController:
                     status=existing_resume.status or STATUS_PENDING,
                     created_at=existing_resume.created_at.isoformat() if existing_resume.created_at else "",
                 )
-            
+           
             # Prepare database record first (before text extraction)
             # This ensures resume_metadata exists for error handling
             candidate_name = None
@@ -231,7 +231,7 @@ class ResumeController:
             if metadata:
                 candidate_name = metadata.candidate_name
                 job_role = metadata.job_role
-            
+           
             db_record = {
                 "candidatename": candidate_name,
                 "jobrole": job_role,
@@ -245,10 +245,10 @@ class ResumeController:
                 "skillset": "",
                 "status": STATUS_PROCESSING,  # Set to processing when starting
             }
-            
+           
             # Save to database first (before text extraction for proper error handling)
             resume_metadata = await self.resume_repo.create(db_record)
-            
+           
             # Extract text from file
             try:
                 resume_text = await self.resume_parser.extract_text(file_content, safe_filename)
@@ -266,12 +266,12 @@ class ResumeController:
                     status_code=400,
                     detail=f"Failed to extract text from file: {str(e)}"
                 )
-            
+           
             # Clear file_content from memory early (memory optimization)
             if settings.enable_memory_cleanup:
                 del file_content
                 gc.collect()
-            
+           
             if not resume_text or len(resume_text.strip()) < 50:
                 # Update status to failed for insufficient text
                 await self.resume_repo.update(
@@ -279,7 +279,7 @@ class ResumeController:
                     {"status": get_failure_status(FAILURE_INSUFFICIENT_TEXT)}
                 )
                 raise HTTPException(status_code=400, detail="Could not extract sufficient text from resume")
-            
+           
             # Limit text length to prevent excessive memory usage
             if len(resume_text) > settings.max_resume_text_length:
                 logger.warning(
@@ -287,28 +287,28 @@ class ResumeController:
                     extra={"original_length": len(resume_text), "truncated_length": settings.max_resume_text_length}
                 )
                 resume_text = resume_text[:settings.max_resume_text_length]
-            
+           
             # Parse extract_modules parameter
             # Accepts: "all" or comma-separated list like "designation,skills,name"
             # Valid options: designation, name, email, mobile, experience, domain, education, skills
             modules_to_extract = self._parse_extract_modules(extract_modules)
-            
+           
             # Extract and save selected profile fields using dedicated services (SEQUENTIAL)
             # These run one by one - if any fails, the resume upload still succeeds
             logger.info(
-                f"🚀 STARTING PROFILE EXTRACTION PROCESS for resume ID {resume_metadata.id}",
+                f"[START] PROFILE EXTRACTION PROCESS for resume ID {resume_metadata.id}",
                 extra={
-                    "resume_id": resume_metadata.id, 
+                    "resume_id": resume_metadata.id,
                     "file_name": safe_filename,
                     "modules_to_extract": list(modules_to_extract)
                 }
             )
-            print(f"\n🚀 STARTING PROFILE EXTRACTION PROCESS")
+            print(f"\n[START] PROFILE EXTRACTION PROCESS")
             print(f"   Resume ID: {resume_metadata.id}")
             print(f"   Filename: {safe_filename}")
             print(f"   Modules to extract: {', '.join(sorted(modules_to_extract)) if modules_to_extract else 'None'}")
             print(f"   [SESSION ISOLATION] Each extraction uses a fresh, isolated LLM context")
-            
+           
             # Sequential extraction with session isolation
             # Each extraction creates a fresh HTTP client and includes system messages
             # to ensure no context bleeding between extractions
@@ -321,8 +321,8 @@ class ResumeController:
                         filename=safe_filename
                     )
                 except Exception as e:
-                    logger.error(f"❌ DESIGNATION EXTRACTION FAILED: {e}", extra={"resume_id": resume_metadata.id, "error": str(e)})
-            
+                    logger.error(f"[ERROR] DESIGNATION EXTRACTION FAILED: {e}", extra={"resume_id": resume_metadata.id, "error": str(e)})
+           
             # Extract name (2)
             if "name" in modules_to_extract:
                 try:
@@ -332,8 +332,8 @@ class ResumeController:
                         filename=safe_filename
                     )
                 except Exception as e:
-                    logger.error(f"❌ NAME EXTRACTION FAILED: {e}", extra={"resume_id": resume_metadata.id, "error": str(e)})
-            
+                    logger.error(f"[ERROR] NAME EXTRACTION FAILED: {e}", extra={"resume_id": resume_metadata.id, "error": str(e)})
+           
             # Extract email (3)
             if "email" in modules_to_extract:
                 try:
@@ -343,8 +343,8 @@ class ResumeController:
                         filename=safe_filename
                     )
                 except Exception as e:
-                    logger.error(f"❌ EMAIL EXTRACTION FAILED: {e}", extra={"resume_id": resume_metadata.id, "error": str(e)})
-            
+                    logger.error(f"[ERROR] EMAIL EXTRACTION FAILED: {e}", extra={"resume_id": resume_metadata.id, "error": str(e)})
+           
             # Extract mobile (4)
             if "mobile" in modules_to_extract:
                 try:
@@ -354,8 +354,8 @@ class ResumeController:
                         filename=safe_filename
                     )
                 except Exception as e:
-                    logger.error(f"❌ MOBILE EXTRACTION FAILED: {e}", extra={"resume_id": resume_metadata.id, "error": str(e)})
-            
+                    logger.error(f"[ERROR] MOBILE EXTRACTION FAILED: {e}", extra={"resume_id": resume_metadata.id, "error": str(e)})
+           
             # Extract experience (5)
             if "experience" in modules_to_extract:
                 try:
@@ -365,8 +365,8 @@ class ResumeController:
                         filename=safe_filename
                     )
                 except Exception as e:
-                    logger.error(f"❌ EXPERIENCE EXTRACTION FAILED: {e}", extra={"resume_id": resume_metadata.id, "error": str(e)})
-            
+                    logger.error(f"[ERROR] EXPERIENCE EXTRACTION FAILED: {e}", extra={"resume_id": resume_metadata.id, "error": str(e)})
+           
             # Extract domain (6)
             if "domain" in modules_to_extract:
                 try:
@@ -376,8 +376,8 @@ class ResumeController:
                         filename=safe_filename
                     )
                 except Exception as e:
-                    logger.error(f"❌ DOMAIN EXTRACTION FAILED: {e}", extra={"resume_id": resume_metadata.id, "error": str(e)})
-            
+                    logger.error(f"[ERROR] DOMAIN EXTRACTION FAILED: {e}", extra={"resume_id": resume_metadata.id, "error": str(e)})
+           
             # Extract education (7)
             if "education" in modules_to_extract:
                 try:
@@ -387,8 +387,8 @@ class ResumeController:
                         filename=safe_filename
                     )
                 except Exception as e:
-                    logger.error(f"❌ EDUCATION EXTRACTION FAILED: {e}", extra={"resume_id": resume_metadata.id, "error": str(e)})
-            
+                    logger.error(f"[ERROR] EDUCATION EXTRACTION FAILED: {e}", extra={"resume_id": resume_metadata.id, "error": str(e)})
+           
             # Extract skills (8)
             if "skills" in modules_to_extract:
                 try:
@@ -398,24 +398,24 @@ class ResumeController:
                         filename=safe_filename
                     )
                 except Exception as e:
-                    logger.error(f"❌ SKILLS EXTRACTION FAILED: {e}", extra={"resume_id": resume_metadata.id, "error": str(e)})
-            
+                    logger.error(f"[ERROR] SKILLS EXTRACTION FAILED: {e}", extra={"resume_id": resume_metadata.id, "error": str(e)})
+           
             # All extractions completed - session contexts are automatically cleared
             # Each extraction used a fresh HTTP client with isolated context
             logger.info(
-                f"✅ PROFILE EXTRACTION PROCESS COMPLETED for resume ID {resume_metadata.id}",
+                f"[SUCCESS] PROFILE EXTRACTION PROCESS COMPLETED for resume ID {resume_metadata.id}",
                 extra={"resume_id": resume_metadata.id, "file_name": safe_filename}
             )
-            print(f"\n✅ PROFILE EXTRACTION PROCESS COMPLETED")
+            print(f"\n[SUCCESS] PROFILE EXTRACTION PROCESS COMPLETED")
             print(f"   Resume ID: {resume_metadata.id}")
             print(f"   [SESSION CLEARED] All extraction contexts have been isolated and cleared")
-            
+           
             # Final refresh to get all updated fields from database
             await self.resume_repo.session.refresh(resume_metadata)
-            
+           
             # Log all extracted fields for verification
             logger.info(
-                f"✅ PROFILE EXTRACTION COMPLETED for resume ID {resume_metadata.id}",
+                f"[SUCCESS] PROFILE EXTRACTION COMPLETED for resume ID {resume_metadata.id}",
                 extra={
                     "resume_id": resume_metadata.id,
                     "candidatename": resume_metadata.candidatename,
@@ -428,7 +428,7 @@ class ResumeController:
                     "skillset": resume_metadata.skillset[:100] if resume_metadata.skillset else None,
                 }
             )
-            print(f"\n✅ PROFILE EXTRACTION COMPLETED")
+            print(f"\n[SUCCESS] PROFILE EXTRACTION COMPLETED")
             print(f"   Resume ID: {resume_metadata.id}")
             print(f"   Name: {resume_metadata.candidatename}")
             print(f"   Designation: {resume_metadata.designation}")
@@ -439,56 +439,61 @@ class ResumeController:
             print(f"   Education: {resume_metadata.education[:50] if resume_metadata.education else None}...")
             print(f"   Skills: {resume_metadata.skillset[:50] if resume_metadata.skillset else None}...")
             print()
-            
-            # Generate embeddings for resume text
-            chunk_embeddings = await self.embedding_service.generate_chunk_embeddings(
-                resume_text,
-                metadata={
-                    "resume_id": resume_metadata.id,
-                    "filename": safe_filename,
-                    "candidate_name": candidate_name or "",
-                }
-            )
-            
-            # Store embeddings in vector DB
-            vectors_to_store = []
-            for chunk_data in chunk_embeddings:
-                vector_id = f"resume_{resume_metadata.id}_chunk_{chunk_data['chunk_index']}"
-                vectors_to_store.append({
-                    "id": vector_id,
-                    "embedding": chunk_data["embedding"],
-                    "metadata": {
-                        **chunk_data["metadata"],
-                        "type": "resume",  # Mark as resume vector
-                        "chunk_index": chunk_data["chunk_index"],
-                        "text_preview": chunk_data["text"][:200],
-                    }
-                })
-            
-            if vectors_to_store:
-                await self.vector_db.upsert_vectors(vectors_to_store)
-                logger.info(
-                    f"Stored {len(vectors_to_store)} embeddings for resume {resume_metadata.id}",
-                    extra={"resume_id": resume_metadata.id, "vector_count": len(vectors_to_store)}
-                )
-                # Clear embeddings from memory after storing
-                if settings.enable_memory_cleanup:
-                    del vectors_to_store
-                    del chunk_embeddings
-                    gc.collect()
-            
+           
+            # ============================================================
+            # EMBEDDINGS DISABLED - Commented out to avoid FAISS errors
+            # ============================================================
+            # # Generate embeddings for resume text
+            # chunk_embeddings = await self.embedding_service.generate_chunk_embeddings(
+            #     resume_text,
+            #     metadata={
+            #         "resume_id": resume_metadata.id,
+            #         "filename": safe_filename,
+            #         "candidate_name": candidate_name or "",
+            #     }
+            # )
+            #
+            # # Store embeddings in vector DB
+            # vectors_to_store = []
+            # for chunk_data in chunk_embeddings:
+            #     vector_id = f"resume_{resume_metadata.id}_chunk_{chunk_data['chunk_index']}"
+            #     vectors_to_store.append({
+            #         "id": vector_id,
+            #         "embedding": chunk_data["embedding"],
+            #         "metadata": {
+            #             **chunk_data["metadata"],
+            #             "type": "resume",  # Mark as resume vector
+            #             "chunk_index": chunk_data["chunk_index"],
+            #             "text_preview": chunk_data["text"][:200],
+            #         }
+            #     })
+            #
+            # if vectors_to_store:
+            #     await self.vector_db.upsert_vectors(vectors_to_store)
+            #     logger.info(
+            #         f"Stored {len(vectors_to_store)} embeddings for resume {resume_metadata.id}",
+            #         extra={"resume_id": resume_metadata.id, "vector_count": len(vectors_to_store)}
+            #     )
+            #     # Clear embeddings from memory after storing
+            #     if settings.enable_memory_cleanup:
+            #         del vectors_to_store
+            #         del chunk_embeddings
+            #         gc.collect()
+           
+            logger.info(f"Embeddings disabled - skipping vector generation for resume {resume_metadata.id}")
+           
             # Update status to completed on success
             await self.resume_repo.update(
                 resume_metadata.id,
                 {"status": STATUS_COMPLETED}
             )
-            
+           
             # Final refresh to ensure all extracted fields are loaded from database
             await self.resume_repo.session.refresh(resume_metadata)
-            
+           
             # Verify all fields are updated (log for debugging)
             logger.info(
-                f"📊 FINAL DATABASE STATE for resume ID {resume_metadata.id}",
+                f"[RESULT] FINAL DATABASE STATE for resume ID {resume_metadata.id}",
                 extra={
                     "resume_id": resume_metadata.id,
                     "candidatename": resume_metadata.candidatename,
@@ -502,7 +507,7 @@ class ResumeController:
                     "status": resume_metadata.status,
                 }
             )
-            
+           
             # Build response with all extracted fields
             return ResumeUploadResponse(
                 id=resume_metadata.id,
@@ -519,7 +524,7 @@ class ResumeController:
                 status=resume_metadata.status or STATUS_PENDING,
                 created_at=resume_metadata.created_at.isoformat() if resume_metadata.created_at else "",
             )
-        
+       
         except HTTPException:
             raise
         except Exception as e:
@@ -535,7 +540,7 @@ class ResumeController:
                         f"Failed to update status after error: {update_error}",
                         extra={"resume_id": resume_metadata.id, "error": str(update_error)}
                     )
-            
+           
             logger.error(
                 f"Error uploading resume: {e}",
                 extra={
