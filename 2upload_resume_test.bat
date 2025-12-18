@@ -2,7 +2,7 @@
 setlocal enabledelayedexpansion
 REM Script to test resume upload with multiple resume files from a folder
  
-set RESUME_FOLDER=C:\ATS\V200\ATSParser\app\Resumes
+set RESUME_FOLDER=D:\ATS_OLLAMA_DEC_18\ATSParser\Resumes
 set API_URL=http://localhost:8000/api/v1/upload-resume
  
 echo ========================================
