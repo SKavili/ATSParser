@@ -252,6 +252,22 @@ class ResumeController:
             # Extract text from file
             try:
                 resume_text = await self.resume_parser.extract_text(file_content, safe_filename)
+                
+                # ========== DEBUG: Check extracted text ==========
+                print("\n" + "="*80)
+                print("[DEBUG] EXTRACTED RESUME TEXT")
+                print("="*80)
+                print(f"Total text length: {len(resume_text)} characters")
+                print(f"First 2000 characters:")
+                print("-"*80)
+                print(resume_text[:2000])
+                print("-"*80)
+                print(f"Last 1000 characters:")
+                print("-"*80)
+                print(resume_text[-1000:] if len(resume_text) > 1000 else resume_text)
+                print("="*80 + "\n")
+                # ========== END DEBUG ==========
+                
             except Exception as e:
                 # Update status to failed for extraction error
                 await self.resume_repo.update(

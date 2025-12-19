@@ -10,6 +10,7 @@ import PyPDF2
 
 from app.utils.logging import get_logger
 from app.utils.safe_logger import safe_extra
+from app.utils.cleaning import normalize_text
 
 logger = get_logger(__name__)
 
@@ -95,7 +96,10 @@ class ResumeParser:
             text_parts = []
             for page in pdf_reader.pages:
                 text_parts.append(page.extract_text())
-            return "\n".join(text_parts)
+            raw_text = "\n".join(text_parts)
+            # Normalize whitespace (remove extra spaces, normalize line breaks)
+            normalized_text = normalize_text(raw_text) or raw_text
+            return normalized_text
         except Exception as e:
             logger.error(f"Error extracting PDF text: {e}", extra={"error": str(e)})
             raise ValueError(f"Failed to extract text from PDF: {e}")
@@ -108,7 +112,10 @@ class ResumeParser:
             text_parts = []
             for paragraph in doc.paragraphs:
                 text_parts.append(paragraph.text)
-            return "\n".join(text_parts)
+            raw_text = "\n".join(text_parts)
+            # Normalize whitespace (remove extra spaces, normalize line breaks)
+            normalized_text = normalize_text(raw_text) or raw_text
+            return normalized_text
         except Exception as e:
             logger.error(f"Error extracting DOCX text: {e}", extra={"error": str(e)})
             raise ValueError(f"Failed to extract text from DOCX: {e}")
@@ -145,19 +152,21 @@ class ResumeParser:
                     if parsed and 'content' in parsed and parsed['content']:
                         text = parsed['content'].strip()
                         if text:
+                            # Normalize whitespace (remove extra spaces, normalize line breaks)
+                            normalized_text = normalize_text(text) or text
                             success_msg = (
                                 "$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$\n"
                                 "$$$$$$$$$$$$$$$$$$$$$$  APACHE TIKA SUCCESS  $$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$\n"
-                                f"$$$  Successfully extracted {len(text)} characters using Apache Tika\n"
+                                f"$$$  Successfully extracted {len(normalized_text)} characters using Apache Tika\n"
                                 "$$$  METHOD USED: Apache Tika (tika-python library)\n"
                                 "$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$"
                             )
                             print(success_msg)
                             logger.info(
                                 success_msg,
-                                extra={"extraction_method": "apache_tika", "text_length": len(text)}
+                                extra={"extraction_method": "apache_tika", "text_length": len(normalized_text)}
                             )
-                            return text
+                            return normalized_text
                 except Exception as tika_error:
                     error_msg = f"Apache Tika extraction failed: {tika_error}"
                     print(f"[WARNING] {error_msg}")
@@ -238,19 +247,21 @@ class ResumeParser:
                         timeout=30
                     )
                     if result.returncode == 0 and result.stdout.strip():
+                        # Normalize whitespace (remove extra spaces, normalize line breaks)
+                        normalized_text = normalize_text(result.stdout) or result.stdout
                         success_msg = (
                             "$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$\n"
                             "$$$$$$$$$$$$$$$$$$$$$$  ANTIWORD SUCCESS  $$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$\n"
-                            f"$$$  Successfully extracted {len(result.stdout)} characters using antiword\n"
+                            f"$$$  Successfully extracted {len(normalized_text)} characters using antiword\n"
                             "$$$  METHOD USED: antiword (command-line tool)\n"
                             "$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$"
                         )
                         print(success_msg)
                         logger.info(
                             success_msg,
-                            extra={"extraction_method": "antiword", "text_length": len(result.stdout)}
+                            extra={"extraction_method": "antiword", "text_length": len(normalized_text)}
                         )
-                        return result.stdout
+                        return normalized_text
                 except subprocess.TimeoutExpired:
                     logger.warning("antiword extraction timed out")
                 except Exception as aw_error:
@@ -274,8 +285,10 @@ class ResumeParser:
                             text_parts.append(" | ".join(row_text))
                 extracted_text = "\n".join(text_parts)
                 if extracted_text.strip():
+                    # Normalize whitespace (remove extra spaces, normalize line breaks)
+                    normalized_text = normalize_text(extracted_text) or extracted_text
                     logger.info("Successfully extracted .doc file using python-docx fallback")
-                    return extracted_text
+                    return normalized_text
             except Exception as fallback_error:
                 logger.debug(f"python-docx fallback failed: {fallback_error}")
             
@@ -312,8 +325,10 @@ class ResumeParser:
                         ole.close()
                         extracted_text = "\n".join(text_chunks)
                         if extracted_text.strip():
+                            # Normalize whitespace (remove extra spaces, normalize line breaks)
+                            normalized_text = normalize_text(extracted_text) or extracted_text
                             logger.info("Successfully extracted .doc file using olefile")
-                            return extracted_text
+                            return normalized_text
                     ole.close()
                 except Exception as ole_error:
                     logger.debug(f"olefile extraction failed: {ole_error}")
