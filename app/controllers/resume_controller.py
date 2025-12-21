@@ -498,14 +498,30 @@ class ResumeController:
            
             logger.info(f"Embeddings disabled - skipping vector generation for resume {resume_metadata.id}")
            
-            # Update status to completed on success
-            await self.resume_repo.update(
-                resume_metadata.id,
-                {"status": STATUS_COMPLETED}
-            )
-           
+            # Update status to completed on success (always update, even if some extractions failed)
+            try:
+                await self.resume_repo.update(
+                    resume_metadata.id,
+                    {"status": STATUS_COMPLETED}
+                )
+                logger.info(
+                    f"✅ Status updated to COMPLETED for resume ID {resume_metadata.id}",
+                    extra={"resume_id": resume_metadata.id}
+                )
+            except Exception as status_error:
+                logger.error(
+                    f"❌ Failed to update status to COMPLETED: {status_error}",
+                    extra={"resume_id": resume_metadata.id, "error": str(status_error)}
+                )
+            
             # Final refresh to ensure all extracted fields are loaded from database
-            await self.resume_repo.session.refresh(resume_metadata)
+            try:
+                await self.resume_repo.session.refresh(resume_metadata)
+            except Exception as refresh_error:
+                logger.warning(
+                    f"Failed to refresh resume metadata: {refresh_error}",
+                    extra={"resume_id": resume_metadata.id}
+                )
            
             # Verify all fields are updated (log for debugging)
             logger.info(

@@ -79,4 +79,23 @@ class ResumeRepository:
         await self.session.refresh(resume)
         logger.info(f"Updated resume record: id={resume_id}, fields: {list(update_data.keys())}")
         return resume
+    
+    async def get_resumes_with_null_email_or_mobile(self, limit: Optional[int] = None) -> List[ResumeMetadata]:
+        """
+        Get resumes that have NULL email or NULL mobile.
+        Useful for reprocessing resumes that failed to extract contact info.
+        
+        Args:
+            limit: Optional limit on number of results
+        
+        Returns:
+            List of ResumeMetadata records with NULL email or mobile
+        """
+        query = select(ResumeMetadata).where(
+            (ResumeMetadata.email.is_(None)) | (ResumeMetadata.mobile.is_(None))
+        )
+        if limit:
+            query = query.limit(limit)
+        result = await self.session.execute(query)
+        return list(result.scalars().all())
 
