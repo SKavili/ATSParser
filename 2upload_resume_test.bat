@@ -1,8 +1,13 @@
 @echo off
 setlocal enabledelayedexpansion
+
 REM Script to test resume upload with multiple resume files from a folder
- 
-set RESUME_FOLDER=D:\ATS_OLLAMA_DEC_18\ATSParser\Resumes
+
+REM Get directory where this .bat file exists
+set BASE_DIR=%~dp0
+
+REM Set resume folder relative to project
+set RESUME_FOLDER=%BASE_DIR%Resumes
 set API_URL=http://localhost:8000/api/v1/upload-resume
  
 echo ========================================

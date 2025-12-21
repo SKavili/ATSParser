@@ -151,9 +151,257 @@ class MobileExtractor:
         )
         return {"mobile": None}
     
+    def _extract_mobile_from_header(self, text: str) -> Optional[str]:
+        """
+        Specialized extraction for phone numbers in header section.
+        Handles formats like (757)606-0446 where there's no space after closing parenthesis.
+        This is a common format in resume headers.
+        
+        Examples handled:
+        - (757)606-0446
+        - phone num:(757)606-0446
+        - |phone num:(757)606-0446|Email:...|
+        - (757) 606-0446 (with space)
+        
+        Args:
+            text: The resume text (should be header section, first 2000 chars)
+        
+        Returns:
+            Extracted phone number or None if not found
+        """
+        if not text:
+            return None
+        
+        # Pattern for (757)606-0446 format - no space after closing parenthesis
+        # Matches: (123)456-7890, (123) 456-7890, (123)4567890, etc.
+        # Also handles pipes: |phone num:(757)606-0446| and bullet points: • (971) 282-1140 •
+        header_patterns = [
+            # Format: |phone num:(757)606-0446| or |phone num:(757)606 -0446| - with pipes and label
+            # Handles spaces before dash: "|phone num: (757)606 -0446 |"
+            re.compile(r'\|?\s*(?:phone|mobile|tel|cell)\s*(?:num|number)?\s*:?\s*\(([0-9]{3})\)\s*([0-9]{3})\s*[-.\s]?\s*([0-9]{4})\s*\|?', re.IGNORECASE),
+            # Format: | ( 470 ) 315 -3949 | - with pipes, spaces inside parentheses and around dash
+            # Handles: "Atlanta, GA 98052 | ( 470 ) 315 -3949 | carlottahayes14@gmail.com"
+            re.compile(r'\|?\s*\(\s*([0-9]{3})\s*\)\s*([0-9]{3})\s+[-.\s]?\s*([0-9]{4})\s*\|?'),
+            # Format: |(757)606-0446| or |(732) 798 -0702| or | 678 -982-0122 | - with pipes, no label
+            # Handles: "dhanush29.putti@gmail.com |(732) 798 -0702 |" (space before dash)
+            # Handles: "Armand.Kalunga@gmail.com | 678 -982-0122 |" (no parentheses, space before dash)
+            re.compile(r'\|?\s*\(?([0-9]{3})\)?\s*([0-9]{3})\s*[-.\s]?\s*([0-9]{4})\s*\|?'),
+            # Format: | (202) 820 -1280 | - with pipes and spaces before dash
+            # Handles: "| (202) 820 -1280 | meazat29@gmail.com |"
+            re.compile(r'\|?\s*\(([0-9]{3})\)\s+([0-9]{3})\s+[-.\s]?\s*([0-9]{4})\s*\|?'),
+            # Format: • (971) 282-1140 • or • (971) 282 -1140 • - with bullet point separator
+            # Handles: "Portland, OR 97229 • michael.sanganh.ho@gmail.com • (971) 282 -1140"
+            re.compile(r'[•·]\s*\(([0-9]{3})\)\s*([0-9]{3})\s*[-.\s]?\s*([0-9]{4})\s*[•·]?'),
+            # Format: phone num:(757)606-0446 - without pipes but with label
+            re.compile(r'(?:phone|mobile|tel|cell)\s*(?:num|number)?\s*:\(([0-9]{3})\)([0-9]{3})[-.\s]?([0-9]{4})', re.IGNORECASE),
+            # Format: (251) 243-3892 - parentheses with space after, then space before dash
+            # Handles: "(251) 243-3892" from resume
+            re.compile(r'\(([0-9]{3})\)\s+([0-9]{3})\s*[-.\s]?\s*([0-9]{4})\b'),
+            # Format: ( 470 ) 315 -3949 - parentheses with spaces inside, then space before dash
+            # Handles: "( 470 ) 315 -3949" (spaces inside parentheses, space before dash)
+            re.compile(r'\(\s*([0-9]{3})\s*\)\s*([0-9]{3})\s+[-.\s]?\s*([0-9]{4})\b'),
+            # Format: (678) -545-9293 - parentheses with space after, then space and dash
+            # Handles: "Phone : (678) -545-9293" (space after closing parenthesis, space before dash)
+            re.compile(r'\(([0-9]{3})\)\s+[-.\s]?\s*([0-9]{3})[-.\s]?([0-9]{4})\b'),
+            # Format: (251) 243-3892 - parentheses with space after, then space before dash
+            # Handles: "(251) 243-3892" from resume (space after parentheses, space before dash)
+            re.compile(r'\(([0-9]{3})\)\s+([0-9]{3})\s+[-.\s]?\s*([0-9]{4})\b'),
+            # Format: (757)606-0446 or (757)606 -0446 - parentheses with optional space before dash
+            re.compile(r'\(([0-9]{3})\)\s*([0-9]{3})\s*[-.\s]?\s*([0-9]{4})\b'),
+            # Format: (757) 606-0446 or (757) 606 -0446 - parentheses with space, optional space before dash
+            re.compile(r'\(([0-9]{3})\)\s+([0-9]{3})\s*[-.\s]?\s*([0-9]{4})\b'),
+            # Format: (517)-528-5480 - dash immediately after closing parenthesis
+            # Handles: "(517)-528-5480" (dash after closing parenthesis, no space)
+            re.compile(r'\(([0-9]{3})\)\s*[-]\s*([0-9]{3})[-.\s]?([0-9]{4})\b'),
+            # Format: 404.644.4014 - phone with dots (no parentheses)
+            # Handles: "404.644.4014" (dots instead of dashes)
+            # Note: No word boundary at end to handle cases like "404.644.4014CHRISTOPHER"
+            re.compile(r'\b([0-9]{3})\.([0-9]{3})\.([0-9]{4})(?![0-9])'),
+            # Format: 678 -982-0122 - no parentheses, space before dash
+            # Handles: "678 -982-0122" (space before dash, no parentheses)
+            re.compile(r'\b([0-9]{3})\s+[-.\s]?\s*([0-9]{3})\s*[-.\s]?\s*([0-9]{4})\b'),
+            # Format with "phone" or "mobile" label: phone num:(757)606-0446 (with space after colon)
+            re.compile(r'(?:phone|mobile|tel|cell)\s*(?:num|number)?\s*:\s*\(?([0-9]{3})\)?\s*([0-9]{3})[-.\s]?([0-9]{4})\b', re.IGNORECASE),
+            # Format: phone:(757)606-0446 (no space after colon)
+            re.compile(r'(?:phone|mobile|tel|cell)\s*:\(([0-9]{3})\)([0-9]{3})[-.\s]?([0-9]{4})\b', re.IGNORECASE),
+            # More flexible: any 10 consecutive digits in header (last resort)
+            # Only use this if we're in the first 500 chars (header area)
+            re.compile(r'\b([0-9]{3})[-.\s]?([0-9]{3})[-.\s]?([0-9]{4})\b') if len(text) <= 500 else None,
+        ]
+        
+        for pattern in header_patterns:
+            if pattern is None:  # Skip None patterns (conditional patterns)
+                continue
+            try:
+                matches = pattern.findall(text)
+                if matches:
+                    for match in matches:
+                        if isinstance(match, tuple) and len(match) >= 3:
+                            # Reconstruct: area code + 3 digits + 4 digits
+                            area_code = str(match[0]).strip()
+                            first_part = str(match[1]).strip()
+                            second_part = str(match[2]).strip()
+                            
+                            # Combine to get full number
+                            phone = f"{area_code}{first_part}{second_part}"
+                            digits_only = re.sub(r'[^\d]', '', phone)
+                            
+                            # Must be exactly 10 digits for US number
+                            if len(digits_only) == 10:
+                                # Additional validation: area code should not start with 0 or 1
+                                if area_code and area_code[0] not in ['0', '1']:
+                                    normalized = normalize_phone(phone)
+                                    if normalized:
+                                        logger.info(
+                                            f"Header extraction found phone: {normalized}",
+                                            extra={
+                                                "phone": normalized,
+                                                "area_code": area_code,
+                                                "pattern": pattern.pattern[:80]
+                                            }
+                                        )
+                                        return normalized
+                                else:
+                                    logger.debug(f"Skipping phone with invalid area code: {area_code}")
+                            else:
+                                logger.debug(f"Skipping phone with wrong digit count: {len(digits_only)} digits")
+            except Exception as e:
+                logger.debug(f"Error in header pattern matching: {e}")
+                continue
+        
+        return None
+    
+    def _extract_mobile_regex_fallback(self, text: str) -> Optional[str]:
+        """
+        Fast regex-based fallback for mobile/phone extraction.
+        Extracts the first valid phone number found in the text.
+        Uses comprehensive patterns to catch various phone formats.
+        
+        Args:
+            text: The resume text
+        
+        Returns:
+            Extracted phone number or None if not found
+        """
+        if not text:
+            return None
+        
+        # First, try header-specific extraction (for formats like (757)606-0446)
+        # This handles cases where phone is in header with no space after parenthesis
+        # Check first 2000 chars (header area) - most common location
+        header_text = text[:2000] if len(text) > 2000 else text
+        header_phone = self._extract_mobile_from_header(header_text)
+        if header_phone:
+            logger.debug(f"Found phone using header-specific extraction: {header_phone}")
+            return header_phone
+        
+        # Also check last 1000 chars (footer area) - contact info sometimes in footer
+        if len(text) > 2000:
+            footer_text = text[-1000:]
+            footer_phone = self._extract_mobile_from_header(footer_text)
+            if footer_phone:
+                logger.debug(f"Found phone using footer-specific extraction: {footer_phone}")
+                return footer_phone
+        
+        # Comprehensive phone number patterns (various formats)
+        # Added patterns to handle "|" and "•" separators
+        phone_patterns = [
+            # US formats with country code: +1 (123) 456-7890, +1-123-456-7890
+            re.compile(r'\+1\s*[-.\s]?\s*\(?([0-9]{3})\)?[-.\s]?([0-9]{3})[-.\s]?([0-9]{4})\b'),
+            # Phone with pipes separator: |(732) 798-0702| or |(732) 798 -0702| or | ( 470 ) 315 -3949 |
+            # Handles: "dhanush29.putti@gmail.com |(732) 798 -0702 |"
+            # Handles: "Atlanta, GA 98052 | ( 470 ) 315 -3949 | carlottahayes14@gmail.com"
+            re.compile(r'\|?\s*\(\s*([0-9]{3})\s*\)\s*([0-9]{3})\s+[-.\s]?\s*([0-9]{4})\s*\|?'),
+            # Format: |(732) 798-0702| or |(732) 798 -0702| (no spaces inside parentheses)
+            re.compile(r'\|?\s*\(([0-9]{3})\)\s*([0-9]{3})\s*[-.\s]?\s*([0-9]{4})\s*\|?'),
+            # Phone with bullet point separator: • (971) 282-1140 • or • (971) 282 -1140 •
+            # Handles: "Portland, OR 97229 • michael.sanganh.ho@gmail.com • (971) 282 -1140"
+            re.compile(r'[•·]\s*\(([0-9]{3})\)\s*([0-9]{3})\s*[-.\s]?\s*([0-9]{4})\s*[•·]?'),
+            # US formats without country code: (123) 456-7890, (123) 456 -7890, 123-456-7890, 123.456.7890
+            # Updated to handle spaces before dash
+            re.compile(r'\(?([0-9]{3})\)?\s*([0-9]{3})\s*[-.\s]?\s*([0-9]{4})\b'),
+            # International formats: +91-1234567890, +44-20-1234-5678
+            re.compile(r'\+(\d{1,3})[-.\s]?(\d{1,4})[-.\s]?(\d{1,4})[-.\s]?(\d{1,9})\b'),
+            # Phone with labels: Phone: 123-456-7890, Mobile: 1234567890, Tel: +1-123-456-7890
+            re.compile(r'(?:Phone|Mobile|Tel|Cell|Contact)\s*:?\s*[:\-]?\s*([+]?\d{1,3}[-.\s]?\(?\d{3}\)?[-.\s]?\d{3}[-.\s]?\d{4})', re.IGNORECASE),
+            # Phone with concatenated label (no space/colon): Phone123-456-7890 or Mobile1234567890
+            # Handles cases where label is directly concatenated with phone number
+            re.compile(r'(?:Phone|Mobile|Tel|Cell|Contact)([+]?\d{1,3}[-.\s]?\(?\d{3}\)?[-.\s]?\d{3}[-.\s]?\d{4})', re.IGNORECASE),
+            # Simple 10 digit numbers (US format)
+            re.compile(r'\b(\d{10})\b'),
+            # 11 digit numbers starting with 1 (US with country code)
+            re.compile(r'\b(1\d{10})\b'),
+            # Numbers with spaces: 123 456 7890
+            re.compile(r'\b(\d{3})\s+(\d{3})\s+(\d{4})\b'),
+            # Numbers with dots: 123.456.7890
+            re.compile(r'\b(\d{3})\.(\d{3})\.(\d{4})\b'),
+            # Numbers with dashes: 123-456-7890
+            re.compile(r'\b(\d{3})-(\d{3})-(\d{4})\b'),
+            # Extended format: 10-15 digits (international)
+            re.compile(r'\b(\d{10,15})\b'),
+        ]
+        
+        found_numbers = []
+        
+        # Try each pattern
+        for pattern in phone_patterns:
+            matches = pattern.findall(text)
+            if matches:
+                for match in matches:
+                    # Handle tuple results (from groups)
+                    if isinstance(match, tuple):
+                        # Reconstruct phone from groups, filter out empty groups
+                        phone = ''.join(str(g) for g in match if g and str(g).strip())
+                    else:
+                        phone = str(match).strip()
+                    
+                    # Clean up separators and extra spaces from phone number
+                    phone = phone.replace('|', '').replace('•', '').replace('·', '').strip()
+                    
+                    # Skip if too short or looks like a date/year
+                    digits_only = re.sub(r'[^\d]', '', phone)
+                    if len(digits_only) < 10:
+                        continue
+                    
+                    # Skip if it looks like a year (1900-2099)
+                    if len(digits_only) == 4 and 1900 <= int(digits_only) <= 2099:
+                        continue
+                    
+                    # Skip if it looks like a zip code (5 digits in US context)
+                    if len(digits_only) == 5 and not phone.startswith('+'):
+                        # Check if it's in a zip code context (near "zip", "postal", etc.)
+                        match_pos = text.find(phone)
+                        if match_pos > 0:
+                            context = text[max(0, match_pos-20):match_pos+len(phone)+20].lower()
+                            if any(word in context for word in ['zip', 'postal', 'code', 'address']):
+                                continue
+                    
+                    # Normalize and validate
+                    normalized = normalize_phone(phone)
+                    if normalized and len(re.sub(r'[^\d]', '', normalized)) >= 10:
+                        # Avoid duplicates
+                        if normalized not in found_numbers:
+                            found_numbers.append(normalized)
+                            logger.debug(f"Regex fallback found mobile candidate: {normalized}")
+        
+        # Return the first valid phone number found
+        if found_numbers:
+            # Prefer numbers with country code (+1) for US numbers
+            for num in found_numbers:
+                if num.startswith('+1') and len(re.sub(r'[^\d]', '', num)) == 11:
+                    logger.debug(f"Regex fallback extracted mobile (with country code): {num}")
+                    return num
+            
+            # Otherwise return first found
+            logger.debug(f"Regex fallback extracted mobile: {found_numbers[0]}")
+            return found_numbers[0]
+        
+        return None
+    
     async def extract_mobile(self, resume_text: str, filename: str = "resume") -> Optional[str]:
         """
-        Extract mobile phone number from resume text using OLLAMA LLM.
+        Extract mobile phone number from resume text using regex fallback first, then OLLAMA LLM.
+        Scans full text multiple times with different strategies.
         
         Args:
             resume_text: The text content of the resume
@@ -162,13 +410,68 @@ class MobileExtractor:
         Returns:
             The extracted mobile phone number or None if not found
         """
+        if not resume_text or len(resume_text.strip()) < 5:
+            logger.warning(f"Resume text too short for mobile extraction: {filename}")
+            return None
+        
+        # Step 1: Try header-specific extraction first (handles formats like (757)606-0446)
+        # This is critical for resumes where phone is in header with no space after parenthesis
+        try:
+            header_text = resume_text[:2000] if len(resume_text) > 2000 else resume_text
+            header_mobile = self._extract_mobile_from_header(header_text)
+            if header_mobile:
+                logger.info(
+                    f"✅ MOBILE EXTRACTED via header-specific extraction from {filename}",
+                    extra={"file_name": filename, "mobile": header_mobile, "method": "header_specific"}
+                )
+                return header_mobile
+        except Exception as e:
+            logger.debug(f"Header-specific mobile extraction failed: {e}")
+        
+        # Step 2: Try fast regex extraction on full text
+        try:
+            regex_mobile = self._extract_mobile_regex_fallback(resume_text)
+            if regex_mobile:
+                logger.info(
+                    f"✅ MOBILE EXTRACTED via regex from {filename}",
+                    extra={"file_name": filename, "mobile": regex_mobile, "method": "regex"}
+                )
+                return regex_mobile
+        except Exception as e:
+            logger.debug(f"Regex mobile extraction failed: {e}")
+        
+        # Step 3: Try scanning different sections of the resume
+        # Phone is often in header (first 2000 chars) or footer (last 1000 chars)
+        try:
+            # Scan header section with general patterns
+            header_text = resume_text[:2000] if len(resume_text) > 2000 else resume_text
+            regex_mobile = self._extract_mobile_regex_fallback(header_text)
+            if regex_mobile:
+                logger.info(
+                    f"✅ MOBILE EXTRACTED via regex from header section of {filename}",
+                    extra={"file_name": filename, "mobile": regex_mobile, "method": "regex_header"}
+                )
+                return regex_mobile
+            
+            # Scan footer section
+            if len(resume_text) > 1000:
+                footer_text = resume_text[-1000:]
+                regex_mobile = self._extract_mobile_regex_fallback(footer_text)
+                if regex_mobile:
+                    logger.info(
+                        f"✅ MOBILE EXTRACTED via regex from footer section of {filename}",
+                        extra={"file_name": filename, "mobile": regex_mobile, "method": "regex_footer"}
+                    )
+                    return regex_mobile
+        except Exception as e:
+            logger.debug(f"Section-based regex mobile extraction failed: {e}")
+        
+        # Step 2: Try LLM extraction if regex didn't find anything
         try:
             is_connected, available_model = await self._check_ollama_connection()
             if not is_connected:
-                raise RuntimeError(
-                    f"OLLAMA is not accessible at {self.ollama_host}. "
-                    "Please ensure OLLAMA is running. Start it with: ollama serve"
-                )
+                logger.warning(f"OLLAMA not accessible for {filename}, skipping LLM extraction")
+                return None
             
             model_to_use = self.model
             if available_model and "llama3.1" not in available_model.lower():
@@ -197,7 +500,8 @@ Output (JSON only, no other text, no explanations):"""
             result = None
             last_error = None
             
-            async with httpx.AsyncClient(timeout=Timeout(600.0)) as client:
+            # Reduced timeout from 600s to 60s for faster processing
+            async with httpx.AsyncClient(timeout=Timeout(60.0)) as client:
                 try:
                     response = await client.post(
                         f"{self.ollama_host}/api/generate",
@@ -293,29 +597,22 @@ Output (JSON only, no other text, no explanations):"""
             
             return mobile
             
+        except httpx.TimeoutException:
+            logger.warning(f"OLLAMA timeout for mobile extraction: {filename}, returning None")
+            return None
         except httpx.HTTPError as e:
-            error_details = {
-                "error": str(e),
-                "error_type": type(e).__name__,
-                "ollama_host": self.ollama_host,
-                "model": model_to_use,
-            }
-            logger.error(
+            logger.warning(
                 f"HTTP error calling OLLAMA for mobile extraction: {e}",
-                extra=error_details,
-                exc_info=True
+                extra={"file_name": filename, "error": str(e)}
             )
-            raise RuntimeError(f"Failed to extract mobile with LLM: {e}")
+            return None
         except Exception as e:
-            logger.error(
-                f"Error extracting mobile: {e}",
-                extra={
-                    "error": str(e),
-                    "error_type": type(e).__name__,
-                    "ollama_host": self.ollama_host,
-                    "model": model_to_use,
-                },
-                exc_info=True
+            logger.warning(
+                f"Error extracting mobile with LLM: {e}",
+                extra={"file_name": filename, "error": str(e)}
             )
-            raise
+            return None
+        
+        # If LLM extraction failed, return None (regex already tried)
+        return None
 
