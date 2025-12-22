@@ -22,47 +22,60 @@ SKILLS_PROMPT = """
 IMPORTANT: This is a FRESH, ISOLATED extraction task. Ignore any previous context or conversations.
 
 ROLE:
-You are an ATS resume parsing expert specializing in US IT staffing profiles.
+You are an ATS resume parsing expert specializing in NON-IT and NON-TECH professional profiles.
 
 CONTEXT:
 Candidate profiles and resumes may be unstructured and inconsistently formatted.
-Skills refer to technical skills, programming languages, frameworks, tools, and technologies mentioned in the resume.
+Skills refer ONLY to practical, applied, and demonstrable professional capabilities,
+domain knowledge areas, tools, techniques, methodologies, or certifications
+that a candidate can actively use or perform.
 
 TASK:
-Extract all technical skills, programming languages, frameworks, tools, and technologies from the profile text.
+Extract all NON-IT professional skills from the profile text.
 
 SELECTION RULES:
-1. Extract technical skills from all sections: Skills, Technical Skills, Technologies, Tools, etc.
-2. Include programming languages (e.g., Python, Java, JavaScript, C++).
-3. Include frameworks and libraries (e.g., React, Django, Spring Boot).
-4. Include tools and platforms (e.g., Docker, AWS, Git, Jenkins).
-5. Include databases (e.g., MySQL, PostgreSQL, MongoDB).
-6. Include methodologies (e.g., Agile, Scrum, DevOps).
-7. Do not include soft skills (e.g., Communication, Leadership).
-8. Do not include company names or job titles.
+1. Extract ONLY practical, functional, or domain skills that represent WHAT the candidate CAN DO.
+2. Include domain skills (e.g., Financial Accounting, Cost Accounting, HR Operations, Sales Management).
+3. Include tools and software used in non-IT roles (e.g., MS Excel, MS Word, Tally, SAP, QuickBooks, CRM).
+4. Include techniques, methodologies, standards, or processes explicitly mentioned (e.g., Research Methodology, Audit Planning, Financial Analysis).
+5. Include certifications or professional qualifications ONLY as skills (e.g., CA Foundation, GST Certification).
+6. Include subject areas ONLY if they represent applied professional knowledge (e.g., Financial Management, Management Accounting).
+7. Do NOT include programming languages, coding technologies, frameworks, or development libraries.
+8. Do NOT include soft skills (e.g., Communication, Leadership, Teamwork).
+9. Do NOT include company names, organization names, institutions, colleges, universities, banks, or employers.
+10. Do NOT include conference names, seminar names, workshop names, journal names, or event titles.
+11. Do NOT include research paper titles, thesis titles, presentation titles, or publication headings.
+12. Do NOT include locations, cities, states, or countries.
+13. Do NOT include job titles, roles, or designations.
 
 CONSTRAINTS:
-- Extract all relevant technical skills.
+- Extract ONLY relevant NON-IT professional skills.
 - Preserve skill names exactly as written (case-sensitive).
 - Remove duplicates.
-- Limit to maximum 50 skills.
+- Limit to a maximum of 50 skills.
 
 ANTI-HALLUCINATION RULES:
-- Only extract skills explicitly mentioned in the resume.
-- Never guess or infer skills.
-- Do not derive skills from job titles or company names alone.
+- Extract skills ONLY if they are explicitly mentioned in the resume.
+- Never guess, infer, or assume skills.
+- Do NOT convert topics, events, or titles into skills.
+- Do NOT derive skills from job titles or organization names.
 
 OUTPUT FORMAT:
-Return only valid JSON. No additional text. No explanations. No markdown formatting.
+Return only valid JSON.
+No additional text.
+No explanations.
+No markdown formatting.
 
 JSON SCHEMA:
 {
   "skills": ["skill1", "skill2", "skill3", ...]
 }
 
-Example valid outputs:
-{"skills": ["Python", "Django", "PostgreSQL", "AWS", "Docker"]}
+VALID OUTPUT EXAMPLES:
+{"skills": ["Financial Accounting", "Cost and Management Accounting", "Business Statistics", "Research Methodology", "Financial Management", "MS Excel", "Tally ERP"]}
 {"skills": []}
+
+
 """
 
 
@@ -185,10 +198,30 @@ class SkillsExtractor:
                 )
                 model_to_use = available_model
             
+            # ========== DEBUG: Check what's being sent to LLM ==========
+            text_to_send = resume_text[:10000]
+            print("\n" + "="*80)
+            print("[DEBUG] TEXT BEING SENT TO LLM FOR SKILLS EXTRACTION")
+            print("="*80)
+            print(f"Full resume text length: {len(resume_text)} characters")
+            print(f"Text being sent to LLM: {len(text_to_send)} characters (first 10,000)")
+            print(f"Text truncated: {'YES' if len(resume_text) > 10000 else 'NO'}")
+            if len(resume_text) > 10000:
+                print(f"⚠️  WARNING: {len(resume_text) - 10000} characters are being CUT OFF!")
+            print(f"\nFirst 2000 characters being sent:")
+            print("-"*80)
+            print(text_to_send[:2000])
+            print("-"*80)
+            print(f"Last 1000 characters being sent:")
+            print("-"*80)
+            print(text_to_send[-1000:] if len(text_to_send) > 1000 else text_to_send)
+            print("="*80 + "\n")
+            # ========== END DEBUG ==========
+            
             prompt = f"""{SKILLS_PROMPT}
 
 Input resume text:
-{resume_text[:10000]}
+{text_to_send}
 
 Output (JSON only, no other text, no explanations):"""
             
@@ -205,7 +238,7 @@ Output (JSON only, no other text, no explanations):"""
             result = None
             last_error = None
             
-            async with httpx.AsyncClient(timeout=Timeout(1200.0)) as client:
+            async with httpx.AsyncClient(timeout=Timeout(3600.0)) as client:
                 try:
                     response = await client.post(
                         f"{self.ollama_host}/api/generate",
@@ -283,7 +316,30 @@ Output (JSON only, no other text, no explanations):"""
             else:
                 raw_output = str(result)
             
+            # ========== DEBUG: Check raw LLM response ==========
+            print("\n" + "="*80)
+            print("[DEBUG] RAW LLM RESPONSE")
+            print("="*80)
+            print(f"Response length: {len(raw_output)} characters")
+            print(f"Full raw response:")
+            print("-"*80)
+            print(raw_output)
+            print("-"*80)
+            print("="*80 + "\n")
+            # ========== END DEBUG ==========
+            
             parsed_data = self._extract_json(raw_output)
+            
+            # ========== DEBUG: Check parsed data ==========
+            print("\n" + "="*80)
+            print("[DEBUG] PARSED JSON DATA")
+            print("="*80)
+            print(f"Parsed data: {parsed_data}")
+            print(f"Skills found: {parsed_data.get('skills', [])}")
+            print(f"Number of skills: {len(parsed_data.get('skills', []))}")
+            print("="*80 + "\n")
+            # ========== END DEBUG ==========
+            
             skills = parsed_data.get("skills", [])
             
             # Validate and clean skills

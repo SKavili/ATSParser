@@ -46,13 +46,13 @@ class NameService:
             
             logger.info(
                 f"📊 NAME EXTRACTION RESULT for resume ID {resume_id}: {name}",
-                extra={"resume_id": resume_id, "name": name, "file_name": filename}
+                extra={"resume_id": resume_id, "extracted_name": name, "file_name": filename}
             )
             
             if name:
                 logger.info(
                     f"💾 UPDATING DATABASE: Resume ID {resume_id} with name: '{name}'",
-                    extra={"resume_id": resume_id, "name": name, "file_name": filename}
+                    extra={"resume_id": resume_id, "extracted_name": name, "file_name": filename}
                 )
                 
                 updated_resume = await self.resume_repo.update(resume_id, {"candidatename": name})

@@ -10,6 +10,7 @@ import PyPDF2
 
 from app.utils.logging import get_logger
 from app.utils.safe_logger import safe_extra
+from app.utils.cleaning import normalize_text
 
 logger = get_logger(__name__)
 
@@ -95,23 +96,113 @@ class ResumeParser:
             text_parts = []
             for page in pdf_reader.pages:
                 text_parts.append(page.extract_text())
-            return "\n".join(text_parts)
+            raw_text = "\n".join(text_parts)
+            # Normalize whitespace (remove extra spaces, normalize line breaks)
+            normalized_text = normalize_text(raw_text) or raw_text
+            return normalized_text
         except Exception as e:
             logger.error(f"Error extracting PDF text: {e}", extra={"error": str(e)})
             raise ValueError(f"Failed to extract text from PDF: {e}")
     
     def _extract_docx_text(self, file_content: bytes) -> str:
-        """Extract text from DOCX file."""
+        """
+        Extract text from DOCX file, including headers, footers, and tables.
+        Uses python-docx first, then falls back to Apache Tika for comprehensive extraction.
+        """
+        # First try: Use python-docx (fast and reliable for most cases)
         try:
             doc_file = BytesIO(file_content)
             doc = Document(doc_file)
             text_parts = []
+            
+            # Extract from main document paragraphs
             for paragraph in doc.paragraphs:
-                text_parts.append(paragraph.text)
-            return "\n".join(text_parts)
+                if paragraph.text.strip():
+                    text_parts.append(paragraph.text)
+            
+            # Extract from tables (contact info is sometimes in tables)
+            for table in doc.tables:
+                for row in table.rows:
+                    row_text = []
+                    for cell in row.cells:
+                        cell_text = cell.text.strip()
+                        if cell_text:
+                            row_text.append(cell_text)
+                    if row_text:
+                        text_parts.append(" | ".join(row_text))
+            
+            # Extract from headers (contact info is often in headers)
+            for section in doc.sections:
+                # Header text
+                if section.header:
+                    for paragraph in section.header.paragraphs:
+                        if paragraph.text.strip():
+                            text_parts.append(paragraph.text)
+                    # Headers can also have tables
+                    for table in section.header.tables:
+                        for row in table.rows:
+                            row_text = []
+                            for cell in row.cells:
+                                cell_text = cell.text.strip()
+                                if cell_text:
+                                    row_text.append(cell_text)
+                            if row_text:
+                                text_parts.append(" | ".join(row_text))
+                
+                # Footer text
+                if section.footer:
+                    for paragraph in section.footer.paragraphs:
+                        if paragraph.text.strip():
+                            text_parts.append(paragraph.text)
+                    # Footers can also have tables
+                    for table in section.footer.tables:
+                        for row in table.rows:
+                            row_text = []
+                            for cell in row.cells:
+                                cell_text = cell.text.strip()
+                                if cell_text:
+                                    row_text.append(cell_text)
+                            if row_text:
+                                text_parts.append(" | ".join(row_text))
+            
+            raw_text = "\n".join(text_parts)
+            # Normalize whitespace (remove extra spaces, normalize line breaks)
+            normalized_text = normalize_text(raw_text) or raw_text
+            
+            # If we found text, return it
+            if normalized_text.strip():
+                return normalized_text
         except Exception as e:
-            logger.error(f"Error extracting DOCX text: {e}", extra={"error": str(e)})
-            raise ValueError(f"Failed to extract text from DOCX: {e}")
+            logger.debug(f"python-docx extraction had issues: {e}")
+        
+        # Second try: Use Apache Tika for comprehensive extraction (includes text boxes, headers, footers)
+        # Tika can extract more content including text boxes and complex layouts
+        if TIKA_AVAILABLE:
+            try:
+                # Create temporary file for Tika
+                with tempfile.NamedTemporaryFile(delete=False, suffix='.docx') as temp_file:
+                    temp_file.write(file_content)
+                    temp_docx_path = temp_file.name
+                
+                try:
+                    logger.debug("Attempting DOCX extraction using Apache Tika for comprehensive extraction")
+                    parsed = tika_parser.from_file(temp_docx_path)
+                    if parsed and 'content' in parsed and parsed['content']:
+                        text = parsed['content'].strip()
+                        if text:
+                            # Normalize whitespace
+                            normalized_text = normalize_text(text) or text
+                            logger.info(f"Successfully extracted DOCX using Apache Tika: {len(normalized_text)} characters")
+                            return normalized_text
+                finally:
+                    # Clean up temp file
+                    if os.path.exists(temp_docx_path):
+                        os.unlink(temp_docx_path)
+            except Exception as tika_error:
+                logger.debug(f"Apache Tika extraction failed: {tika_error}")
+        
+        # If both methods failed or returned empty, raise error
+        raise ValueError("Failed to extract text from DOCX file")
     
     def _extract_doc_text(self, file_content: bytes) -> str:
         """
@@ -145,19 +236,21 @@ class ResumeParser:
                     if parsed and 'content' in parsed and parsed['content']:
                         text = parsed['content'].strip()
                         if text:
+                            # Normalize whitespace (remove extra spaces, normalize line breaks)
+                            normalized_text = normalize_text(text) or text
                             success_msg = (
                                 "$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$\n"
                                 "$$$$$$$$$$$$$$$$$$$$$$  APACHE TIKA SUCCESS  $$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$\n"
-                                f"$$$  Successfully extracted {len(text)} characters using Apache Tika\n"
+                                f"$$$  Successfully extracted {len(normalized_text)} characters using Apache Tika\n"
                                 "$$$  METHOD USED: Apache Tika (tika-python library)\n"
                                 "$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$"
                             )
                             print(success_msg)
                             logger.info(
                                 success_msg,
-                                extra={"extraction_method": "apache_tika", "text_length": len(text)}
+                                extra={"extraction_method": "apache_tika", "text_length": len(normalized_text)}
                             )
-                            return text
+                            return normalized_text
                 except Exception as tika_error:
                     error_msg = f"Apache Tika extraction failed: {tika_error}"
                     print(f"[WARNING] {error_msg}")
@@ -238,19 +331,21 @@ class ResumeParser:
                         timeout=30
                     )
                     if result.returncode == 0 and result.stdout.strip():
+                        # Normalize whitespace (remove extra spaces, normalize line breaks)
+                        normalized_text = normalize_text(result.stdout) or result.stdout
                         success_msg = (
                             "$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$\n"
                             "$$$$$$$$$$$$$$$$$$$$$$  ANTIWORD SUCCESS  $$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$\n"
-                            f"$$$  Successfully extracted {len(result.stdout)} characters using antiword\n"
+                            f"$$$  Successfully extracted {len(normalized_text)} characters using antiword\n"
                             "$$$  METHOD USED: antiword (command-line tool)\n"
                             "$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$"
                         )
                         print(success_msg)
                         logger.info(
                             success_msg,
-                            extra={"extraction_method": "antiword", "text_length": len(result.stdout)}
+                            extra={"extraction_method": "antiword", "text_length": len(normalized_text)}
                         )
-                        return result.stdout
+                        return normalized_text
                 except subprocess.TimeoutExpired:
                     logger.warning("antiword extraction timed out")
                 except Exception as aw_error:
@@ -274,8 +369,10 @@ class ResumeParser:
                             text_parts.append(" | ".join(row_text))
                 extracted_text = "\n".join(text_parts)
                 if extracted_text.strip():
+                    # Normalize whitespace (remove extra spaces, normalize line breaks)
+                    normalized_text = normalize_text(extracted_text) or extracted_text
                     logger.info("Successfully extracted .doc file using python-docx fallback")
-                    return extracted_text
+                    return normalized_text
             except Exception as fallback_error:
                 logger.debug(f"python-docx fallback failed: {fallback_error}")
             
@@ -312,8 +409,10 @@ class ResumeParser:
                         ole.close()
                         extracted_text = "\n".join(text_chunks)
                         if extracted_text.strip():
+                            # Normalize whitespace (remove extra spaces, normalize line breaks)
+                            normalized_text = normalize_text(extracted_text) or extracted_text
                             logger.info("Successfully extracted .doc file using olefile")
-                            return extracted_text
+                            return normalized_text
                     ole.close()
                 except Exception as ole_error:
                     logger.debug(f"olefile extraction failed: {ole_error}")

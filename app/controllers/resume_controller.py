@@ -252,6 +252,22 @@ class ResumeController:
             # Extract text from file
             try:
                 resume_text = await self.resume_parser.extract_text(file_content, safe_filename)
+                
+                # ========== DEBUG: Check extracted text ==========
+                print("\n" + "="*80)
+                print("[DEBUG] EXTRACTED RESUME TEXT")
+                print("="*80)
+                print(f"Total text length: {len(resume_text)} characters")
+                print(f"First 2000 characters:")
+                print("-"*80)
+                print(resume_text[:2000])
+                print("-"*80)
+                print(f"Last 1000 characters:")
+                print("-"*80)
+                print(resume_text[-1000:] if len(resume_text) > 1000 else resume_text)
+                print("="*80 + "\n")
+                # ========== END DEBUG ==========
+                
             except Exception as e:
                 # Update status to failed for extraction error
                 await self.resume_repo.update(
@@ -482,14 +498,30 @@ class ResumeController:
            
             logger.info(f"Embeddings disabled - skipping vector generation for resume {resume_metadata.id}")
            
-            # Update status to completed on success
-            await self.resume_repo.update(
-                resume_metadata.id,
-                {"status": STATUS_COMPLETED}
-            )
-           
+            # Update status to completed on success (always update, even if some extractions failed)
+            try:
+                await self.resume_repo.update(
+                    resume_metadata.id,
+                    {"status": STATUS_COMPLETED}
+                )
+                logger.info(
+                    f"✅ Status updated to COMPLETED for resume ID {resume_metadata.id}",
+                    extra={"resume_id": resume_metadata.id}
+                )
+            except Exception as status_error:
+                logger.error(
+                    f"❌ Failed to update status to COMPLETED: {status_error}",
+                    extra={"resume_id": resume_metadata.id, "error": str(status_error)}
+                )
+            
             # Final refresh to ensure all extracted fields are loaded from database
-            await self.resume_repo.session.refresh(resume_metadata)
+            try:
+                await self.resume_repo.session.refresh(resume_metadata)
+            except Exception as refresh_error:
+                logger.warning(
+                    f"Failed to refresh resume metadata: {refresh_error}",
+                    extra={"resume_id": resume_metadata.id}
+                )
            
             # Verify all fields are updated (log for debugging)
             logger.info(

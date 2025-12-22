@@ -1,4 +1,4 @@
-"""Service for extracting candidate names from resumes using OLLAMA LLM."""
+"""Service for extracting candidate names from resumes using optimized regex fallback and OLLAMA LLM."""
 import json
 import re
 from typing import Dict, Optional
@@ -18,8 +18,8 @@ except ImportError:
     OLLAMA_CLIENT_AVAILABLE = False
     logger.warning("OLLAMA Python client not available, using HTTP API directly")
 
-NAME_PROMPT = """
-IMPORTANT: This is a FRESH, ISOLATED extraction task. Ignore any previous context or conversations.
+# Detailed prompt for name extraction with anti-hallucination rules
+NAME_PROMPT = """IMPORTANT: This is a FRESH, ISOLATED extraction task. Ignore any previous context or conversations.
 
 ROLE:
 You are an ATS resume parsing expert specializing in US IT staffing profiles.
@@ -58,16 +58,123 @@ JSON SCHEMA:
 Example valid outputs:
 {"name": "John Doe"}
 {"name": "Jane Smith"}
-{"name": null}
-"""
+{"name": null}"""
+
+# Configuration for name extraction
+NAME_EXTRACTION_TEXT_LIMIT = 1000  # Use first 1000 characters
+NAME_EXTRACTION_MIN_TEXT = 500  # Minimum characters to use
+OLLAMA_TIMEOUT = 30.0  # Short timeout to prevent blocking (10 seconds)
+OLLAMA_MAX_TOKENS = 100  # Limit response length for speed (enough for JSON response)
 
 
 class NameExtractor:
-    """Service for extracting candidate names from resume text using OLLAMA LLM."""
+    """Service for extracting candidate names from resume text using regex fallback and OLLAMA LLM."""
     
     def __init__(self):
         self.ollama_host = settings.ollama_host
         self.model = "llama3.1"
+    
+    def _extract_name_regex_fallback(self, text: str) -> Optional[str]:
+        """
+        Deterministic regex-based fallback for name extraction.
+        Extracts the first non-empty line without numbers, emails, or common resume keywords.
+        
+        Args:
+            text: The resume text (should be first 500-1000 characters)
+        
+        Returns:
+            Extracted name or None if not found
+        """
+        if not text or len(text.strip()) < 3:
+            return None
+        
+        # Split into lines and process
+        lines = text.split('\n')
+        
+        # Patterns to exclude
+        email_pattern = re.compile(r'[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}')
+        phone_pattern = re.compile(r'[\d\s\-\(\)\+]{10,}')
+        url_pattern = re.compile(r'https?://[^\s]+|www\.[^\s]+')
+        date_pattern = re.compile(r'\d{1,2}[/\-]\d{1,2}[/\-]\d{2,4}|\d{4}[/\-]\d{1,2}[/\-]\d{1,2}')
+        
+        # Common resume keywords to skip
+        skip_keywords = [
+            'resume', 'cv', 'curriculum vitae', 'objective', 'summary', 'experience',
+            'education', 'skills', 'certifications', 'projects', 'references',
+            'phone', 'email', 'address', 'linkedin', 'github', 'portfolio'
+        ]
+        
+        for line in lines:
+            original_line = line.strip()
+            line = original_line
+            
+            # Skip empty lines
+            if not line or len(line) < 2:
+                continue
+            
+            # Skip lines that start with common resume keywords
+            line_lower = line.lower()
+            if any(line_lower.startswith(keyword) for keyword in skip_keywords):
+                continue
+            
+            # Try to extract name from lines that may contain name + location + email/phone
+            # Pattern: Extract first 1-5 words that look like a name (before location indicators)
+            # Look for patterns like: "Name City, State | email" or "Name | email" or "Name Location"
+            
+            # First, try to extract name from the beginning of the line
+            # Match 1-5 capitalized words at the start (name pattern)
+            name_at_start_pattern = re.compile(r'^([A-Z][a-z]+(?:\s+[A-Z][a-z]+){0,4})')
+            match = name_at_start_pattern.match(line)
+            
+            if match:
+                potential_name = match.group(1).strip()
+                
+                # Check if this looks like a name (not a location or other info)
+                # Names typically have 2-4 words, locations often have commas or state codes
+                if 2 <= len(potential_name.split()) <= 4:
+                    # Check if line continues with location indicators (comma, state codes, |, email, phone)
+                    remaining = line[len(potential_name):].strip()
+                    
+                    # If there's a comma, |, @, or phone pattern after, likely the name part is correct
+                    if (',' in remaining or '|' in remaining or 
+                        email_pattern.search(remaining) or 
+                        phone_pattern.search(remaining) or
+                        len(remaining) == 0):  # Or it's just the name on the line
+                        
+                        # Validate the extracted name
+                        if len(potential_name) >= 3 and len(potential_name) <= 50:
+                            letter_count = len(re.findall(r'[A-Za-z]', potential_name))
+                            if letter_count >= 4:  # At least 4 letters total
+                                logger.debug(f"Regex fallback extracted name from line with location/email: {potential_name}")
+                                return potential_name
+            
+            # Fallback: Check if entire line looks like a name (for simpler cases)
+            if len(line) <= 60:
+                # Skip lines with emails, phone, URLs, dates
+                if (email_pattern.search(line) or 
+                    phone_pattern.search(line) or 
+                    url_pattern.search(line) or 
+                    date_pattern.search(line)):
+                    continue
+                
+                # More flexible name pattern: 1-5 words (allows single names, middle initials, etc.)
+                name_pattern = re.compile(r'^[A-Za-z][A-Za-z\-\'\.]*(?:\s+[A-Za-z][A-Za-z\-\'\.]*){0,4}$')
+                
+                if name_pattern.match(line):
+                    # Clean up common prefixes/suffixes
+                    cleaned = re.sub(r'^(Mr\.|Mrs\.|Ms\.|Dr\.|Prof\.|Miss\.)\s+', '', line, flags=re.IGNORECASE)
+                    cleaned = cleaned.strip()
+                    
+                    # More lenient validation: at least 2 characters, mostly letters
+                    if cleaned and len(cleaned) >= 2:
+                        # Check if it's mostly letters (allow hyphens, apostrophes, periods, spaces)
+                        letter_count = len(re.findall(r'[A-Za-z]', cleaned))
+                        total_chars = len(cleaned.replace(' ', ''))
+                        if total_chars > 0 and letter_count / total_chars >= 0.7:  # At least 70% letters
+                            logger.debug(f"Regex fallback extracted name: {cleaned}")
+                            return cleaned
+        
+        return None
     
     async def _check_ollama_connection(self) -> tuple[bool, Optional[str]]:
         """Check if OLLAMA is accessible and running. Returns (is_connected, available_model)."""
@@ -152,52 +259,168 @@ class NameExtractor:
     
     async def extract_name(self, resume_text: str, filename: str = "resume") -> Optional[str]:
         """
-        Extract candidate name from resume text using OLLAMA LLM.
+        Extract candidate name from resume text using optimized regex fallback and OLLAMA LLM.
+        Uses only first 500-1000 characters for speed and reliability.
+        Never blocks the pipeline - returns None on any error.
+        
+        IMPORTANT: This function expects the FULL original resume text, not truncated text.
+        It will handle truncation internally to use only the first 1000 characters.
         
         Args:
-            resume_text: The text content of the resume
+            resume_text: The FULL text content of the resume (not truncated)
             filename: Name of the resume file (for logging)
         
         Returns:
             The extracted candidate name or None if not found
         """
+        # Step 1: Ensure we have the full original text (not truncated first 2000 + last 1000)
+        # If text appears truncated (has pattern of first+last concatenation), use only the first part
+        if not resume_text or len(resume_text.strip()) < 10:
+            logger.warning(f"Resume text too short for name extraction: {filename}")
+            return None
+        
+        # CRITICAL: Use ONLY the first 1000 characters from the ORIGINAL text
+        # Do NOT use any concatenated first 2000 + last 1000 pattern
+        # Names are ALWAYS at the top of resumes, so we only need the very beginning
+        text_length = len(resume_text)
+        
+        # Detect if text appears to be concatenated (first 2000 + last 1000 pattern)
+        # If so, use ONLY the first part (where the name actually is)
+        # Check: if text is around 3000 chars and has a clear break, it might be concatenated
+        if text_length > 2500:
+            # Check if this looks like concatenated text (first 2000 + last 1000)
+            # Names are in the first part, so we'll use only the first 1000 from the start
+            logger.debug(
+                f"Text length {text_length} might be concatenated, using only first {NAME_EXTRACTION_TEXT_LIMIT} chars",
+                extra={"file_name": filename, "text_length": text_length}
+            )
+        
+        # Always take from the absolute beginning - ignore any truncation that may have happened
+        # If text was truncated elsewhere, we still want the FIRST characters only
+        if text_length >= NAME_EXTRACTION_TEXT_LIMIT:
+            # Take first 1000 characters from the start (regardless of how text was prepared)
+            limited_text = resume_text[:NAME_EXTRACTION_TEXT_LIMIT]
+        elif text_length >= NAME_EXTRACTION_MIN_TEXT:
+            # Use all if between 500-1000
+            limited_text = resume_text
+        else:
+            # Use what we have if less than 500
+            limited_text = resume_text
+        
+        # Log what we're using for debugging
+        logger.info(
+            f"📝 NAME EXTRACTION: Using {len(limited_text)} characters (from {text_length} total) for {filename}",
+            extra={
+                "file_name": filename, 
+                "text_length": text_length, 
+                "limited_length": len(limited_text),
+                "text_preview": limited_text[:300],  # First 300 chars for debugging
+                "note": "Using ONLY first characters, NOT first 2000 + last 1000"
+            }
+        )
+        
+        # Step 2: Try LLM extraction first with detailed prompt (as user requested)
         try:
+            name = await self._extract_name_with_llm(limited_text, filename)
+            if name:
+                logger.info(
+                    f"✅ NAME EXTRACTED via LLM from {filename}",
+                    extra={
+                        "file_name": filename,
+                        "extracted_name": name,
+                        "method": "llm"
+                    }
+                )
+                return name
+            else:
+                logger.debug(
+                    f"LLM did not find name in {filename}, trying regex fallback",
+                    extra={
+                        "file_name": filename,
+                        "first_lines": "\n".join(limited_text.split('\n')[:5])  # First 5 lines for debugging
+                    }
+                )
+        except Exception as e:
+            # Never raise - just log and try regex fallback
+            logger.warning(
+                f"LLM name extraction failed for {filename}, trying regex fallback: {e}",
+                extra={
+                    "file_name": filename,
+                    "error": str(e),
+                    "error_type": type(e).__name__
+                }
+            )
+        
+        # Step 3: Try regex-based fallback if LLM fails or times out
+        try:
+            regex_name = self._extract_name_regex_fallback(limited_text)
+            if regex_name:
+                logger.info(
+                    f"✅ NAME EXTRACTED via regex fallback from {filename}",
+                    extra={
+                        "file_name": filename,
+                        "extracted_name": regex_name,
+                        "method": "regex_fallback"
+                    }
+                )
+                return regex_name
+        except Exception as e:
+            logger.warning(
+                f"Regex fallback failed for {filename}: {e}",
+                extra={"file_name": filename, "error": str(e)},
+                exc_info=True
+            )
+        
+        # Step 4: Return None if nothing found (never block the pipeline)
+        logger.info(
+            f"⚠️  NO NAME FOUND for {filename}",
+            extra={"file_name": filename, "status": "not_found"}
+        )
+        return None
+    
+    async def _extract_name_with_llm(self, text: str, filename: str) -> Optional[str]:
+        """
+        Extract name using LLM with strict timeout and anti-hallucination rules.
+        Never blocks - returns None on any error.
+        
+        Args:
+            text: Limited resume text (first 500-1000 characters)
+            filename: Name of the resume file (for logging)
+        
+        Returns:
+            Extracted name or None
+        """
+        try:
+            # Quick connection check with short timeout
             is_connected, available_model = await self._check_ollama_connection()
             if not is_connected:
-                raise RuntimeError(
-                    f"OLLAMA is not accessible at {self.ollama_host}. "
-                    "Please ensure OLLAMA is running. Start it with: ollama serve"
-                )
+                logger.warning(f"OLLAMA not accessible for {filename}, skipping LLM extraction")
+                return None
             
             model_to_use = self.model
             if available_model and "llama3.1" not in available_model.lower():
-                logger.warning(
-                    f"llama3.1 not found, using available model: {available_model}",
-                    extra={"available_model": available_model}
-                )
                 model_to_use = available_model
             
-            prompt = f"""{NAME_PROMPT}
-
-Input resume text:
-{resume_text[:10000]}
-
-Output (JSON only, no other text, no explanations):"""
+            # Detailed prompt with anti-hallucination rules and strict JSON requirement
+            prompt = f"{NAME_PROMPT}\n\nInput resume text:\n{text}\n\nOutput (JSON only, no other text, no explanations):"
             
-            logger.info(
-                f"📤 CALLING OLLAMA API for name extraction",
+            logger.debug(
+                f"📤 CALLING OLLAMA API for name extraction (timeout: {OLLAMA_TIMEOUT}s)",
                 extra={
                     "file_name": filename,
                     "model": model_to_use,
                     "ollama_host": self.ollama_host,
+                    "text_length": len(text)
                 }
             )
             
             result = None
             last_error = None
             
-            async with httpx.AsyncClient(timeout=Timeout(600.0)) as client:
+            # Use short timeout to prevent blocking
+            async with httpx.AsyncClient(timeout=Timeout(OLLAMA_TIMEOUT)) as client:
                 try:
+                    # Try /api/generate first
                     response = await client.post(
                         f"{self.ollama_host}/api/generate",
                         json={
@@ -205,8 +428,9 @@ Output (JSON only, no other text, no explanations):"""
                             "prompt": prompt,
                             "stream": False,
                             "options": {
-                                "temperature": 0.1,
+                                "temperature": 0.0,  # Deterministic, no creativity
                                 "top_p": 0.9,
+                                "num_predict": OLLAMA_MAX_TOKENS,  # Limit response length
                             }
                         }
                     )
@@ -216,30 +440,28 @@ Output (JSON only, no other text, no explanations):"""
                     if not response_text and "message" in result:
                         response_text = result.get("message", {}).get("content", "")
                     result = {"response": response_text}
-                    logger.info("✅ Successfully used /api/generate endpoint for name extraction")
+                    logger.debug("✅ Successfully used /api/generate endpoint for name extraction")
                 except httpx.HTTPStatusError as e:
                     if e.response.status_code != 404:
                         raise
                     last_error = e
-                    logger.warning("OLLAMA /api/generate returned 404, trying /api/chat endpoint")
+                    logger.debug("OLLAMA /api/generate returned 404, trying /api/chat endpoint")
                 
                 if result is None:
                     try:
-                        # Use /api/chat with fresh conversation (no history)
-                        # System message ensures complete session isolation
+                        # Try /api/chat with minimal context
                         response = await client.post(
                             f"{self.ollama_host}/api/chat",
                             json={
                                 "model": model_to_use,
                                 "messages": [
-                                    {"role": "system", "content": "You are a fresh, isolated extraction agent. This is a new, independent task with no previous context. Ignore any previous conversations."},
                                     {"role": "user", "content": prompt}
                                 ],
                                 "stream": False,
                                 "options": {
-                                    "temperature": 0.1,
+                                    "temperature": 0.0,  # Deterministic, no creativity
                                     "top_p": 0.9,
-                                    "num_predict": 500,  # Limit response length for isolation
+                                    "num_predict": OLLAMA_MAX_TOKENS,  # Limit response length
                                 }
                             }
                         )
@@ -249,18 +471,19 @@ Output (JSON only, no other text, no explanations):"""
                             result = {"response": result["message"]["content"]}
                         else:
                             raise ValueError("Unexpected response format from OLLAMA chat API")
-                        logger.info("Successfully used /api/chat endpoint for name extraction")
+                        logger.debug("✅ Successfully used /api/chat endpoint for name extraction")
                     except Exception as e2:
                         last_error = e2
-                        logger.error(f"OLLAMA /api/chat also failed: {e2}", extra={"error": str(e2)})
+                        logger.debug(f"OLLAMA /api/chat also failed: {e2}")
                 
                 if result is None:
-                    raise RuntimeError(
-                        f"All OLLAMA API endpoints failed. "
-                        f"OLLAMA is running at {self.ollama_host} but endpoints return errors. "
-                        f"Last error: {last_error}"
+                    logger.warning(
+                        f"All OLLAMA API endpoints failed for {filename}",
+                        extra={"last_error": str(last_error) if last_error else "Unknown"}
                     )
+                    return None
             
+            # Extract JSON from response
             raw_output = ""
             if isinstance(result, dict):
                 if "response" in result:
@@ -277,13 +500,9 @@ Output (JSON only, no other text, no explanations):"""
             parsed_data = self._extract_json(raw_output)
             name = parsed_data.get("name")
             
-            if name:
-                name = str(name).strip()
-                if not name or name.lower() in ["null", "none", ""]:
-                    name = None
-            
-            logger.info(
-                f"✅ NAME EXTRACTED from {filename}",
+            # Log what we got from LLM for debugging
+            logger.debug(
+                f"LLM raw response for {filename}",
                 extra={
                     "file_name": filename,
                     "extracted_name": name,
@@ -291,31 +510,39 @@ Output (JSON only, no other text, no explanations):"""
                 }
             )
             
+            # Anti-hallucination: validate name
+            if name:
+                name = str(name).strip()
+                # Reject if empty, "null", "none", or suspiciously long
+                if not name or name.lower() in ["null", "none", ""] or len(name) > 100:
+                    logger.debug(f"Rejected name (empty/null/too long): {name}")
+                    name = None
+                # Reject if contains too many numbers or special characters (except hyphens, apostrophes, spaces, periods)
+                elif re.search(r'[0-9]{2,}', name):  # Only reject if 2+ consecutive digits
+                    logger.warning(f"Rejected suspicious name with multiple digits: {name}")
+                    name = None
+                elif re.search(r'[@#$%&*()]', name):  # Reject special characters except allowed ones
+                    logger.warning(f"Rejected suspicious name with invalid characters: {name}")
+                    name = None
+                # Additional check: should have at least 2 letters
+                elif len(re.findall(r'[A-Za-z]', name)) < 2:
+                    logger.warning(f"Rejected name with too few letters: {name}")
+                    name = None
+            
+            if name:
+                logger.debug(f"✅ LLM extracted valid name: {name}")
+            else:
+                logger.debug(f"⚠️ LLM returned null or invalid name for {filename}")
+            
             return name
             
+        except httpx.TimeoutException:
+            logger.warning(f"OLLAMA timeout for name extraction: {filename}")
+            return None
         except httpx.HTTPError as e:
-            error_details = {
-                "error": str(e),
-                "error_type": type(e).__name__,
-                "ollama_host": self.ollama_host,
-                "model": model_to_use,
-            }
-            logger.error(
-                f"HTTP error calling OLLAMA for name extraction: {e}",
-                extra=error_details,
-                exc_info=True
-            )
-            raise RuntimeError(f"Failed to extract name with LLM: {e}")
+            logger.warning(f"HTTP error calling OLLAMA for name extraction: {e}", extra={"file_name": filename})
+            return None
         except Exception as e:
-            logger.error(
-                f"Error extracting name: {e}",
-                extra={
-                    "error": str(e),
-                    "error_type": type(e).__name__,
-                    "ollama_host": self.ollama_host,
-                    "model": model_to_use,
-                },
-                exc_info=True
-            )
-            raise
+            logger.warning(f"Unexpected error in LLM name extraction: {e}", extra={"file_name": filename})
+            return None
 
