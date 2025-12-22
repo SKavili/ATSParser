@@ -205,7 +205,7 @@ Output (JSON only, no other text, no explanations):"""
             result = None
             last_error = None
             
-            async with httpx.AsyncClient(timeout=Timeout(600.0)) as client:
+            async with httpx.AsyncClient(timeout=Timeout(1200.0)) as client:
                 try:
                     response = await client.post(
                         f"{self.ollama_host}/api/generate",

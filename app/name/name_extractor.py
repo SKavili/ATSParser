@@ -286,7 +286,7 @@ Output (JSON only, no other text, no explanations):"""
                 f"✅ NAME EXTRACTED from {filename}",
                 extra={
                     "file_name": filename,
-                    "name": name,
+                    "extracted_name": name,
                     "status": "success" if name else "not_found"
                 }
             )

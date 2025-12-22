@@ -58,8 +58,12 @@ class NameService:
                 updated_resume = await self.resume_repo.update(resume_id, {"candidatename": name})
                 if updated_resume:
                     logger.info(
-                        f"✅ DATABASE UPDATED: Successfully saved name for resume ID {resume_id}",
-                        extra={"resume_id": resume_id, "name": name}
+                        "Name extracted and saved",
+                        extra={
+                            "extracted_name": name,
+                            "resume_id": resume_id,
+                            "file_name": filename
+                        }
                     )
                 else:
                     logger.error(f"❌ DATABASE UPDATE FAILED: Resume ID {resume_id} - record not found")
