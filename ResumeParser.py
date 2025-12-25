@@ -544,7 +544,7 @@ async def parse_resume_with_ollama(
     
     # Fallback to HTTP API
     if result is None:
-        async with httpx.AsyncClient(timeout=Timeout(600.0)) as client:
+        async with httpx.AsyncClient(timeout=Timeout(1200.0)) as client:
             # Try /api/generate endpoint
             try:
                 response = await client.post(
