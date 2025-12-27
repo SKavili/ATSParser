@@ -76,7 +76,7 @@ Example valid outputs:
 # ============================================================================
 # IT SKILLS PROMPT
 # ============================================================================
-IT_SKILLS_PROMPT = """
+SKILLS_PROMPT = """
 IMPORTANT: This is a FRESH, ISOLATED extraction task. Ignore any previous context or conversations.
 
 ROLE:
