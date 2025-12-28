@@ -97,7 +97,35 @@ for %%F in ("%RESUME_FOLDER%\*.docx") do (
     call :ProcessFile "%%F" "!EXTRACT_MODULES!"
 )
 
-REM Note: Only processing .pdf, .doc, .docx files (not .txt)
+REM Process HTML files
+for %%F in ("%RESUME_FOLDER%\*.html") do (
+    set /a FILE_COUNT+=1
+    call :ProcessFile "%%F" "!EXTRACT_MODULES!"
+)
+
+REM Process HTM files
+for %%F in ("%RESUME_FOLDER%\*.htm") do (
+    set /a FILE_COUNT+=1
+    call :ProcessFile "%%F" "!EXTRACT_MODULES!"
+)
+
+REM Process image files (JPG, PNG, etc.)
+for %%F in ("%RESUME_FOLDER%\*.jpg") do (
+    set /a FILE_COUNT+=1
+    call :ProcessFile "%%F" "!EXTRACT_MODULES!"
+)
+
+for %%F in ("%RESUME_FOLDER%\*.jpeg") do (
+    set /a FILE_COUNT+=1
+    call :ProcessFile "%%F" "!EXTRACT_MODULES!"
+)
+
+for %%F in ("%RESUME_FOLDER%\*.png") do (
+    set /a FILE_COUNT+=1
+    call :ProcessFile "%%F" "!EXTRACT_MODULES!"
+)
+
+REM Note: Processing .pdf, .doc, .docx, .html, .htm, .jpg, .jpeg, .png files
  
 echo.
 echo ========================================
@@ -133,6 +161,11 @@ set "CANDIDATE_NAME=!CANDIDATE_NAME:.pdf=!"
 set "CANDIDATE_NAME=!CANDIDATE_NAME:.doc=!"
 set "CANDIDATE_NAME=!CANDIDATE_NAME:.docx=!"
 set "CANDIDATE_NAME=!CANDIDATE_NAME:.txt=!"
+set "CANDIDATE_NAME=!CANDIDATE_NAME:.html=!"
+set "CANDIDATE_NAME=!CANDIDATE_NAME:.htm=!"
+set "CANDIDATE_NAME=!CANDIDATE_NAME:.jpg=!"
+set "CANDIDATE_NAME=!CANDIDATE_NAME:.jpeg=!"
+set "CANDIDATE_NAME=!CANDIDATE_NAME:.png=!"
 set "CANDIDATE_NAME=!CANDIDATE_NAME:_= !"
 set "CANDIDATE_NAME=!CANDIDATE_NAME:-= !"
  
@@ -152,11 +185,29 @@ curl -X POST "%API_URL%" ^
   -F "file=@\"!RESUME_FILE!\"" ^
   -F "candidate_name=!CANDIDATE_NAME!" ^
   -F "job_role=!JOB_ROLE!" ^
-  -F "extract_modules=!EXTRACT_MODULES!"
+  -F "extract_modules=!EXTRACT_MODULES!" > temp_response.txt 2>&1
  
+REM Check if curl command succeeded and if response contains error
+set CURL_SUCCESS=0
 if errorlevel 1 (
+    set CURL_SUCCESS=1
+) else (
+    REM Check if response contains error message
+    findstr /C:"\"detail\"" /C:"\"error\"" /C:"Failed" temp_response.txt >nul 2>&1
+    if errorlevel 1 (
+        REM No error found in response
+        set CURL_SUCCESS=0
+    ) else (
+        REM Error found in response
+        set CURL_SUCCESS=1
+    )
+)
+
+if !CURL_SUCCESS!==1 (
     echo.
-    echo [ERROR] Failed to upload: !FILENAME!
+    echo [ERROR] Failed to upload or process: !FILENAME!
+    echo [INFO] Check temp_response.txt for details
+    type temp_response.txt
     set /a FAILED_COUNT+=1
 ) else (
     echo.
@@ -164,6 +215,9 @@ if errorlevel 1 (
     echo [INFO] Extraction completed for selected modules (check server logs for details)
     set /a SUCCESS_COUNT+=1
 )
+
+REM Clean up temp file
+if exist temp_response.txt del temp_response.txt
 endlocal
 echo.
 echo Waiting 2 seconds before processing next file...

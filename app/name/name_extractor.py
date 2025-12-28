@@ -63,7 +63,7 @@ Example valid outputs:
 # Configuration for name extraction
 NAME_EXTRACTION_TEXT_LIMIT = 1000  # Use first 1000 characters
 NAME_EXTRACTION_MIN_TEXT = 500  # Minimum characters to use
-OLLAMA_TIMEOUT = 30.0  # Short timeout to prevent blocking (10 seconds)
+OLLAMA_TIMEOUT = 90.0  # Timeout for OLLAMA API calls (90 seconds to allow sufficient processing time)
 OLLAMA_MAX_TOKENS = 100  # Limit response length for speed (enough for JSON response)
 
 
@@ -215,7 +215,7 @@ class NameExtractor:
         end_idx = cleaned_text.rfind('}')
         
         if start_idx != -1 and end_idx != -1 and end_idx > start_idx:
-            cleaned_text = cleaned_text[start_idx:end_idx + 1]
+            cleaned_taext = cleaned_text[start_idx:end_idx + 1]
         
         try:
             parsed = json.loads(cleaned_text)
@@ -505,6 +505,8 @@ class NameExtractor:
                 f"LLM raw response for {filename}",
                 extra={
                     "file_name": filename,
+                    "raw_output_preview": raw_output[:200],
+                    "parsed_name": name,
                     "extracted_name": name,
                     "status": "success" if name else "not_found"
                 }

@@ -44,6 +44,10 @@ class Settings(BaseSettings):
     sentry_dsn: Optional[str] = Field(None, alias="SENTRY_DSN")
     log_level: str = Field("INFO", alias="LOG_LEVEL")
     
+    # SQL Logging (for debugging)
+    sql_echo: bool = Field(False, alias="SQL_ECHO")  # Enable SQL query logging
+    sql_log_level: str = Field("INFO", alias="SQL_LOG_LEVEL")  # SQL log level: DEBUG, INFO, WARNING
+    
     @field_validator("mysql_host", "mysql_user", "mysql_password", "mysql_database")
     @classmethod
     def validate_mysql_fields(cls, v: str) -> str:

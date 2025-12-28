@@ -7,7 +7,7 @@ from httpx import Timeout
 
 from app.config import settings
 from app.utils.logging import get_logger
-from app.utils.cleaning import normalize_phone
+from app.utils.cleaning import normalize_phone, remove_symbols_and_emojis
 
 logger = get_logger(__name__)
 
@@ -60,6 +60,39 @@ Example valid outputs:
 {"mobile": "+1-555-123-4567"}
 {"mobile": "(555) 123-4567"}
 {"mobile": null}
+"""
+
+FALLBACK_EMAIL_MOBILE_PROMPT = """
+You are an intelligent resume data extraction engine.
+
+The resume may contain icons, symbols, images, special characters, or non-standard formatting (such as 📞, ✉️, ☎, 📍, bullets, headers, or decorative fonts) instead of plain text for contact details.
+
+IMPORTANT: The text has been cleaned to remove symbols and emojis. Look for email and phone patterns in the cleaned text.
+
+Your task is to accurately extract the candidate's EMAIL ADDRESS and MOBILE PHONE NUMBER, even if:
+
+- They appear near contact icons or symbols (which have been removed)
+- They are split across lines
+- They contain spaces, dots, brackets, or country codes
+- They are embedded in headers, footers, or side sections
+- They are written next to words like Contact, Phone, Mobile, Email, or icons
+- The resume uses non-standard formatting
+
+Extraction Rules:
+
+1. Look for email patterns: text@domain.com format (case insensitive)
+2. Look for phone patterns: 10-15 digits, may have +, -, spaces, parentheses
+3. Normalize email into standard format (lowercase, no spaces)
+4. Normalize mobile number to digits only (retain country code if present like +1)
+5. Ignore location, fax, or other numbers
+6. If multiple numbers exist, choose the most likely personal mobile number
+7. If data is truly not present in the text, return null
+
+Output Format (JSON only):
+
+{"email": "<email_or_null>","mobile": "<mobile_or_null>"} 
+
+Do not add explanations. Do not hallucinate values. Extract only from the given resume content. If email or mobile is not found, return null for that field.
 """
 
 
@@ -174,52 +207,19 @@ class MobileExtractor:
         
         # Pattern for (757)606-0446 format - no space after closing parenthesis
         # Matches: (123)456-7890, (123) 456-7890, (123)4567890, etc.
-        # Also handles pipes: |phone num:(757)606-0446| and bullet points: • (971) 282-1140 •
+        # Also handles pipes: |phone num:(757)606-0446|
         header_patterns = [
-            # Format: |phone num:(757)606-0446| or |phone num:(757)606 -0446| - with pipes and label
-            # Handles spaces before dash: "|phone num: (757)606 -0446 |"
-            re.compile(r'\|?\s*(?:phone|mobile|tel|cell)\s*(?:num|number)?\s*:?\s*\(([0-9]{3})\)\s*([0-9]{3})\s*[-.\s]?\s*([0-9]{4})\s*\|?', re.IGNORECASE),
-            # Format: | ( 470 ) 315 -3949 | - with pipes, spaces inside parentheses and around dash
-            # Handles: "Atlanta, GA 98052 | ( 470 ) 315 -3949 | carlottahayes14@gmail.com"
-            re.compile(r'\|?\s*\(\s*([0-9]{3})\s*\)\s*([0-9]{3})\s+[-.\s]?\s*([0-9]{4})\s*\|?'),
-            # Format: |(757)606-0446| or |(732) 798 -0702| or | 678 -982-0122 | - with pipes, no label
-            # Handles: "dhanush29.putti@gmail.com |(732) 798 -0702 |" (space before dash)
-            # Handles: "Armand.Kalunga@gmail.com | 678 -982-0122 |" (no parentheses, space before dash)
-            re.compile(r'\|?\s*\(?([0-9]{3})\)?\s*([0-9]{3})\s*[-.\s]?\s*([0-9]{4})\s*\|?'),
-            # Format: | (202) 820 -1280 | - with pipes and spaces before dash
-            # Handles: "| (202) 820 -1280 | meazat29@gmail.com |"
-            re.compile(r'\|?\s*\(([0-9]{3})\)\s+([0-9]{3})\s+[-.\s]?\s*([0-9]{4})\s*\|?'),
-            # Format: • (971) 282-1140 • or • (971) 282 -1140 • - with bullet point separator
-            # Handles: "Portland, OR 97229 • michael.sanganh.ho@gmail.com • (971) 282 -1140"
-            re.compile(r'[•·]\s*\(([0-9]{3})\)\s*([0-9]{3})\s*[-.\s]?\s*([0-9]{4})\s*[•·]?'),
+            # Format: |phone num:(757)606-0446| - with pipes and label, no space after parenthesis
+            # This is the exact format from the resume: |phone num:(757)606-0446|
+            re.compile(r'\|?\s*(?:phone|mobile|tel|cell)\s*(?:num|number)?\s*:\(([0-9]{3})\)([0-9]{3})[-.\s]?([0-9]{4})\s*\|?', re.IGNORECASE),
             # Format: phone num:(757)606-0446 - without pipes but with label
             re.compile(r'(?:phone|mobile|tel|cell)\s*(?:num|number)?\s*:\(([0-9]{3})\)([0-9]{3})[-.\s]?([0-9]{4})', re.IGNORECASE),
-            # Format: (251) 243-3892 - parentheses with space after, then space before dash
-            # Handles: "(251) 243-3892" from resume
-            re.compile(r'\(([0-9]{3})\)\s+([0-9]{3})\s*[-.\s]?\s*([0-9]{4})\b'),
-            # Format: ( 470 ) 315 -3949 - parentheses with spaces inside, then space before dash
-            # Handles: "( 470 ) 315 -3949" (spaces inside parentheses, space before dash)
-            re.compile(r'\(\s*([0-9]{3})\s*\)\s*([0-9]{3})\s+[-.\s]?\s*([0-9]{4})\b'),
-            # Format: (678) -545-9293 - parentheses with space after, then space and dash
-            # Handles: "Phone : (678) -545-9293" (space after closing parenthesis, space before dash)
-            re.compile(r'\(([0-9]{3})\)\s+[-.\s]?\s*([0-9]{3})[-.\s]?([0-9]{4})\b'),
-            # Format: (251) 243-3892 - parentheses with space after, then space before dash
-            # Handles: "(251) 243-3892" from resume (space after parentheses, space before dash)
-            re.compile(r'\(([0-9]{3})\)\s+([0-9]{3})\s+[-.\s]?\s*([0-9]{4})\b'),
-            # Format: (757)606-0446 or (757)606 -0446 - parentheses with optional space before dash
-            re.compile(r'\(([0-9]{3})\)\s*([0-9]{3})\s*[-.\s]?\s*([0-9]{4})\b'),
-            # Format: (757) 606-0446 or (757) 606 -0446 - parentheses with space, optional space before dash
-            re.compile(r'\(([0-9]{3})\)\s+([0-9]{3})\s*[-.\s]?\s*([0-9]{4})\b'),
-            # Format: (517)-528-5480 - dash immediately after closing parenthesis
-            # Handles: "(517)-528-5480" (dash after closing parenthesis, no space)
-            re.compile(r'\(([0-9]{3})\)\s*[-]\s*([0-9]{3})[-.\s]?([0-9]{4})\b'),
-            # Format: 404.644.4014 - phone with dots (no parentheses)
-            # Handles: "404.644.4014" (dots instead of dashes)
-            # Note: No word boundary at end to handle cases like "404.644.4014CHRISTOPHER"
-            re.compile(r'\b([0-9]{3})\.([0-9]{3})\.([0-9]{4})(?![0-9])'),
-            # Format: 678 -982-0122 - no parentheses, space before dash
-            # Handles: "678 -982-0122" (space before dash, no parentheses)
-            re.compile(r'\b([0-9]{3})\s+[-.\s]?\s*([0-9]{3})\s*[-.\s]?\s*([0-9]{4})\b'),
+            # Format: |(757)606-0446| - with pipes, no label
+            re.compile(r'\|?\s*\(([0-9]{3})\)([0-9]{3})[-.\s]?([0-9]{4})\s*\|?'),
+            # Format: (757)606-0446 - parentheses with no space, then digits-dash-digits, no pipes
+            re.compile(r'\(([0-9]{3})\)([0-9]{3})[-.\s]?([0-9]{4})\b'),
+            # Format: (757) 606-0446 - parentheses with space
+            re.compile(r'\(([0-9]{3})\)\s+([0-9]{3})[-.\s]?([0-9]{4})\b'),
             # Format with "phone" or "mobile" label: phone num:(757)606-0446 (with space after colon)
             re.compile(r'(?:phone|mobile|tel|cell)\s*(?:num|number)?\s*:\s*\(?([0-9]{3})\)?\s*([0-9]{3})[-.\s]?([0-9]{4})\b', re.IGNORECASE),
             # Format: phone:(757)606-0446 (no space after colon)
@@ -276,6 +276,7 @@ class MobileExtractor:
         Fast regex-based fallback for mobile/phone extraction.
         Extracts the first valid phone number found in the text.
         Uses comprehensive patterns to catch various phone formats.
+        Removes symbols/emojis before extraction if needed.
         
         Args:
             text: The resume text
@@ -286,47 +287,30 @@ class MobileExtractor:
         if not text:
             return None
         
+        # Try cleaning text first to remove symbols that might interfere
+        cleaned_text = remove_symbols_and_emojis(text)
+        if cleaned_text:
+            text = cleaned_text
+        
         # First, try header-specific extraction (for formats like (757)606-0446)
         # This handles cases where phone is in header with no space after parenthesis
-        # Check first 2000 chars (header area) - most common location
         header_text = text[:2000] if len(text) > 2000 else text
         header_phone = self._extract_mobile_from_header(header_text)
         if header_phone:
             logger.debug(f"Found phone using header-specific extraction: {header_phone}")
             return header_phone
         
-        # Also check last 1000 chars (footer area) - contact info sometimes in footer
-        if len(text) > 2000:
-            footer_text = text[-1000:]
-            footer_phone = self._extract_mobile_from_header(footer_text)
-            if footer_phone:
-                logger.debug(f"Found phone using footer-specific extraction: {footer_phone}")
-                return footer_phone
-        
         # Comprehensive phone number patterns (various formats)
-        # Added patterns to handle "|" and "•" separators
         phone_patterns = [
             # US formats with country code: +1 (123) 456-7890, +1-123-456-7890
             re.compile(r'\+1\s*[-.\s]?\s*\(?([0-9]{3})\)?[-.\s]?([0-9]{3})[-.\s]?([0-9]{4})\b'),
-            # Phone with pipes separator: |(732) 798-0702| or |(732) 798 -0702| or | ( 470 ) 315 -3949 |
-            # Handles: "dhanush29.putti@gmail.com |(732) 798 -0702 |"
-            # Handles: "Atlanta, GA 98052 | ( 470 ) 315 -3949 | carlottahayes14@gmail.com"
-            re.compile(r'\|?\s*\(\s*([0-9]{3})\s*\)\s*([0-9]{3})\s+[-.\s]?\s*([0-9]{4})\s*\|?'),
-            # Format: |(732) 798-0702| or |(732) 798 -0702| (no spaces inside parentheses)
-            re.compile(r'\|?\s*\(([0-9]{3})\)\s*([0-9]{3})\s*[-.\s]?\s*([0-9]{4})\s*\|?'),
-            # Phone with bullet point separator: • (971) 282-1140 • or • (971) 282 -1140 •
-            # Handles: "Portland, OR 97229 • michael.sanganh.ho@gmail.com • (971) 282 -1140"
-            re.compile(r'[•·]\s*\(([0-9]{3})\)\s*([0-9]{3})\s*[-.\s]?\s*([0-9]{4})\s*[•·]?'),
-            # US formats without country code: (123) 456-7890, (123) 456 -7890, 123-456-7890, 123.456.7890
-            # Updated to handle spaces before dash
-            re.compile(r'\(?([0-9]{3})\)?\s*([0-9]{3})\s*[-.\s]?\s*([0-9]{4})\b'),
+            # US formats without country code: (123) 456-7890, 123-456-7890, 123.456.7890
+            # Updated to handle both with and without space after parenthesis
+            re.compile(r'\(?([0-9]{3})\)?\s*[-.\s]?([0-9]{3})[-.\s]?([0-9]{4})\b'),
             # International formats: +91-1234567890, +44-20-1234-5678
             re.compile(r'\+(\d{1,3})[-.\s]?(\d{1,4})[-.\s]?(\d{1,4})[-.\s]?(\d{1,9})\b'),
             # Phone with labels: Phone: 123-456-7890, Mobile: 1234567890, Tel: +1-123-456-7890
             re.compile(r'(?:Phone|Mobile|Tel|Cell|Contact)\s*:?\s*[:\-]?\s*([+]?\d{1,3}[-.\s]?\(?\d{3}\)?[-.\s]?\d{3}[-.\s]?\d{4})', re.IGNORECASE),
-            # Phone with concatenated label (no space/colon): Phone123-456-7890 or Mobile1234567890
-            # Handles cases where label is directly concatenated with phone number
-            re.compile(r'(?:Phone|Mobile|Tel|Cell|Contact)([+]?\d{1,3}[-.\s]?\(?\d{3}\)?[-.\s]?\d{3}[-.\s]?\d{4})', re.IGNORECASE),
             # Simple 10 digit numbers (US format)
             re.compile(r'\b(\d{10})\b'),
             # 11 digit numbers starting with 1 (US with country code)
@@ -354,9 +338,6 @@ class MobileExtractor:
                         phone = ''.join(str(g) for g in match if g and str(g).strip())
                     else:
                         phone = str(match).strip()
-                    
-                    # Clean up separators and extra spaces from phone number
-                    phone = phone.replace('|', '').replace('•', '').replace('·', '').strip()
                     
                     # Skip if too short or looks like a date/year
                     digits_only = re.sub(r'[^\d]', '', phone)
@@ -398,6 +379,175 @@ class MobileExtractor:
         
         return None
     
+    async def _extract_with_fallback_prompt(self, resume_text: str, filename: str = "resume") -> Dict[str, Optional[str]]:
+        """
+        Fallback extraction method using specialized prompt for edge cases.
+        Extracts both email and mobile together when regular extraction fails.
+        Removes symbols and emojis before extraction to improve accuracy.
+        
+        Args:
+            resume_text: The text content of the resume
+            filename: Name of the resume file (for logging)
+        
+        Returns:
+            Dictionary with "email" and "mobile" keys, or {"email": None, "mobile": None} if extraction fails
+        """
+        try:
+            is_connected, available_model = await self._check_ollama_connection()
+            if not is_connected:
+                logger.debug(f"OLLAMA not accessible for fallback extraction: {filename}")
+                return {"email": None, "mobile": None}
+            
+            model_to_use = self.model
+            if available_model and "llama3.1" not in available_model.lower():
+                model_to_use = available_model
+            
+            # Remove symbols and emojis before extraction
+            cleaned_text = remove_symbols_and_emojis(resume_text)
+            if not cleaned_text:
+                cleaned_text = resume_text  # Fallback to original if cleaning removes everything
+            
+            logger.debug(
+                f"Cleaned resume text for fallback extraction (removed symbols/emojis)",
+                extra={"file_name": filename, "original_length": len(resume_text), "cleaned_length": len(cleaned_text)}
+            )
+            
+            prompt = f"""{FALLBACK_EMAIL_MOBILE_PROMPT}
+
+Resume content:
+{cleaned_text[:10000]}
+
+Output (JSON only, no other text, no explanations):"""
+            
+            logger.info(
+                f"📤 CALLING OLLAMA API for fallback email/mobile extraction",
+                extra={
+                    "file_name": filename,
+                    "model": model_to_use,
+                    "ollama_host": self.ollama_host,
+                }
+            )
+            
+            result = None
+            last_error = None
+            
+            async with httpx.AsyncClient(timeout=Timeout(60.0)) as client:
+                try:
+                    response = await client.post(
+                        f"{self.ollama_host}/api/generate",
+                        json={
+                            "model": model_to_use,
+                            "prompt": prompt,
+                            "stream": False,
+                            "options": {
+                                "temperature": 0.1,
+                                "top_p": 0.9,
+                            }
+                        }
+                    )
+                    response.raise_for_status()
+                    result = response.json()
+                    response_text = result.get("response", "") or result.get("text", "")
+                    if not response_text and "message" in result:
+                        response_text = result.get("message", {}).get("content", "")
+                    result = {"response": response_text}
+                except httpx.HTTPStatusError as e:
+                    if e.response.status_code != 404:
+                        raise
+                    last_error = e
+                    logger.debug("OLLAMA /api/generate returned 404, trying /api/chat endpoint")
+                
+                if result is None:
+                    try:
+                        response = await client.post(
+                            f"{self.ollama_host}/api/chat",
+                            json={
+                                "model": model_to_use,
+                                "messages": [
+                                    {"role": "system", "content": "You are a fresh, isolated extraction agent. This is a new, independent task with no previous context."},
+                                    {"role": "user", "content": prompt}
+                                ],
+                                "stream": False,
+                                "options": {
+                                    "temperature": 0.1,
+                                    "top_p": 0.9,
+                                    "num_predict": 500,
+                                }
+                            }
+                        )
+                        response.raise_for_status()
+                        result = response.json()
+                        if "message" in result and "content" in result["message"]:
+                            result = {"response": result["message"]["content"]}
+                        else:
+                            raise ValueError("Unexpected response format from OLLAMA chat API")
+                    except Exception as e2:
+                        last_error = e2
+                        logger.debug(f"OLLAMA /api/chat also failed: {e2}")
+                
+                if result is None:
+                    logger.warning(f"All OLLAMA API endpoints failed for fallback extraction: {last_error}")
+                    return {"email": None, "mobile": None}
+            
+            raw_output = ""
+            if isinstance(result, dict):
+                if "response" in result:
+                    raw_output = str(result["response"])
+                elif "text" in result:
+                    raw_output = str(result["text"])
+                elif "content" in result:
+                    raw_output = str(result["content"])
+                elif "message" in result and isinstance(result.get("message"), dict):
+                    raw_output = str(result["message"].get("content", ""))
+            else:
+                raw_output = str(result)
+            
+            # Extract JSON from response
+            cleaned_text = raw_output.strip()
+            if cleaned_text.startswith("```json"):
+                cleaned_text = cleaned_text[7:]
+            elif cleaned_text.startswith("```"):
+                cleaned_text = cleaned_text[3:]
+            if cleaned_text.endswith("```"):
+                cleaned_text = cleaned_text[:-3]
+            cleaned_text = cleaned_text.strip()
+            
+            start_idx = cleaned_text.find('{')
+            end_idx = cleaned_text.rfind('}')
+            
+            if start_idx != -1 and end_idx != -1 and end_idx > start_idx:
+                cleaned_text = cleaned_text[start_idx:end_idx + 1]
+            
+            try:
+                parsed = json.loads(cleaned_text)
+                if isinstance(parsed, dict):
+                    email = parsed.get("email")
+                    mobile = parsed.get("mobile")
+                    
+                    # Normalize mobile number
+                    if mobile:
+                        mobile = normalize_phone(str(mobile).strip())
+                    
+                    logger.info(
+                        f"✅ FALLBACK EXTRACTION completed for {filename}",
+                        extra={
+                            "file_name": filename,
+                            "email": email,
+                            "mobile": mobile,
+                            "status": "success"
+                        }
+                    )
+                    
+                    return {"email": email, "mobile": mobile}
+            except json.JSONDecodeError:
+                logger.warning(f"Failed to parse JSON from fallback extraction response: {filename}")
+            
+            return {"email": None, "mobile": None}
+            
+        except Exception as e:
+            logger.debug(f"Fallback extraction failed: {e}", extra={"file_name": filename, "error": str(e)})
+            return {"email": None, "mobile": None}
+    
     async def extract_mobile(self, resume_text: str, filename: str = "resume") -> Optional[str]:
         """
         Extract mobile phone number from resume text using regex fallback first, then OLLAMA LLM.
@@ -416,8 +566,34 @@ class MobileExtractor:
         
         # Step 1: Try header-specific extraction first (handles formats like (757)606-0446)
         # This is critical for resumes where phone is in header with no space after parenthesis
+        # For HTML files, skip phones in forwarding sections
         try:
             header_text = resume_text[:2000] if len(resume_text) > 2000 else resume_text
+            
+            # For HTML files, filter out forwarding sections
+            if filename.lower().endswith(('.html', '.htm')):
+                # Skip phones that appear near forwarding keywords
+                forwarding_keywords = ['forwarded by', 'to:', 'from:', 'resume link', 'comments:', 'i thought you might be interested']
+                lines = header_text.split('\n')
+                filtered_lines = []
+                skip_section = False
+                
+                for line in lines:
+                    line_lower = line.lower()
+                    # Detect forwarding section
+                    if any(keyword in line_lower for keyword in forwarding_keywords):
+                        skip_section = True
+                        continue
+                    # Detect end of forwarding section
+                    if any(marker in line_lower for marker in ['personal profile', 'name:', 'phone:', 'email:']):
+                        skip_section = False
+                    # Skip lines in forwarding section
+                    if skip_section:
+                        continue
+                    filtered_lines.append(line)
+                
+                header_text = '\n'.join(filtered_lines)
+            
             header_mobile = self._extract_mobile_from_header(header_text)
             if header_mobile:
                 logger.info(
@@ -429,8 +605,25 @@ class MobileExtractor:
             logger.debug(f"Header-specific mobile extraction failed: {e}")
         
         # Step 2: Try fast regex extraction on full text
+        # For HTML files, prioritize phones in "Personal Profile" sections
         try:
-            regex_mobile = self._extract_mobile_regex_fallback(resume_text)
+            text_to_search = resume_text
+            
+            # For HTML files, focus on candidate sections
+            if filename.lower().endswith(('.html', '.htm')):
+                # Extract phones from "Personal Profile" or "Name:" sections first
+                personal_profile_match = re.search(r'(?i)(Personal\s+Profile|Name\s*:.*?Phone\s*:.*?)(.*?)(?=Experience|Education|Skills|$)', resume_text, re.DOTALL)
+                if personal_profile_match:
+                    profile_section = personal_profile_match.group(0)
+                    regex_mobile = self._extract_mobile_regex_fallback(profile_section)
+                    if regex_mobile:
+                        logger.info(
+                            f"✅ MOBILE EXTRACTED via regex from Personal Profile section of {filename}",
+                            extra={"file_name": filename, "mobile": regex_mobile, "method": "regex_personal_profile"}
+                        )
+                        return regex_mobile
+            
+            regex_mobile = self._extract_mobile_regex_fallback(text_to_search)
             if regex_mobile:
                 logger.info(
                     f"✅ MOBILE EXTRACTED via regex from {filename}",
@@ -466,7 +659,7 @@ class MobileExtractor:
         except Exception as e:
             logger.debug(f"Section-based regex mobile extraction failed: {e}")
         
-        # Step 2: Try LLM extraction if regex didn't find anything
+        # Step 4: Try LLM extraction if regex didn't find anything
         try:
             is_connected, available_model = await self._check_ollama_connection()
             if not is_connected:
@@ -578,7 +771,6 @@ Output (JSON only, no other text, no explanations):"""
                     raw_output = str(result["message"].get("content", ""))
             else:
                 raw_output = str(result)
-            
             parsed_data = self._extract_json(raw_output)
             mobile = parsed_data.get("mobile")
             
@@ -586,33 +778,93 @@ Output (JSON only, no other text, no explanations):"""
             if mobile:
                 mobile = normalize_phone(str(mobile).strip())
             
-            logger.info(
-                f"✅ MOBILE EXTRACTED from {filename}",
-                extra={
-                    "file_name": filename,
-                    "mobile": mobile,
-                    "status": "success" if mobile else "not_found"
-                }
-            )
+            # If regular extraction found mobile, return it
+            if mobile:
+                logger.info(
+                    f"✅ MOBILE EXTRACTED from {filename}",
+                    extra={
+                        "file_name": filename,
+                        "mobile": mobile,
+                        "status": "success"
+                    }
+                )
+                return mobile
             
-            return mobile
+            # If regular extraction returned null, try fallback prompt
+            logger.info(
+                f"⚠️ Regular mobile extraction returned null for {filename}, trying fallback prompt",
+                extra={"file_name": filename, "status": "trying_fallback"}
+            )
+            try:
+                fallback_result = await self._extract_with_fallback_prompt(resume_text, filename)
+                mobile = fallback_result.get("mobile")
+                if mobile:
+                    logger.info(
+                        f"✅ MOBILE EXTRACTED via fallback prompt from {filename}",
+                        extra={"file_name": filename, "mobile": mobile, "method": "fallback_prompt"}
+                    )
+                    return mobile
+            except Exception as fallback_error:
+                logger.debug(f"Fallback prompt extraction failed: {fallback_error}")
+            
+            logger.info(
+                f"❌ MOBILE NOT FOUND in {filename}",
+                extra={"file_name": filename, "status": "not_found"}
+            )
+            return None
             
         except httpx.TimeoutException:
-            logger.warning(f"OLLAMA timeout for mobile extraction: {filename}, returning None")
+            logger.warning(f"OLLAMA timeout for mobile extraction: {filename}, trying fallback prompt")
+            # Try fallback prompt before giving up
+            try:
+                fallback_result = await self._extract_with_fallback_prompt(resume_text, filename)
+                mobile = fallback_result.get("mobile")
+                if mobile:
+                    logger.info(
+                        f"✅ MOBILE EXTRACTED via fallback prompt (after timeout) from {filename}",
+                        extra={"file_name": filename, "mobile": mobile, "method": "fallback_prompt"}
+                    )
+                    return mobile
+            except Exception as fallback_error:
+                logger.debug(f"Fallback prompt extraction failed after timeout: {fallback_error}")
             return None
         except httpx.HTTPError as e:
             logger.warning(
                 f"HTTP error calling OLLAMA for mobile extraction: {e}",
                 extra={"file_name": filename, "error": str(e)}
             )
+            # Try fallback prompt before giving up
+            try:
+                fallback_result = await self._extract_with_fallback_prompt(resume_text, filename)
+                mobile = fallback_result.get("mobile")
+                if mobile:
+                    logger.info(
+                        f"✅ MOBILE EXTRACTED via fallback prompt (after HTTP error) from {filename}",
+                        extra={"file_name": filename, "mobile": mobile, "method": "fallback_prompt"}
+                    )
+                    return mobile
+            except Exception as fallback_error:
+                logger.debug(f"Fallback prompt extraction failed after HTTP error: {fallback_error}")
             return None
         except Exception as e:
             logger.warning(
                 f"Error extracting mobile with LLM: {e}",
                 extra={"file_name": filename, "error": str(e)}
             )
+            # Try fallback prompt before giving up
+            try:
+                fallback_result = await self._extract_with_fallback_prompt(resume_text, filename)
+                mobile = fallback_result.get("mobile")
+                if mobile:
+                    logger.info(
+                        f"✅ MOBILE EXTRACTED via fallback prompt from {filename}",
+                        extra={"file_name": filename, "mobile": mobile, "method": "fallback_prompt"}
+                    )
+                    return mobile
+            except Exception as fallback_error:
+                logger.debug(f"Fallback prompt extraction also failed: {fallback_error}")
             return None
         
-        # If LLM extraction failed, return None (regex already tried)
+        # All extraction methods have been tried, return None
         return None
 

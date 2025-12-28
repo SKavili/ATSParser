@@ -98,3 +98,41 @@ def sanitize_filename(filename: str) -> str:
     
     return filename
 
+
+def remove_symbols_and_emojis(text: Optional[str]) -> Optional[str]:
+    """
+    Remove emojis, symbols, and special characters from text that might interfere with extraction.
+    Removes: 📞, ✉️, ☎, 📍, and other emojis/symbols, but preserves email and phone number patterns.
+    
+    Args:
+        text: Text that may contain emojis and symbols
+    
+    Returns:
+        Cleaned text with symbols removed, or None if input is None
+    """
+    if not text:
+        return None
+    
+    # Remove emojis and symbols (Unicode ranges for emojis)
+    # This includes: 📞, ✉️, ☎, 📍, and other common emojis
+    text = re.sub(r'[\U0001F300-\U0001F9FF]', '', text)  # Emoticons & Symbols
+    text = re.sub(r'[\U0001F600-\U0001F64F]', '', text)  # Emoticons
+    text = re.sub(r'[\U0001F680-\U0001F6FF]', '', text)  # Transport & Map
+    text = re.sub(r'[\U00002600-\U000026FF]', '', text)  # Miscellaneous Symbols
+    text = re.sub(r'[\U00002700-\U000027BF]', '', text)  # Dingbats
+    text = re.sub(r'[\U0001F900-\U0001F9FF]', '', text)  # Supplemental Symbols
+    
+    # Remove specific common contact icons if they appear as single characters
+    # These are common in resumes: ☎, ✉, 📞, 📍, etc.
+    text = re.sub(r'[☎✉📞📍📧📱]', '', text)
+    
+    # Remove other decorative symbols but keep essential punctuation for emails/phones
+    # Keep: @, ., -, +, (, ), spaces, digits, letters
+    # Remove: bullets, arrows, decorative characters
+    text = re.sub(r'[•▪▫‣⁃→←↑↓⇒⇐⇑⇓]', '', text)  # Bullets and arrows
+    text = re.sub(r'[│┃┄┅┆┇┈┉┊┋║]', '', text)  # Box drawing characters
+    
+    # Normalize whitespace (replace multiple spaces/tabs with single space)
+    text = re.sub(r'\s+', ' ', text)
+    
+    return text.strip() if text.strip() else None
