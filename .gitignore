@@ -56,3 +56,6 @@ alembic.ini.bak
 
 Resumes/
 
+# Test Data
+TestData/Hasina/
+
