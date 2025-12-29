@@ -19,134 +19,129 @@ except ImportError:
     logger.warning("OLLAMA Python client not available, using HTTP API directly")
 
 GATEWAY_PROMPT = """
-IMPORTANT: This is a FRESH, ISOLATED classification task. Ignore any previous context or conversations.
+IMPORTANT: This is a FRESH, ISOLATED classification task.
+Ignore all prior context, memory, or previous conversations.
 
 ROLE:
+You are an Enterprise ATS Domain Classification Gateway.
 
-You are an ATS resume classification gateway responsible for identifying whether a candidate profile
-
-belongs to an IT or NON-IT domain.
+Your sole responsibility is to determine whether a candidate profile
+belongs to the IT domain or the NON-IT domain.
 
 CONTEXT:
-
-Resumes may be unstructured, inconsistently formatted, or incomplete.
-
-You must make a decision using ONLY limited resume content.
-
-Do not assume, infer, or guess beyond the allowed text scope.
+- Resume content may be unstructured, partial, or inconsistently formatted.
+- Decisions must be made using ONLY the provided resume text.
+- Do NOT infer intent, career aspirations, or future roles.
+- Do NOT normalize, reinterpret, or guess missing information.
 
 INPUT SCOPE:
+- You are provided with the first 1000 characters of resume text.
 
-Read ONLY the first 300 characters of the resume text.
+MASTER DOMAIN DEFINITIONS:
 
-Do NOT analyze or reference any content beyond the first 300 characters.
+IT DOMAIN includes (but is not limited to):
+- Full Stack Development (Java, Python, .NET)
+- Programming & Scripting
+- Databases & Data Technologies
+- Cloud Platforms (Azure, AWS)
+- DevOps & Platform Engineering
+- Artificial Intelligence & Machine Learning
+- Generative AI & Large Language Models
+- Data Science
+- Data Analysis & Business Intelligence
+- Networking & Security
+- Software Tools & Platforms
+- Methodologies & Practices (Agile, DevOps, SDLC)
+- Web & Mobile Development
+- Microsoft Dynamics & Power Platform
+- SAP Ecosystem
+- Salesforce Ecosystem
+- ERP Systems
+- IT Business Analysis
+- IT Project / Program Management
+
+NON-IT DOMAIN includes (but is not limited to):
+- Business & Management
+- Finance & Accounting
+- Banking, Financial Services & Insurance (BFSI)
+- Sales & Marketing
+- Human Resources (HR)
+- Operations & Supply Chain Management
+- Procurement & Vendor Management
+- Manufacturing & Production
+- Quality, Compliance & Audit
+- Project Management (Non-IT)
+- Strategy & Consulting
+- Entrepreneurship & Startups
+- Education, Training & Learning
+- Healthcare & Life Sciences
+- Pharmaceuticals & Clinical Research
+- Retail & E-Commerce (Non-Tech)
+- Logistics & Transportation
+- Real Estate & Facilities Management
+- Construction & Infrastructure
+- Energy, Utilities & Sustainability
+- Agriculture & Agri-Business
+- Hospitality, Travel & Tourism
+- Media, Advertising & Communications
+- Legal, Risk & Corporate Governance
+- Public Sector & Government Services
+- NGOs, Social Impact & CSR
+- Customer Service & Customer Experience
+- Administration & Office Management
+- Product Management (Business / Functional)
+- Data, Analytics & Decision Sciences (Non-Technical)
 
 TASK:
+Determine whether the resume belongs to IT or NON-IT domain.
 
-Determine whether the resume represents an IT profile or a NON-IT profile
+CLASSIFICATION RULES (STRICT):
 
-based strictly on the presence of IT indicators within the first 300 characters.
+1. Explicit IT Technical Indicators:
+   - Programming languages, frameworks, databases, cloud platforms,
+     DevOps tools, AI/ML, ERP technical platforms, or software systems.
 
-ANALYSIS CRITERIA (ANY ONE is sufficient):
+2. IT Job Titles or Roles:
+   - Developer, Engineer, Architect, Data Scientist, Data Engineer,
+     DevOps Engineer, Cloud Engineer, QA / Automation,
+     Business Analyst (IT), IT Project / Program Manager,
+     AI / ML / GenAI roles.
 
-1. Technical Skills Indicators:
-
-   Look for explicit mentions of IT or technical skills such as:
-
-   - Programming languages (Java, Python, C#, JavaScript, etc.)
-
-   - Frameworks or platforms (.NET, Spring, React, Angular, Node.js)
-
-   - Databases (MySQL, PostgreSQL, MongoDB, Oracle)
-
-   - Cloud / DevOps (AWS, Azure, Docker, Kubernetes)
-
-   - Networking, operating systems, security, automation tools
-
-2. Job Titles / Roles:
-
-   Look for IT-related designations such as:
-
-   - Software Engineer / Developer/Programmer
-
-   - Full Stack / Backend / Frontend Developer
-
-   - Web Developer / Mobile Developer / Game Developer
-
-   - Data Engineer / Data Scientist
-
-   - DevOps / Cloud Engineer
-
-   - System Administrator / Network Engineer
-
-   - QA / Automation Engineer
-   - Business Analyst
-   - project /program manager
-   - AI/ML  / Gen Ai Engineer
-
-
-3. Experience Descriptions (IT-Specific Work):
-
-   Look for IT-related action statements such as:
-
-   - developed applications
-
-   - designed or implemented systems / APIs
-
-   - managed or optimized databases
-
-   - deployed infrastructure or applications
-
-   - automated pipelines or workflows
-
-   - debugged or troubleshot systems
-
-   - maintained servers or networks
+3. IT Work Descriptions:
+   - Designing, developing, coding, configuring, deploying,
+     integrating, automating, optimizing, debugging, maintaining
+     software systems, infrastructure, platforms, or applications.
 
 IMPORTANT EXCLUSIONS:
+- Ignore generic management, coordination, sales, HR, finance,
+  operations, teaching, consulting, or customer service content
+  unless explicitly tied to IT systems or platforms.
+- Do NOT treat tools like Excel, PowerPoint, or basic reporting
+  as IT indicators unless linked to technical platforms or systems.
 
-Ignore generic or non-IT activities such as:
+DECISION LOGIC (HARD STOP):
+- If ANY IT indicator is detected:
+  - STOP further analysis immediately
+  - Classify as IT
 
-- Team management
+- If NO IT indicator is detected:
+  - Classify as NON_IT
 
-- Operations, sales, marketing
+OUTPUT FORMAT:
+Return only valid JSON. No additional text. No explanations. No markdown formatting.
 
-- Administration or coordination
+JSON SCHEMA:
+{
+  "profile_type": "IT" | "NON_IT",
+  "domain": "string | null"
+}
 
-- Customer service or business handling without technical context
-
-DECISION RULES:
-
-- If ANY ONE of the above IT indicators is found within the first 300 characters:
-
-  - STOP analysis immediately
-
-  - Classify the profile as IT
-
-  - Output exactly:
-
-    NAVIGATE_TO_IT_SKILLS_EXTRACTION
-
-- If NONE of the IT indicators are found within the first 300 characters:
-
-  - Classify the profile as NON-IT
-
-  - Output exactly:
-
-    NAVIGATE_TO_NON_IT_SKILLS_EXTRACTION
-
-OUTPUT RULES (STRICT):
-
-- Output ONE line only
-
-- No explanations, no summaries, no extra text
-
-- Allowed outputs ONLY:
-
-  - NAVIGATE_TO_IT_SKILLS_EXTRACTION
-
-  - NAVIGATE_TO_NON_IT_SKILLS_EXTRACTION
-
+Example valid outputs:
+{"profile_type": "IT", "domain": null}
+{"profile_type": "NON_IT", "domain": "Healthcare"}
+{"profile_type": "NON_IT", "domain": "Real Estate"}
+{"profile_type": "NON_IT", "domain": "Insurance"}
+{"profile_type": "NON_IT", "domain": null}
 """
 
 SKILLS_PROMPT = """
@@ -476,7 +471,7 @@ class SkillsExtractor:
         """
         try:
             # Use only first 300 characters
-            resume_snippet = resume_text[:300] if resume_text else ""
+            resume_snippet = resume_text[:1000] if resume_text else ""
             
             if not resume_snippet or not resume_snippet.strip():
                 logger.warning(
@@ -702,13 +697,19 @@ Output (one word only: IT or NON_IT):"""
         )
         return {"skills": []}
     
-    async def extract_skills(self, resume_text: str, filename: str = "resume") -> List[str]:
+    async def extract_skills(
+        self, 
+        resume_text: str, 
+        filename: str = "resume",
+        custom_prompt: Optional[str] = None
+    ) -> List[str]:
         """
         Extract skills from resume text using OLLAMA LLM.
         
         Args:
             resume_text: The text content of the resume
             filename: Name of the resume file (for logging)
+            custom_prompt: Optional custom prompt to use instead of gateway routing
         
         Returns:
             List of extracted skills
@@ -729,22 +730,34 @@ Output (one word only: IT or NON_IT):"""
                 )
                 model_to_use = available_model
             
-            # Gateway decision: Classify resume as IT or NON-IT
-            gateway_result = await self._gateway_decision(resume_text)
-            logger.info(
-                "Resume classified by gateway",
-                extra={
-                    "file_name": filename,
-                    "gateway_result": gateway_result,
-                    "analyzed_characters": 300
-                }
-            )
-            
-            # Route to appropriate prompt based on gateway decision
-            if gateway_result == "IT":
-                active_prompt = SKILLS_PROMPT
+            # Use custom prompt if provided, otherwise use gateway routing
+            if custom_prompt:
+                active_prompt = custom_prompt
+                logger.info(
+                    "Using custom prompt for skills extraction",
+                    extra={
+                        "file_name": filename,
+                        "prompt_source": "database",
+                        "prompt_length": len(custom_prompt)
+                    }
+                )
             else:
-                active_prompt = NON_IT_SKILLS_PROMPT
+                # Gateway decision: Classify resume as IT or NON-IT
+                gateway_result = await self._gateway_decision(resume_text)
+                logger.info(
+                    "Resume classified by gateway",
+                    extra={
+                        "file_name": filename,
+                        "gateway_result": gateway_result,
+                        "analyzed_characters": 300
+                    }
+                )
+                
+                # Route to appropriate prompt based on gateway decision
+                if gateway_result == "IT":
+                    active_prompt = SKILLS_PROMPT
+                else:
+                    active_prompt = NON_IT_SKILLS_PROMPT
             
             # ========== DEBUG: Check what's being sent to LLM ==========
             text_to_send = resume_text[:10000]

@@ -11,6 +11,8 @@ class ResumeMetadata(Base):
     __tablename__ = "resume_metadata"
     
     id = Column(Integer, primary_key=True, autoincrement=True)
+    mastercategory = Column(String(255), nullable=True)  # IT or NON_IT
+    category = Column(String(255), nullable=True)
     candidatename = Column(String(255), nullable=True)
     jobrole = Column(String(255), nullable=True)
     designation = Column(String(255), nullable=True)  # Current or most recent job title
@@ -32,4 +34,24 @@ class ResumeMetadata(Base):
     
     def __repr__(self) -> str:
         return f"<ResumeMetadata(id={self.id}, candidatename={self.candidatename}, designation={self.designation}, filename={self.filename}, status={self.status})>"
+
+
+class Prompt(Base):
+    """Database model for skills extraction prompts."""
+    __tablename__ = "prompts"
+    
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    mastercategory = Column(String(255), nullable=True)  # IT or NON_IT
+    category = Column(String(255), nullable=True)  # Specific category name
+    prompt = Column(Text, nullable=False)  # The prompt text for skills extraction
+    created_at = Column(TIMESTAMP, nullable=True, server_default=func.current_timestamp())
+    updated_at = Column(
+        TIMESTAMP,
+        nullable=True,
+        server_default=func.current_timestamp(),
+        onupdate=func.current_timestamp()
+    )
+    
+    def __repr__(self) -> str:
+        return f"<Prompt(id={self.id}, mastercategory={self.mastercategory}, category={self.category})>"
 
