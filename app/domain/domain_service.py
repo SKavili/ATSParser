@@ -46,8 +46,43 @@ class DomainService:
             
             logger.info(
                 f"📊 DOMAIN EXTRACTION RESULT for resume ID {resume_id}: {domain}",
-                extra={"resume_id": resume_id, "domain": domain, "file_name": filename}
+                extra={
+                    "resume_id": resume_id, 
+                    "domain": domain, 
+                    "file_name": filename,
+                    "resume_text_length": len(resume_text) if resume_text else 0
+                }
             )
+            
+            # Enhanced logging for null domain cases
+            if not domain:
+                logger.warning(
+                    f"⚠️ Domain extraction returned NULL for resume ID {resume_id}",
+                    extra={
+                        "resume_id": resume_id,
+                        "file_name": filename,
+                        "text_length": len(resume_text.strip()) if resume_text else 0,
+                        "text_preview": resume_text[:500] if resume_text else "",
+                        "possible_reasons": [
+                            "No domain information in resume",
+                            "Text extraction may have failed",
+                            "LLM could not identify domain",
+                            "Resume may need OCR retry"
+                        ]
+                    }
+                )
+                
+                # If resume_text seems insufficient, log for potential OCR retry
+                if resume_text and len(resume_text.strip()) < 200:
+                    logger.warning(
+                        f"⚠️ Domain extraction returned NULL with short text ({len(resume_text.strip())} chars). "
+                        f"Consider OCR retry for resume ID {resume_id}",
+                        extra={
+                            "resume_id": resume_id,
+                            "file_name": filename,
+                            "text_length": len(resume_text.strip())
+                        }
+                    )
             
             if domain:
                 logger.info(

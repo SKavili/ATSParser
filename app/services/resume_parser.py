@@ -88,6 +88,108 @@ class ResumeParser:
         """Initialize ResumeParser."""
         pass
     
+    def _convert_image_to_pdf(self, file_content: bytes, filename: str) -> bytes:
+        """
+        Convert image file to PDF for better OCR extraction.
+        
+        Args:
+            file_content: The binary content of the image file
+            filename: Name of the file
+            
+        Returns:
+            PDF content as bytes
+        """
+        if not OCR_AVAILABLE or not PYMUPDF_AVAILABLE:
+            raise ValueError("PyMuPDF required for image to PDF conversion")
+        
+        try:
+            # Load image
+            image = Image.open(BytesIO(file_content))
+            if image.mode != 'RGB':
+                image = image.convert('RGB')
+            
+            # Convert to PDF using PyMuPDF
+            img_bytes = BytesIO()
+            image.save(img_bytes, format='PDF')
+            img_bytes.seek(0)
+            
+            # Use PyMuPDF to create a proper PDF
+            pdf_doc = fitz.open(stream=img_bytes.read(), filetype="pdf")
+            pdf_bytes = pdf_doc.tobytes()
+            pdf_doc.close()
+            
+            logger.info(
+                f"✅ Converted image {filename} to PDF for OCR extraction",
+                extra={"file_name": filename}
+            )
+            return pdf_bytes
+        except Exception as e:
+            logger.error(f"Failed to convert image to PDF: {e}", extra={"file_name": filename})
+            raise ValueError(f"Failed to convert image to PDF: {e}")
+    
+    def _convert_html_to_pdf(self, file_content: bytes, filename: str) -> bytes:
+        """
+        Convert HTML file to PDF for better OCR extraction.
+        Uses PyMuPDF to render HTML to PDF.
+        
+        Args:
+            file_content: The binary content of the HTML file
+            filename: Name of the file
+            
+        Returns:
+            PDF content as bytes
+        """
+        if not PYMUPDF_AVAILABLE:
+            raise ValueError("PyMuPDF required for HTML to PDF conversion")
+        
+        try:
+            # Decode HTML content
+            html_content = file_content.decode('utf-8', errors='ignore')
+            
+            # Create PDF from HTML using PyMuPDF
+            pdf_doc = fitz.open()  # Create new PDF
+            page = pdf_doc.new_page()
+            
+            # Insert HTML content
+            page.insert_html(html_content)
+            
+            # Convert to bytes
+            pdf_bytes = pdf_doc.tobytes()
+            pdf_doc.close()
+            
+            logger.info(
+                f"✅ Converted HTML {filename} to PDF for OCR extraction",
+                extra={"file_name": filename}
+            )
+            return pdf_bytes
+        except Exception as e:
+            logger.warning(
+                f"PyMuPDF HTML to PDF conversion failed, trying alternative method: {e}",
+                extra={"file_name": filename}
+            )
+            # Alternative: Convert HTML to image then to PDF
+            try:
+                if OCR_AVAILABLE and HTML_PARSING_AVAILABLE:
+                    # Parse HTML and extract text, then create PDF from text
+                    soup = BeautifulSoup(html_content, 'html.parser')
+                    text = soup.get_text(separator='\n', strip=True)
+                    
+                    # Create PDF with text
+                    pdf_doc = fitz.open()
+                    page = pdf_doc.new_page()
+                    page.insert_text((50, 50), text, fontsize=11)
+                    pdf_bytes = pdf_doc.tobytes()
+                    pdf_doc.close()
+                    
+                    logger.info(
+                        f"✅ Converted HTML {filename} to PDF using text extraction",
+                        extra={"file_name": filename}
+                    )
+                    return pdf_bytes
+            except Exception as alt_error:
+                logger.error(f"Alternative HTML to PDF conversion also failed: {alt_error}")
+                raise ValueError(f"Failed to convert HTML to PDF: {e}")
+    
     async def extract_text(self, file_content: bytes, filename: str) -> str:
         """
         Extract text from uploaded file based on extension.
@@ -118,13 +220,61 @@ class ResumeParser:
             elif filename_lower.endswith('.doc'):
                 return self._extract_doc_text(file_content)
             
-            # Image files - use OCR
+            # Image files - try converting to PDF first for better OCR, then extract
             elif filename_lower.endswith(('.jpg', '.jpeg', '.png', '.bmp', '.tiff', '.tif')):
-                return self._extract_image_text(file_content, filename)
+                # First try direct OCR extraction
+                try:
+                    image_text = self._extract_image_text(file_content, filename)
+                    if image_text and len(image_text.strip()) >= 50:
+                        return image_text
+                except Exception as img_error:
+                    logger.debug(f"Direct image OCR failed, trying PDF conversion: {img_error}")
+                
+                # If direct OCR failed or returned insufficient text, convert to PDF and extract
+                if PYMUPDF_AVAILABLE:
+                    try:
+                        logger.info(
+                            f"🔄 Converting image {filename} to PDF for better OCR extraction",
+                            extra={"file_name": filename}
+                        )
+                        pdf_content = self._convert_image_to_pdf(file_content, filename)
+                        # Extract from PDF (which will use OCR if needed)
+                        return self._extract_pdf_text(pdf_content, filename.replace('.jpg', '.pdf').replace('.jpeg', '.pdf').replace('.png', '.pdf'))
+                    except Exception as pdf_conv_error:
+                        logger.warning(f"Image to PDF conversion failed, using direct OCR: {pdf_conv_error}")
+                        # Fallback to direct OCR
+                        return self._extract_image_text(file_content, filename)
+                else:
+                    # No PDF conversion available, use direct OCR
+                    return self._extract_image_text(file_content, filename)
             
-            # HTML files - parse DOM
+            # HTML files - try converting to PDF first for better extraction, then extract
             elif filename_lower.endswith(('.html', '.htm')):
-                return self._extract_html_text(file_content, filename)
+                # First try direct HTML extraction
+                try:
+                    html_text = self._extract_html_text(file_content, filename)
+                    if html_text and len(html_text.strip()) >= 50:
+                        return html_text
+                except Exception as html_error:
+                    logger.debug(f"Direct HTML extraction failed, trying PDF conversion: {html_error}")
+                
+                # If direct HTML extraction failed or returned insufficient text, convert to PDF and extract
+                if PYMUPDF_AVAILABLE:
+                    try:
+                        logger.info(
+                            f"🔄 Converting HTML {filename} to PDF for better OCR extraction",
+                            extra={"file_name": filename}
+                        )
+                        pdf_content = self._convert_html_to_pdf(file_content, filename)
+                        # Extract from PDF (which will use OCR if needed)
+                        return self._extract_pdf_text(pdf_content, filename.replace('.html', '.pdf').replace('.htm', '.pdf'))
+                    except Exception as pdf_conv_error:
+                        logger.warning(f"HTML to PDF conversion failed, using direct HTML extraction: {pdf_conv_error}")
+                        # Fallback to direct HTML extraction
+                        return self._extract_html_text(file_content, filename)
+                else:
+                    # No PDF conversion available, use direct HTML extraction
+                    return self._extract_html_text(file_content, filename)
             
             # Text files
             elif filename_lower.endswith('.txt'):
@@ -190,14 +340,25 @@ class ResumeParser:
         First tries regular text extraction, ALWAYS tries OCR for image-based PDFs.
         For image-based PDFs, OCR is the primary method.
         """
+        normalized_text = ""
+        text_length = 0
+        word_count = 0
+        
         try:
             pdf_file = BytesIO(file_content)
             pdf_reader = PyPDF2.PdfReader(pdf_file)
             text_parts = []
             for page in pdf_reader.pages:
-                page_text = page.extract_text()
-                if page_text:
-                    text_parts.append(page_text)
+                try:
+                    page_text = page.extract_text()
+                    if page_text:
+                        text_parts.append(page_text)
+                except Exception as page_error:
+                    logger.warning(
+                        f"Failed to extract text from a page in {filename}: {page_error}",
+                        extra={"file_name": filename, "page_error": str(page_error)}
+                    )
+                    continue
             
             raw_text = "\n".join(text_parts)
             # Normalize whitespace (remove extra spaces, normalize line breaks)
@@ -324,10 +485,81 @@ class ResumeParser:
                         )
             
             # Return the best text we have (either OCR, PyMuPDF, or regular extraction)
-            return normalized_text
+            if normalized_text and text_length >= 50:
+                return normalized_text
+            elif normalized_text:
+                logger.warning(
+                    f"PyPDF2 extracted only {text_length} chars from {filename}, trying PyMuPDF fallback",
+                    extra={"file_name": filename, "text_length": text_length}
+                )
         except Exception as e:
-            logger.error(f"Error extracting PDF text: {e}", extra={"error": str(e), "file_name": filename})
-            raise ValueError(f"Failed to extract text from PDF: {e}")
+            logger.warning(
+                f"PyPDF2 extraction failed for {filename}: {e}, trying PyMuPDF fallback",
+                extra={"file_name": filename, "error": str(e)}
+            )
+        
+        # If PyPDF2 failed or returned insufficient text, try PyMuPDF as fallback
+        if PYMUPDF_AVAILABLE:
+            try:
+                logger.info(
+                    f"Attempting PyMuPDF text extraction for {filename}",
+                    extra={"file_name": filename}
+                )
+                pymupdf_doc = fitz.open(stream=file_content, filetype="pdf")
+                pymupdf_text_parts = []
+                for page_num in range(len(pymupdf_doc)):
+                    try:
+                        page = pymupdf_doc[page_num]
+                        page_text = page.get_text()
+                        if page_text:
+                            pymupdf_text_parts.append(page_text)
+                    except Exception as page_error:
+                        logger.warning(
+                            f"Failed to extract text from page {page_num + 1} with PyMuPDF: {page_error}",
+                            extra={"file_name": filename, "page_num": page_num + 1}
+                        )
+                        continue
+                pymupdf_doc.close()
+                
+                if pymupdf_text_parts:
+                    pymupdf_text = "\n".join(pymupdf_text_parts)
+                    pymupdf_normalized = normalize_text(pymupdf_text) or pymupdf_text
+                    pymupdf_length = len(pymupdf_normalized.strip())
+                    pymupdf_word_count = len(re.findall(r'\b\w+\b', pymupdf_normalized)) if pymupdf_normalized else 0
+                    
+                    if pymupdf_length > text_length or (pymupdf_length >= 50 and text_length < 50):
+                        logger.info(
+                            f"✅ PyMuPDF text extraction SUCCESS for {filename}: "
+                            f"extracted {pymupdf_length} chars, {pymupdf_word_count} words",
+                            extra={
+                                "file_name": filename,
+                                "pymupdf_text_length": pymupdf_length,
+                                "pymupdf_word_count": pymupdf_word_count,
+                                "regular_text_length": text_length
+                            }
+                        )
+                        return pymupdf_normalized
+                    else:
+                        logger.debug(
+                            f"PyMuPDF extracted {pymupdf_length} chars (not better than PyPDF2's {text_length})",
+                            extra={"file_name": filename, "pymupdf_length": pymupdf_length, "text_length": text_length}
+                        )
+            except Exception as pymupdf_error:
+                logger.warning(
+                    f"PyMuPDF text extraction also failed for {filename}: {pymupdf_error}",
+                    extra={"file_name": filename, "error": str(pymupdf_error)}
+                )
+        
+        # If we have any text from PyPDF2, return it (even if minimal)
+        if normalized_text:
+            return normalized_text
+        
+        # If all methods failed, raise error
+        logger.error(
+            f"❌ All PDF text extraction methods failed for {filename}",
+            extra={"file_name": filename}
+        )
+        raise ValueError(f"Failed to extract text from PDF: All extraction methods failed")
     
     def _extract_docx_text(self, file_content: bytes, filename: str = "resume.docx") -> str:
         """
@@ -1292,6 +1524,40 @@ class ResumeParser:
                     if all_text:
                         text_parts.append(all_text)
                     
+                    # Try to extract text from embedded images using OCR (if available)
+                    if OCR_AVAILABLE:
+                        try:
+                            # Find all img tags with src attributes
+                            img_tags = soup.find_all('img')
+                            for img in img_tags:
+                                src = img.get('src', '')
+                                if src:
+                                    # Handle base64 encoded images
+                                    if src.startswith('data:image'):
+                                        try:
+                                            # Extract base64 data
+                                            header, encoded = src.split(',', 1)
+                                            import base64
+                                            image_data = base64.b64decode(encoded)
+                                            # Perform OCR on the image
+                                            image = Image.open(BytesIO(image_data))
+                                            if image.mode != 'RGB':
+                                                image = image.convert('RGB')
+                                            # Pre-process for OCR
+                                            img_array = np.array(image)
+                                            img_cv = cv2.cvtColor(img_array, cv2.COLOR_RGB2BGR)
+                                            gray = cv2.cvtColor(img_cv, cv2.COLOR_BGR2GRAY)
+                                            thresh = cv2.threshold(gray, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)[1]
+                                            processed_image = Image.fromarray(thresh)
+                                            ocr_text = pytesseract.image_to_string(processed_image, lang='eng')
+                                            if ocr_text and ocr_text.strip():
+                                                text_parts.append(ocr_text.strip())
+                                                logger.debug(f"Extracted {len(ocr_text.strip())} chars from embedded image in HTML")
+                                        except Exception as img_ocr_error:
+                                            logger.debug(f"Failed to extract text from embedded image: {img_ocr_error}")
+                        except Exception as ocr_error:
+                            logger.debug(f"Failed to extract images from HTML for OCR: {ocr_error}")
+                    
                     # Combine all text parts
                     combined_text = ' '.join(text_parts) if text_parts else all_text
                     
@@ -1338,6 +1604,21 @@ class ResumeParser:
                     extra={"file_name": filename, "text_length": len(normalized_text.strip()), "method": "raw_decode"}
                 )
                 return normalized_text
+            
+            # If no text found, try OCR fallback for HTML files (in case it's an image-based HTML)
+            if OCR_AVAILABLE and (PYMUPDF_AVAILABLE or PDF2IMAGE_AVAILABLE):
+                try:
+                    logger.info(
+                        f"🔄 HTML extraction returned insufficient text, trying OCR fallback for {filename}",
+                        extra={"file_name": filename, "fallback_type": "html_ocr"}
+                    )
+                    # Try to convert HTML to image and run OCR
+                    # This is useful for HTML files that are actually screenshots or image-based
+                    # For now, we'll try to extract any embedded images and run OCR on them
+                    # If that doesn't work, we'll return the minimal text we have
+                    # Note: Full HTML-to-image conversion would require additional libraries like playwright/selenium
+                except Exception as ocr_fallback_error:
+                    logger.debug(f"OCR fallback for HTML failed: {ocr_fallback_error}")
             
             raise ValueError("No extractable text found in HTML file")
             
@@ -1388,17 +1669,64 @@ class ResumeParser:
             except Exception as e:
                 logger.warning(f"Enhanced OCR fallback failed: {e}", extra={"file_name": filename, "error": str(e)})
         
-        # If it's an HTML file, try enhanced HTML parsing
+        # If it's an HTML file, try enhanced HTML parsing and OCR on embedded images
         elif filename_lower.endswith(('.html', '.htm')):
             logger.info(
-                f"🔄 FALLBACK: Retrying with enhanced HTML parsing for: {filename}",
-                extra={"file_name": filename, "fallback_type": "enhanced_html"}
+                f"🔄 FALLBACK: Retrying with enhanced HTML parsing and OCR for: {filename}",
+                extra={"file_name": filename, "fallback_type": "enhanced_html_ocr"}
             )
             try:
+                # First try enhanced HTML parsing
                 enhanced_text = self._extract_html_text(file_content, filename)
+                
+                # If HTML parsing didn't help much, try OCR on embedded images
+                if (not enhanced_text or len(enhanced_text.strip()) < 100) and OCR_AVAILABLE:
+                    try:
+                        # Decode HTML to find embedded images
+                        html_content = file_content.decode('utf-8', errors='ignore')
+                        if HTML_PARSING_AVAILABLE:
+                            soup = BeautifulSoup(html_content, 'html.parser')
+                            img_tags = soup.find_all('img')
+                            ocr_text_parts = []
+                            
+                            for img in img_tags:
+                                src = img.get('src', '')
+                                if src and src.startswith('data:image'):
+                                    try:
+                                        # Extract base64 image data
+                                        header, encoded = src.split(',', 1)
+                                        import base64
+                                        image_data = base64.b64decode(encoded)
+                                        # Perform OCR
+                                        image = Image.open(BytesIO(image_data))
+                                        if image.mode != 'RGB':
+                                            image = image.convert('RGB')
+                                        # Pre-process for OCR
+                                        img_array = np.array(image)
+                                        img_cv = cv2.cvtColor(img_array, cv2.COLOR_RGB2BGR)
+                                        gray = cv2.cvtColor(img_cv, cv2.COLOR_BGR2GRAY)
+                                        thresh = cv2.threshold(gray, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)[1]
+                                        processed_image = Image.fromarray(thresh)
+                                        ocr_text = pytesseract.image_to_string(processed_image, lang='eng')
+                                        if ocr_text and ocr_text.strip():
+                                            ocr_text_parts.append(ocr_text.strip())
+                                    except Exception as img_ocr_error:
+                                        logger.debug(f"Failed to OCR embedded image in HTML: {img_ocr_error}")
+                            
+                            if ocr_text_parts:
+                                ocr_combined = ' '.join(ocr_text_parts)
+                                if len(ocr_combined.strip()) > len(enhanced_text.strip() if enhanced_text else ""):
+                                    enhanced_text = ocr_combined
+                                    logger.info(
+                                        f"✅ OCR on HTML embedded images extracted {len(enhanced_text.strip())} chars",
+                                        extra={"file_name": filename, "text_length": len(enhanced_text.strip())}
+                                    )
+                    except Exception as html_ocr_error:
+                        logger.debug(f"HTML OCR fallback failed: {html_ocr_error}")
+                
                 if enhanced_text and len(enhanced_text.strip()) > len(original_text.strip() if original_text else ""):
                     logger.info(
-                        f"✅ FALLBACK SUCCESS: Enhanced HTML parsing extracted {len(enhanced_text.strip())} chars from {filename}",
+                        f"✅ FALLBACK SUCCESS: Enhanced HTML parsing/OCR extracted {len(enhanced_text.strip())} chars from {filename}",
                         extra={"file_name": filename, "text_length": len(enhanced_text.strip())}
                     )
                     return enhanced_text

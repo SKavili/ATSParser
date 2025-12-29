@@ -1,6 +1,7 @@
 """Controller for resume-related operations."""
 import gc
 from typing import Optional
+from io import BytesIO
 from fastapi import UploadFile, HTTPException
 from sqlalchemy.ext.asyncio import AsyncSession
  
@@ -54,6 +55,68 @@ class ResumeController:
         self.domain_service = DomainService(session)
         self.education_service = EducationService(session)
    
+    async def _retry_extraction_with_ocr_if_needed(
+        self,
+        extraction_result: Optional[str],
+        resume_text: str,
+        resume_id: int,
+        filename: str,
+        field_name: str
+    ) -> Optional[str]:
+        """
+        Helper method to retry extraction with OCR if result is null and text seems insufficient.
+        
+        Args:
+            extraction_result: The result from extraction (may be None)
+            resume_text: The current resume text
+            resume_id: The resume ID
+            filename: The filename
+            field_name: Name of the field being extracted (for logging)
+        
+        Returns:
+            Updated extraction result if OCR retry succeeded, otherwise original result
+        """
+        # If result is null and text seems insufficient, try OCR retry
+        if not extraction_result and resume_text and len(resume_text.strip()) < 200:
+            logger.info(
+                f"🔄 {field_name.capitalize()} returned NULL with short text ({len(resume_text.strip())} chars), "
+                f"attempting OCR retry for resume ID {resume_id}",
+                extra={
+                    "resume_id": resume_id,
+                    "file_name": filename,
+                    "field_name": field_name,
+                    "text_length": len(resume_text.strip())
+                }
+            )
+            try:
+                # Retry with OCR-enhanced extraction if file_content is still available
+                if hasattr(self, '_last_file_content') and self._last_file_content:
+                    ocr_retry_text = await self.resume_parser.extract_text_with_fallback(
+                        self._last_file_content,
+                        filename,
+                        original_text=resume_text
+                    )
+                    if ocr_retry_text and len(ocr_retry_text.strip()) > len(resume_text.strip()):
+                        logger.info(
+                            f"✅ OCR retry got better text ({len(ocr_retry_text.strip())} chars), "
+                            f"retrying {field_name} extraction",
+                            extra={
+                                "resume_id": resume_id,
+                                "file_name": filename,
+                                "field_name": field_name,
+                                "ocr_text_length": len(ocr_retry_text.strip()),
+                                "original_text_length": len(resume_text.strip())
+                            }
+                        )
+                        return ocr_retry_text
+            except Exception as ocr_retry_error:
+                logger.debug(
+                    f"OCR retry for {field_name} failed: {ocr_retry_error}",
+                    extra={"resume_id": resume_id, "file_name": filename, "field_name": field_name}
+                )
+        
+        return None
+    
     def _parse_extract_modules(self, extract_modules: Optional[str]) -> set:
         """
         Parse extract_modules parameter and return set of modules to extract.
@@ -258,7 +321,11 @@ class ResumeController:
             resume_id = resume_metadata.id  # Safe: ID is available immediately after create+refresh
             resume_id_for_error = resume_id  # Update error handler variable
             
+            # Store file_content for potential OCR retry later
+            self._last_file_content = file_content
+            
             # Extract text from file
+            resume_text = None
             try:
                 resume_text = await self.resume_parser.extract_text(file_content, safe_filename)
                 
@@ -278,32 +345,86 @@ class ResumeController:
                 # ========== END DEBUG ==========
                 
             except Exception as e:
-                # Update status to failed for extraction error
-                await self.resume_repo.update(
-                    resume_id,  # Use captured ID, not ORM attribute
-                    {"status": get_failure_status(FAILURE_EXTRACTION_ERROR)}
-                )
-                logger.error(
-                    f"Text extraction failed for resume {resume_id}: {e}",
+                logger.warning(
+                    f"Initial text extraction failed for resume {resume_id}, trying OCR fallback: {e}",
                     extra={"resume_id": resume_id, "file_name": safe_filename, "error": str(e)}
                 )
-                raise HTTPException(
-                    status_code=400,
-                    detail=f"Failed to extract text from file: {str(e)}"
+                resume_text = None
+            
+            # If extraction failed or returned insufficient text, try OCR fallback
+            if not resume_text or len(resume_text.strip()) < 50:
+                logger.info(
+                    f"🔄 Text extraction returned insufficient text ({len(resume_text.strip()) if resume_text else 0} chars), "
+                    f"trying OCR fallback for {safe_filename}",
+                    extra={
+                        "resume_id": resume_id,
+                        "file_name": safe_filename,
+                        "initial_text_length": len(resume_text.strip()) if resume_text else 0
+                    }
                 )
-           
-            # Clear file_content from memory early (memory optimization)
-            if settings.enable_memory_cleanup:
-                del file_content
-                gc.collect()
-           
+                try:
+                    # Try OCR fallback using extract_text_with_fallback
+                    ocr_text = await self.resume_parser.extract_text_with_fallback(
+                        file_content, 
+                        safe_filename, 
+                        original_text=resume_text
+                    )
+                    if ocr_text and len(ocr_text.strip()) > len(resume_text.strip() if resume_text else ""):
+                        logger.info(
+                            f"✅ OCR fallback succeeded: extracted {len(ocr_text.strip())} chars "
+                            f"(vs {len(resume_text.strip()) if resume_text else 0} from initial extraction)",
+                            extra={
+                                "resume_id": resume_id,
+                                "file_name": safe_filename,
+                                "ocr_text_length": len(ocr_text.strip()),
+                                "initial_text_length": len(resume_text.strip()) if resume_text else 0
+                            }
+                        )
+                        resume_text = ocr_text
+                    elif ocr_text and len(ocr_text.strip()) >= 50:
+                        logger.info(
+                            f"✅ OCR fallback provided sufficient text: {len(ocr_text.strip())} chars",
+                            extra={
+                                "resume_id": resume_id,
+                                "file_name": safe_filename,
+                                "ocr_text_length": len(ocr_text.strip())
+                            }
+                        )
+                        resume_text = ocr_text
+                except Exception as ocr_error:
+                    logger.warning(
+                        f"OCR fallback also failed for {safe_filename}: {ocr_error}",
+                        extra={
+                            "resume_id": resume_id,
+                            "file_name": safe_filename,
+                            "error": str(ocr_error)
+                        }
+                    )
+                    # Continue with original text if OCR fails
+            
+            # If still no sufficient text after OCR fallback, raise error
             if not resume_text or len(resume_text.strip()) < 50:
                 # Update status to failed for insufficient text
                 await self.resume_repo.update(
                     resume_id,  # Use captured ID, not ORM attribute
                     {"status": get_failure_status(FAILURE_INSUFFICIENT_TEXT)}
                 )
-                raise HTTPException(status_code=400, detail="Could not extract sufficient text from resume")
+                logger.error(
+                    f"❌ All text extraction methods failed for resume {resume_id}. "
+                    f"Initial: {len(resume_text.strip()) if resume_text else 0} chars",
+                    extra={
+                        "resume_id": resume_id,
+                        "file_name": safe_filename,
+                        "final_text_length": len(resume_text.strip()) if resume_text else 0
+                    }
+                )
+                raise HTTPException(
+                    status_code=400, 
+                    detail="Could not extract sufficient text from resume even with OCR fallback"
+                )
+           
+            # Don't clear file_content yet - we may need it for OCR retry on null results
+            # Will clear after all extractions complete
            
             # Limit text length to prevent excessive memory usage
             if len(resume_text) > settings.max_resume_text_length:
@@ -395,11 +516,23 @@ class ResumeController:
             # Extract domain (6)
             if "domain" in modules_to_extract:
                 try:
-                    await self.domain_service.extract_and_save_domain(
+                    domain_result = await self.domain_service.extract_and_save_domain(
                         resume_text=resume_text,
                         resume_id=resume_id,  # Use captured ID
                         filename=safe_filename
                     )
+                    # If domain is null and text seems insufficient, try OCR retry
+                    if not domain_result:
+                        ocr_retry_text = await self._retry_extraction_with_ocr_if_needed(
+                            domain_result, resume_text, resume_id, safe_filename, "domain"
+                        )
+                        if ocr_retry_text:
+                            # Retry domain extraction with OCR-enhanced text
+                            await self.domain_service.extract_and_save_domain(
+                                resume_text=ocr_retry_text,
+                                resume_id=resume_id,
+                                filename=safe_filename
+                            )
                 except Exception as e:
                     logger.error(f"[ERROR] DOMAIN EXTRACTION FAILED: {e}", extra={"resume_id": resume_id, "error": str(e)})
            
@@ -428,6 +561,14 @@ class ResumeController:
             # All extractions completed - session contexts are automatically cleared
             # Each extraction used a fresh HTTP client with isolated context
             # resume_id already captured above, no need to access ORM attribute
+            
+            # Clear file_content from memory now that all extractions are done
+            if settings.enable_memory_cleanup:
+                if hasattr(self, '_last_file_content'):
+                    del self._last_file_content
+                del file_content
+                gc.collect()
+            
             logger.info(
                 f"[SUCCESS] PROFILE EXTRACTION PROCESS COMPLETED for resume ID {resume_id}",
                 extra={"resume_id": resume_id, "file_name": safe_filename}
