@@ -12,7 +12,6 @@ logger = get_logger(__name__)
 
 Base = declarative_base()
 
-<<<<<<< HEAD
 # Configure SQL logging for async SQLAlchemy
 def setup_sql_logging():
     """
@@ -57,20 +56,9 @@ engine = create_async_engine(
     pool_pre_ping=True,  # Verify connections before using them
     pool_recycle=3600,  # Recycle connections after 1 hour to prevent stale connections
     pool_timeout=30,  # Timeout after 30 seconds if no connection available
-=======
-# Async engine with optimized connection pool settings
-engine = create_async_engine(
-    settings.mysql_url,
-    echo=False,
-    pool_size=5,  # Reduced base pool size
-    max_overflow=10,  # Reduced max overflow
-    pool_pre_ping=True,  # Verify connections before using
-    pool_recycle=3600,  # Recycle connections after 1 hour
-    pool_timeout=30,  # Timeout for getting connection from pool
     connect_args={
         "connect_timeout": 10,  # Connection timeout in seconds
     },
->>>>>>> bffc4bc (skills  extraction gateway)
 )
 
 # Async session factory
@@ -90,14 +78,6 @@ async def get_db_session() -> AsyncGenerator[AsyncSession, None]:
     async with async_session_maker() as session:
         try:
             yield session
-<<<<<<< HEAD
-        except Exception:
-            # Rollback on exception to maintain data integrity
-            await session.rollback()
-            raise
-        finally:
-            await session.close()
-=======
             # Commit any pending changes before context manager closes session
             await session.commit()
         except Exception:
@@ -106,7 +86,7 @@ async def get_db_session() -> AsyncGenerator[AsyncSession, None]:
             raise
         # Session is automatically closed by async with context manager
         # Connection is returned to pool immediately
->>>>>>> bffc4bc (skills  extraction gateway)
+
 
 
 async def init_db() -> None:

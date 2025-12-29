@@ -18,8 +18,6 @@ except ImportError:
     OLLAMA_CLIENT_AVAILABLE = False
     logger.warning("OLLAMA Python client not available, using HTTP API directly")
 
-<<<<<<< HEAD
-=======
 GATEWAY_PROMPT = """
 IMPORTANT: This is a FRESH, ISOLATED classification task. Ignore any previous context or conversations.
 
@@ -151,7 +149,6 @@ OUTPUT RULES (STRICT):
 
 """
 
->>>>>>> bffc4bc (skills  extraction gateway)
 SKILLS_PROMPT = """
 IMPORTANT: This is a FRESH, ISOLATED extraction task. Ignore any previous context or conversations.
 
@@ -341,8 +338,7 @@ VALID OUTPUT EXAMPLES:
 {"skills": ["Python", "java, spring boot, Azuere,AWs , Devops , flutter , Django", "MySQL", "AWS", "Docker", "React", "Agile", "Git, ,ai ml, "]}
 """
 
-<<<<<<< HEAD
-=======
+
 NON_IT_PROMPT = """
 ROLE:
 
@@ -442,7 +438,6 @@ GATEWAY_CLASSIFICATION_PROMPT = GATEWAY_PROMPT
 # Non-IT skills extraction prompt alias
 NON_IT_SKILLS_PROMPT = NON_IT_PROMPT
 
->>>>>>> bffc4bc (skills  extraction gateway)
 
 class SkillsExtractor:
     """Service for extracting skills from resume text using OLLAMA LLM."""
@@ -471,8 +466,6 @@ class SkillsExtractor:
             logger.warning(f"Failed to check OLLAMA connection: {e}", extra={"error": str(e)})
             return False, None
     
-<<<<<<< HEAD
-=======
     async def _gateway_decision(self, resume_text: str) -> str:
         """
         Uses LLM gateway system prompt to classify resume as IT or NON_IT.
@@ -644,7 +637,6 @@ Output (one word only: IT or NON_IT):"""
             )
             return "IT"  # Default to IT if gateway fails (as per user requirement)
     
->>>>>>> bffc4bc (skills  extraction gateway)
     def _extract_json(self, text: str) -> Dict:
         """Extract JSON object from LLM response."""
         if not text:
@@ -737,126 +729,6 @@ Output (one word only: IT or NON_IT):"""
                 )
                 model_to_use = available_model
             
-<<<<<<< HEAD
-            # ========== DEBUG: Check what's being sent to LLM ==========
-            text_to_send = resume_text[:10000]
-            print("\n" + "="*80)
-            print("[DEBUG] TEXT BEING SENT TO LLM FOR SKILLS EXTRACTION")
-            print("="*80)
-            print(f"Full resume text length: {len(resume_text)} characters")
-            print(f"Text being sent to LLM: {len(text_to_send)} characters (first 10,000)")
-            print(f"Text truncated: {'YES' if len(resume_text) > 10000 else 'NO'}")
-            if len(resume_text) > 10000:
-                print(f"⚠️  WARNING: {len(resume_text) - 10000} characters are being CUT OFF!")
-            print(f"\nFirst 2000 characters being sent:")
-            print("-"*80)
-            print(text_to_send[:2000])
-            print("-"*80)
-            print(f"Last 1000 characters being sent:")
-            print("-"*80)
-            print(text_to_send[-1000:] if len(text_to_send) > 1000 else text_to_send)
-            print("="*80 + "\n")
-            # ========== END DEBUG ==========
-            
-            prompt = f"""{SKILLS_PROMPT}
-
-Input resume text:
-{text_to_send}
-
-Output (JSON only, no other text, no explanations):"""
-            
-            logger.info(
-                f"📤 CALLING OLLAMA API for skills extraction",
-                extra={
-                    "file_name": filename,
-                    "model": model_to_use,
-                    "ollama_host": self.ollama_host,
-                    "resume_text_length": len(resume_text),
-                }
-            )
-            
-            result = None
-            last_error = None
-            
-            async with httpx.AsyncClient(timeout=Timeout(3600.0)) as client:
-                try:
-                    response = await client.post(
-                        f"{self.ollama_host}/api/generate",
-                        json={
-                            "model": model_to_use,
-                            "prompt": prompt,
-                            "stream": False,
-                            "options": {
-                                "temperature": 0.1,
-                                "top_p": 0.9,
-                            }
-                        }
-                    )
-                    response.raise_for_status()
-                    result = response.json()
-                    response_text = result.get("response", "") or result.get("text", "")
-                    if not response_text and "message" in result:
-                        response_text = result.get("message", {}).get("content", "")
-                    result = {"response": response_text}
-                    logger.info("✅ Successfully used /api/generate endpoint for skills extraction")
-                except httpx.HTTPStatusError as e:
-                    if e.response.status_code != 404:
-                        raise
-                    last_error = e
-                    logger.warning("OLLAMA /api/generate returned 404, trying /api/chat endpoint")
-                
-                if result is None:
-                    try:
-                        # Use /api/chat with fresh conversation (no history)
-                        # System message ensures complete session isolation
-                        response = await client.post(
-                            f"{self.ollama_host}/api/chat",
-                            json={
-                                "model": model_to_use,
-                                "messages": [
-                                    {"role": "system", "content": "You are a fresh, isolated extraction agent. This is a new, independent task with no previous context. Ignore any previous conversations."},
-                                    {"role": "user", "content": prompt}
-                                ],
-                                "stream": False,
-                                "options": {
-                                    "temperature": 0.1,
-                                    "top_p": 0.9,
-                                    "num_predict": 500,  # Limit response length for isolation
-                                }
-                            }
-                        )
-                        response.raise_for_status()
-                        result = response.json()
-                        if "message" in result and "content" in result["message"]:
-                            result = {"response": result["message"]["content"]}
-                        else:
-                            raise ValueError("Unexpected response format from OLLAMA chat API")
-                        logger.info("Successfully used /api/chat endpoint for skills extraction")
-                    except Exception as e2:
-                        last_error = e2
-                        logger.error(f"OLLAMA /api/chat also failed: {e2}", extra={"error": str(e2)})
-                
-                if result is None:
-                    raise RuntimeError(
-                        f"All OLLAMA API endpoints failed. "
-                        f"OLLAMA is running at {self.ollama_host} but endpoints return errors. "
-                        f"Last error: {last_error}"
-                    )
-            
-            raw_output = ""
-            if isinstance(result, dict):
-                if "response" in result:
-                    raw_output = str(result["response"])
-                elif "text" in result:
-                    raw_output = str(result["text"])
-                elif "content" in result:
-                    raw_output = str(result["content"])
-                elif "message" in result and isinstance(result.get("message"), dict):
-                    raw_output = str(result["message"].get("content", ""))
-            else:
-                raw_output = str(result)
-            
-=======
             # Gateway decision: Classify resume as IT or NON-IT
             gateway_result = await self._gateway_decision(resume_text)
             logger.info(
@@ -1067,7 +939,6 @@ Output (JSON only, no other text, no explanations):"""
                 )
                 return []
             
->>>>>>> bffc4bc (skills  extraction gateway)
             # ========== DEBUG: Check raw LLM response ==========
             print("\n" + "="*80)
             print("[DEBUG] RAW LLM RESPONSE")
@@ -1079,40 +950,6 @@ Output (JSON only, no other text, no explanations):"""
             print("-"*80)
             print("="*80 + "\n")
             # ========== END DEBUG ==========
-<<<<<<< HEAD
-            
-            parsed_data = self._extract_json(raw_output)
-            
-            # ========== DEBUG: Check parsed data ==========
-            print("\n" + "="*80)
-            print("[DEBUG] PARSED JSON DATA")
-            print("="*80)
-            print(f"Parsed data: {parsed_data}")
-            print(f"Skills found: {parsed_data.get('skills', [])}")
-            print(f"Number of skills: {len(parsed_data.get('skills', []))}")
-            print("="*80 + "\n")
-            # ========== END DEBUG ==========
-            
-            skills = parsed_data.get("skills", [])
-            
-            # Validate and clean skills
-            if skills and isinstance(skills, list):
-                skills = [str(skill).strip() for skill in skills if skill and str(skill).strip()]
-                skills = list(dict.fromkeys(skills))  # Remove duplicates while preserving order
-                skills = skills[:50]  # Limit to 50 skills
-            else:
-                skills = []
-            
-            logger.info(
-                f"✅ SKILLS EXTRACTED from {filename}",
-                extra={
-                    "file_name": filename,
-                    "skills_count": len(skills),
-                    "skills": skills[:10]  # Log first 10
-                }
-            )
-            
-=======
             
             parsed_data = self._extract_json(raw_output)
             
@@ -1229,7 +1066,6 @@ Output (JSON only, no other text, no explanations):"""
                     }
                 )
             
->>>>>>> bffc4bc (skills  extraction gateway)
             return skills
             
         except httpx.HTTPError as e:
@@ -1238,11 +1074,8 @@ Output (JSON only, no other text, no explanations):"""
                 "error_type": type(e).__name__,
                 "ollama_host": self.ollama_host,
                 "model": model_to_use,
-<<<<<<< HEAD
-=======
                 "resume_text_length": len(resume_text) if resume_text else 0,
                 "failure_reason": "http_error"
->>>>>>> bffc4bc (skills  extraction gateway)
             }
             logger.error(
                 f"HTTP error calling OLLAMA for skills extraction: {e}",
@@ -1258,11 +1091,8 @@ Output (JSON only, no other text, no explanations):"""
                     "error_type": type(e).__name__,
                     "ollama_host": self.ollama_host,
                     "model": model_to_use,
-<<<<<<< HEAD
-=======
                     "resume_text_length": len(resume_text) if resume_text else 0,
                     "failure_reason": "unexpected_exception"
->>>>>>> bffc4bc (skills  extraction gateway)
                 },
                 exc_info=True
             )
