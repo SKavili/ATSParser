@@ -196,4 +196,184 @@ class MobileService:
             result["error"] = f"Unexpected error: {str(e)}"
             logger.error(f"Error reprocessing mobile for resume ID {resume_id}: {e}", exc_info=True)
             return result
+    
+    async def reprocess_mobile_from_file(
+        self,
+        resume_id: int,
+        filename: str
+    ) -> Optional[str]:
+        """
+        Reprocess mobile extraction from resume file on disk.
+        This method finds the file, extracts text, and then extracts mobile.
+        Useful for reprocessing resumes with NULL mobile values.
+        
+        Args:
+            resume_id: The ID of the resume record in the database
+            filename: Name of the resume file to find on disk
+        
+        Returns:
+            The extracted mobile phone number or None if not found
+        """
+        try:
+            logger.info(
+                f"🔄 REPROCESSING MOBILE from file for resume ID {resume_id}: {filename}",
+                extra={"resume_id": resume_id, "file_name": filename}
+            )
+            
+            # Try to find the resume file in multiple possible locations
+            file_path = None
+            possible_paths = []
+            
+            # Add all configured directories
+            for base_dir in RESUME_FILES_DIRS:
+                possible_paths.append(base_dir / filename)
+            
+            # Also try as absolute path or in current directory
+            possible_paths.append(Path(filename))
+            
+            # Try each path
+            for path in possible_paths:
+                if path.exists() and path.is_file():
+                    file_path = path
+                    logger.info(f"Found resume file at: {file_path}")
+                    break
+            
+            if not file_path or not file_path.exists():
+                logger.warning(f"Resume file not found for ID {resume_id}: {filename}")
+                return None
+            
+            # Read file content
+            with open(file_path, 'rb') as f:
+                file_content = f.read()
+            
+            logger.info(f"Processing resume ID {resume_id}: {filename} ({len(file_content)} bytes)")
+            
+            # Extract text from file
+            try:
+                resume_text = await self.resume_parser.extract_text(file_content, filename)
+                
+                if not resume_text or len(resume_text.strip()) < 50:
+                    logger.warning(f"Insufficient text for resume ID {resume_id}")
+                    return None
+                
+                logger.info(f"Extracted {len(resume_text)} characters from resume ID {resume_id}")
+                
+            except Exception as e:
+                logger.error(f"Text extraction failed for resume ID {resume_id}: {e}")
+                return None
+            
+            # Extract mobile using the existing method (which includes retry logic)
+            mobile = await self.extract_and_save_mobile(
+                resume_text=resume_text,
+                resume_id=resume_id,
+                filename=filename,
+                retry_on_null=True
+            )
+            
+            if mobile:
+                logger.info(f"✅ REPROCESS SUCCESS: Extracted mobile for resume ID {resume_id}: {mobile}")
+            else:
+                logger.warning(f"⚠️ REPROCESS: No mobile found for resume ID {resume_id}")
+            
+            return mobile
+            
+        except Exception as e:
+            logger.error(
+                f"ERROR: Failed to reprocess mobile from file for resume ID {resume_id}: {e}",
+                extra={
+                    "error": str(e),
+                    "error_type": type(e).__name__,
+                    "resume_id": resume_id,
+                    "file_name": filename,
+                },
+                exc_info=True
+            )
+            return None
+    
+    async def batch_reprocess_null_mobiles(
+        self,
+        limit: Optional[int] = None
+    ) -> dict:
+        """
+        Batch reprocess all resumes with NULL mobile values.
+        Finds resumes with NULL mobile, reads files from disk, and re-extracts mobile.
+        
+        Args:
+            limit: Optional limit on number of resumes to process
+        
+        Returns:
+            dict with summary statistics:
+            {
+                "total_found": int,
+                "processed": int,
+                "mobiles_extracted": int,
+                "errors": int,
+                "results": list of dicts with resume_id, filename, mobile, status
+            }
+        """
+        result = {
+            "total_found": 0,
+            "processed": 0,
+            "mobiles_extracted": 0,
+            "errors": 0,
+            "results": []
+        }
+        
+        try:
+            # Get all resumes with NULL email or mobile
+            null_resumes = await self.resume_repo.get_resumes_with_null_email_or_mobile(limit=limit)
+            
+            # Filter to only those with NULL mobile
+            null_mobile_resumes = [r for r in null_resumes if r.mobile is None]
+            result["total_found"] = len(null_mobile_resumes)
+            
+            if not null_mobile_resumes:
+                logger.info("No resumes found with NULL mobile")
+                return result
+            
+            logger.info(f"Found {len(null_mobile_resumes)} resumes with NULL mobile, starting batch reprocessing...")
+            
+            for resume in null_mobile_resumes:
+                try:
+                    mobile = await self.reprocess_mobile_from_file(
+                        resume_id=resume.id,
+                        filename=resume.filename
+                    )
+                    
+                    result["processed"] += 1
+                    if mobile:
+                        result["mobiles_extracted"] += 1
+                        result["results"].append({
+                            "resume_id": resume.id,
+                            "filename": resume.filename,
+                            "mobile": mobile,
+                            "status": "success"
+                        })
+                    else:
+                        result["results"].append({
+                            "resume_id": resume.id,
+                            "filename": resume.filename,
+                            "mobile": None,
+                            "status": "not_found"
+                        })
+                except Exception as e:
+                    result["errors"] += 1
+                    logger.error(f"Error reprocessing mobile for resume ID {resume.id}: {e}")
+                    result["results"].append({
+                        "resume_id": resume.id,
+                        "filename": resume.filename,
+                        "mobile": None,
+                        "status": "error",
+                        "error": str(e)
+                    })
+            
+            logger.info(
+                f"Batch reprocessing complete: {result['mobiles_extracted']} mobiles extracted from {result['processed']} resumes"
+            )
+            
+        except Exception as e:
+            logger.error(f"Error in batch reprocess: {e}", exc_info=True)
+            result["errors"] += 1
+        
+        return result
 
