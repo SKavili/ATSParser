@@ -69,6 +69,7 @@ async def process_single_resume(
     }
     
     # Get database session early to handle failures
+    # Session will be automatically closed when exiting the context manager
     async with async_session_maker() as session:
         resume_repo = ResumeRepository(session)
         resume_metadata = None
@@ -264,6 +265,8 @@ async def process_single_resume(
                 extra={"file_name": filename, "error": str(e), "error_type": type(e).__name__},
                 exc_info=True
             )
+        # Session is automatically closed by async with context manager
+        # Connection is returned to pool immediately when exiting the context
     
     return result
 

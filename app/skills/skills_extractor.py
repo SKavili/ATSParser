@@ -18,6 +18,140 @@ except ImportError:
     OLLAMA_CLIENT_AVAILABLE = False
     logger.warning("OLLAMA Python client not available, using HTTP API directly")
 
+<<<<<<< HEAD
+=======
+GATEWAY_PROMPT = """
+IMPORTANT: This is a FRESH, ISOLATED classification task. Ignore any previous context or conversations.
+
+ROLE:
+
+You are an ATS resume classification gateway responsible for identifying whether a candidate profile
+
+belongs to an IT or NON-IT domain.
+
+CONTEXT:
+
+Resumes may be unstructured, inconsistently formatted, or incomplete.
+
+You must make a decision using ONLY limited resume content.
+
+Do not assume, infer, or guess beyond the allowed text scope.
+
+INPUT SCOPE:
+
+Read ONLY the first 300 characters of the resume text.
+
+Do NOT analyze or reference any content beyond the first 300 characters.
+
+TASK:
+
+Determine whether the resume represents an IT profile or a NON-IT profile
+
+based strictly on the presence of IT indicators within the first 300 characters.
+
+ANALYSIS CRITERIA (ANY ONE is sufficient):
+
+1. Technical Skills Indicators:
+
+   Look for explicit mentions of IT or technical skills such as:
+
+   - Programming languages (Java, Python, C#, JavaScript, etc.)
+
+   - Frameworks or platforms (.NET, Spring, React, Angular, Node.js)
+
+   - Databases (MySQL, PostgreSQL, MongoDB, Oracle)
+
+   - Cloud / DevOps (AWS, Azure, Docker, Kubernetes)
+
+   - Networking, operating systems, security, automation tools
+
+2. Job Titles / Roles:
+
+   Look for IT-related designations such as:
+
+   - Software Engineer / Developer/Programmer
+
+   - Full Stack / Backend / Frontend Developer
+
+   - Web Developer / Mobile Developer / Game Developer
+
+   - Data Engineer / Data Scientist
+
+   - DevOps / Cloud Engineer
+
+   - System Administrator / Network Engineer
+
+   - QA / Automation Engineer
+   - Business Analyst
+   - project /program manager
+   - AI/ML  / Gen Ai Engineer
+
+
+3. Experience Descriptions (IT-Specific Work):
+
+   Look for IT-related action statements such as:
+
+   - developed applications
+
+   - designed or implemented systems / APIs
+
+   - managed or optimized databases
+
+   - deployed infrastructure or applications
+
+   - automated pipelines or workflows
+
+   - debugged or troubleshot systems
+
+   - maintained servers or networks
+
+IMPORTANT EXCLUSIONS:
+
+Ignore generic or non-IT activities such as:
+
+- Team management
+
+- Operations, sales, marketing
+
+- Administration or coordination
+
+- Customer service or business handling without technical context
+
+DECISION RULES:
+
+- If ANY ONE of the above IT indicators is found within the first 300 characters:
+
+  - STOP analysis immediately
+
+  - Classify the profile as IT
+
+  - Output exactly:
+
+    NAVIGATE_TO_IT_SKILLS_EXTRACTION
+
+- If NONE of the IT indicators are found within the first 300 characters:
+
+  - Classify the profile as NON-IT
+
+  - Output exactly:
+
+    NAVIGATE_TO_NON_IT_SKILLS_EXTRACTION
+
+OUTPUT RULES (STRICT):
+
+- Output ONE line only
+
+- No explanations, no summaries, no extra text
+
+- Allowed outputs ONLY:
+
+  - NAVIGATE_TO_IT_SKILLS_EXTRACTION
+
+  - NAVIGATE_TO_NON_IT_SKILLS_EXTRACTION
+
+"""
+
+>>>>>>> bffc4bc (skills  extraction gateway)
 SKILLS_PROMPT = """
 IMPORTANT: This is a FRESH, ISOLATED extraction task. Ignore any previous context or conversations.
 
@@ -180,9 +314,6 @@ IT skills categories:
 9. Certifications:
    - Include only IT certifications explicitly mentioned (e.g., AWS Certified Solutions Architect, PMP, CCNA, MCSE)
 
-
-
-
 CONSTRAINTS:
 - Extract ONLY relevant NON-IT professional skills.
 - Preserve skill names exactly as written (case-sensitive).
@@ -210,6 +341,108 @@ VALID OUTPUT EXAMPLES:
 {"skills": ["Python", "java, spring boot, Azuere,AWs , Devops , flutter , Django", "MySQL", "AWS", "Docker", "React", "Agile", "Git, ,ai ml, "]}
 """
 
+<<<<<<< HEAD
+=======
+NON_IT_PROMPT = """
+ROLE:
+
+You are an ATS resume parsing expert specializing in NON-IT professional profiles.
+
+CONTEXT:
+
+Candidate profiles and resumes may be unstructured and inconsistently formatted.
+
+Skills refer ONLY to practical, applied, and demonstrable professional capabilities,
+
+domain knowledge areas, tools (non-technical), techniques, methodologies, or certifications
+
+that a candidate can actively use or perform in business or functional contexts.
+
+{domain_context}
+
+TASK:
+
+Extract ONLY non-IT professional skills from the profile text.
+
+Focus on skills explicitly mentioned in the profile summary, designation, career objective,
+
+work experience, or anywhere in the profile.
+
+SKILL CATEGORIES TO EXTRACT:
+
+1. Domain Skills: Industry-specific knowledge and capabilities
+
+2. Functional Skills: Business function capabilities (e.g., Sales, Marketing, HR, Operations)
+
+3. Tools (Non-Technical): Business software, CRM, ERP modules, MS Office, etc.
+
+4. Methodologies: Business methodologies, frameworks, process improvement
+
+5. Certifications: Professional certifications (non-IT)
+
+6. Regulations & Compliance: Industry-specific regulations and compliance knowledge
+
+7. Soft Skills: Leadership, communication, negotiation (if explicitly mentioned)
+
+CONSTRAINTS:
+
+- Extract ONLY non-IT professional skills.
+
+- Do NOT extract programming languages, cloud platforms, or IT technical skills.
+
+- Preserve skill names exactly as written (case-sensitive).
+
+- Remove duplicates.
+
+- Limit to a maximum of 50 skills.
+
+ANTI-HALLUCINATION RULES:
+
+- Extract skills ONLY if they are explicitly mentioned in the resume.
+
+- Never guess, infer, or assume skills.
+
+- Do NOT convert topics, events, or titles into skills.
+
+- Do NOT derive skills from job titles or organization names alone.
+
+- Do NOT include generic skills like "Communication" or "Teamwork" unless explicitly listed.
+
+OUTPUT FORMAT:
+
+Return only valid JSON.
+
+No additional text.
+
+No explanations.
+
+No markdown formatting.
+
+JSON SCHEMA:
+
+{
+
+  "skills": ["skill1", "skill2", "skill3", ...]
+
+}
+
+VALID OUTPUT EXAMPLES:
+
+{"skills": ["Property Leasing", "RERA Compliance", "Real Estate Law", "MS Excel", "CRM"]}
+
+{"skills": ["Underwriting", "Claims Processing", "Policy Administration", "Insurance Regulations"]}
+
+{"skills": ["Lead Generation", "Account Management", "Sales Forecasting", "Negotiation", "CRM"]}
+
+"""
+
+# Gateway classification prompt alias
+GATEWAY_CLASSIFICATION_PROMPT = GATEWAY_PROMPT
+
+# Non-IT skills extraction prompt alias
+NON_IT_SKILLS_PROMPT = NON_IT_PROMPT
+
+>>>>>>> bffc4bc (skills  extraction gateway)
 
 class SkillsExtractor:
     """Service for extracting skills from resume text using OLLAMA LLM."""
@@ -238,6 +471,180 @@ class SkillsExtractor:
             logger.warning(f"Failed to check OLLAMA connection: {e}", extra={"error": str(e)})
             return False, None
     
+<<<<<<< HEAD
+=======
+    async def _gateway_decision(self, resume_text: str) -> str:
+        """
+        Uses LLM gateway system prompt to classify resume as IT or NON_IT.
+        ONLY first 300 characters must be used.
+        
+        Returns:
+            "IT" or "NON_IT" (defaults to "IT" if gateway fails, as per requirement)
+        """
+        try:
+            # Use only first 300 characters
+            resume_snippet = resume_text[:300] if resume_text else ""
+            
+            if not resume_snippet or not resume_snippet.strip():
+                logger.warning(
+                    "Gateway decision: Empty resume snippet, defaulting to IT (gateway failure)",
+                    extra={"failure_reason": "empty_resume_snippet"}
+                )
+                return "IT"
+            
+            # Build gateway prompt
+            gateway_prompt = f"""{GATEWAY_CLASSIFICATION_PROMPT}
+
+Resume text (first 300 characters):
+{resume_snippet}
+
+Output (one word only: IT or NON_IT):"""
+            
+            is_connected, available_model = await self._check_ollama_connection()
+            if not is_connected:
+                logger.warning(
+                    "Gateway decision: OLLAMA not connected, defaulting to IT (gateway failure)",
+                    extra={"failure_reason": "ollama_not_connected"}
+                )
+                return "IT"
+            
+            model_to_use = self.model
+            if available_model and "llama3.1" not in available_model.lower():
+                model_to_use = available_model
+            
+            result = None
+            last_error = None
+            
+            async with httpx.AsyncClient(timeout=Timeout(60.0)) as client:
+                try:
+                    response = await client.post(
+                        f"{self.ollama_host}/api/generate",
+                        json={
+                            "model": model_to_use,
+                            "prompt": gateway_prompt,
+                            "stream": False,
+                            "options": {
+                                "temperature": 0.1,
+                                "top_p": 0.9,
+                                "num_predict": 10,  # Very short response expected
+                            }
+                        }
+                    )
+                    response.raise_for_status()
+                    result = response.json()
+                    response_text = result.get("response", "") or result.get("text", "")
+                    if not response_text and "message" in result:
+                        response_text = result.get("message", {}).get("content", "")
+                    result = {"response": response_text}
+                except httpx.HTTPStatusError as e:
+                    if e.response.status_code != 404:
+                        logger.warning(
+                            f"Gateway decision: /api/generate returned error, defaulting to IT (gateway failure)",
+                            extra={
+                                "status_code": e.response.status_code,
+                                "error_message": str(e),
+                                "failure_reason": f"api_generate_http_error_{e.response.status_code}"
+                            }
+                        )
+                        return "IT"
+                    last_error = e
+                
+                if result is None:
+                    try:
+                        response = await client.post(
+                            f"{self.ollama_host}/api/chat",
+                            json={
+                                "model": model_to_use,
+                                "messages": [
+                                    {"role": "system", "content": "You are a fresh, isolated classification agent. This is a new, independent task with no previous context."},
+                                    {"role": "user", "content": gateway_prompt}
+                                ],
+                                "stream": False,
+                                "options": {
+                                    "temperature": 0.1,
+                                    "top_p": 0.9,
+                                    "num_predict": 10,
+                                }
+                            }
+                        )
+                        response.raise_for_status()
+                        result = response.json()
+                        if "message" in result and "content" in result["message"]:
+                            result = {"response": result["message"]["content"]}
+                        else:
+                            raise ValueError("Unexpected response format from OLLAMA chat API")
+                    except Exception as e2:
+                        last_error = e2
+                        logger.warning(
+                            f"Gateway decision: All API endpoints failed, defaulting to IT (gateway failure)",
+                            extra={
+                                "error": str(e2),
+                                "failure_reason": "all_api_endpoints_failed"
+                            }
+                        )
+                        return "IT"
+            
+            # Extract response text
+            raw_output = ""
+            if isinstance(result, dict):
+                if "response" in result:
+                    raw_output = str(result["response"]).strip()
+                elif "text" in result:
+                    raw_output = str(result["text"]).strip()
+                elif "content" in result:
+                    raw_output = str(result["content"]).strip()
+                elif "message" in result and isinstance(result.get("message"), dict):
+                    raw_output = str(result["message"].get("content", "")).strip()
+            
+            if not raw_output:
+                logger.warning(
+                    "Gateway decision: Empty response from LLM, defaulting to IT (gateway failure)",
+                    extra={"failure_reason": "empty_llm_response"}
+                )
+                return "IT"
+            
+            # Normalize output to IT or NON_IT
+            raw_output_upper = raw_output.upper()
+            
+            # Check for IT indicators
+            if "IT" in raw_output_upper and "NON" not in raw_output_upper:
+                # Check if it's clearly IT (not NON_IT)
+                if "NAVIGATE_TO_IT" in raw_output_upper or raw_output_upper.strip() == "IT":
+                    logger.info(
+                        "Gateway decision: Classified as IT",
+                        extra={"raw_output": raw_output[:100]}
+                    )
+                    return "IT"
+            
+            # Check for NON_IT indicators
+            if "NON_IT" in raw_output_upper or "NON IT" in raw_output_upper or "NAVIGATE_TO_NON_IT" in raw_output_upper:
+                logger.info(
+                    "Gateway decision: Classified as NON_IT",
+                    extra={"raw_output": raw_output[:100]}
+                )
+                return "NON_IT"
+            
+            # If unclear, default to NON_IT (as per requirement: if gateway fails, use IT skills prompt first)
+            # But user said "if gateway fails to separate then first send extract IT_skills prompt"
+            # So we should default to IT if unclear
+            logger.warning(
+                f"Gateway decision: Unclear response '{raw_output[:100]}', defaulting to IT (as per requirement)",
+                extra={"raw_output": raw_output[:100], "failure_reason": "unclear_gateway_response"}
+            )
+            return "IT"
+            
+        except Exception as e:
+            logger.warning(
+                f"Gateway decision: Exception occurred, defaulting to IT (as per requirement)",
+                extra={
+                    "error": str(e),
+                    "error_type": type(e).__name__,
+                    "failure_reason": "gateway_exception"
+                }
+            )
+            return "IT"  # Default to IT if gateway fails (as per user requirement)
+    
+>>>>>>> bffc4bc (skills  extraction gateway)
     def _extract_json(self, text: str) -> Dict:
         """Extract JSON object from LLM response."""
         if not text:
@@ -330,6 +737,7 @@ class SkillsExtractor:
                 )
                 model_to_use = available_model
             
+<<<<<<< HEAD
             # ========== DEBUG: Check what's being sent to LLM ==========
             text_to_send = resume_text[:10000]
             print("\n" + "="*80)
@@ -448,6 +856,218 @@ Output (JSON only, no other text, no explanations):"""
             else:
                 raw_output = str(result)
             
+=======
+            # Gateway decision: Classify resume as IT or NON-IT
+            gateway_result = await self._gateway_decision(resume_text)
+            logger.info(
+                "Resume classified by gateway",
+                extra={
+                    "file_name": filename,
+                    "gateway_result": gateway_result,
+                    "analyzed_characters": 300
+                }
+            )
+            
+            # Route to appropriate prompt based on gateway decision
+            if gateway_result == "IT":
+                active_prompt = SKILLS_PROMPT
+            else:
+                active_prompt = NON_IT_SKILLS_PROMPT
+            
+            # ========== DEBUG: Check what's being sent to LLM ==========
+            text_to_send = resume_text[:10000]
+            print("\n" + "="*80)
+            print("[DEBUG] TEXT BEING SENT TO LLM FOR SKILLS EXTRACTION")
+            print("="*80)
+            print(f"Gateway classification: {gateway_result}")
+            print(f"Using prompt: {'IT Skills' if gateway_result == 'IT' else 'NON-IT Skills'}")
+            print(f"Full resume text length: {len(resume_text)} characters")
+            print(f"Text being sent to LLM: {len(text_to_send)} characters (first 10,000)")
+            print(f"Text truncated: {'YES' if len(resume_text) > 10000 else 'NO'}")
+            if len(resume_text) > 10000:
+                print(f"⚠️  WARNING: {len(resume_text) - 10000} characters are being CUT OFF!")
+            print(f"\nFirst 2000 characters being sent:")
+            print("-"*80)
+            print(text_to_send[:2000])
+            print("-"*80)
+            print(f"Last 1000 characters being sent:")
+            print("-"*80)
+            print(text_to_send[-1000:] if len(text_to_send) > 1000 else text_to_send)
+            print("="*80 + "\n")
+            # ========== END DEBUG ==========
+            
+            prompt = f"""{active_prompt}
+
+Input resume text:
+{text_to_send}
+
+Output (JSON only, no other text, no explanations):"""
+            
+            logger.info(
+                f"📤 CALLING OLLAMA API for skills extraction",
+                extra={
+                    "file_name": filename,
+                    "model": model_to_use,
+                    "ollama_host": self.ollama_host,
+                    "resume_text_length": len(resume_text),
+                }
+            )
+            
+            result = None
+            last_error = None
+            
+            async with httpx.AsyncClient(timeout=Timeout(3600.0)) as client:
+                try:
+                    response = await client.post(
+                        f"{self.ollama_host}/api/generate",
+                        json={
+                            "model": model_to_use,
+                            "prompt": prompt,
+                            "stream": False,
+                            "options": {
+                                "temperature": 0.1,
+                                "top_p": 0.9,
+                            }
+                        }
+                    )
+                    response.raise_for_status()
+                    result = response.json()
+                    response_text = result.get("response", "") or result.get("text", "")
+                    if not response_text and "message" in result:
+                        response_text = result.get("message", {}).get("content", "")
+                    result = {"response": response_text}
+                    logger.info("✅ Successfully used /api/generate endpoint for skills extraction")
+                except httpx.HTTPStatusError as e:
+                    if e.response.status_code != 404:
+                        logger.error(
+                            f"❌ SKILLS EXTRACTION FAILED: OLLAMA /api/generate returned error status",
+                            extra={
+                                "file_name": filename,
+                                "status_code": e.response.status_code,
+                                "error_message": str(e),
+                                "response_text": e.response.text[:500] if hasattr(e.response, 'text') else None,
+                                "failure_reason": f"api_generate_http_error_{e.response.status_code}"
+                            }
+                        )
+                        raise
+                    last_error = e
+                    logger.warning(
+                        "OLLAMA /api/generate returned 404, trying /api/chat endpoint",
+                        extra={
+                            "file_name": filename,
+                            "failure_reason": "api_generate_404_fallback_to_chat"
+                        }
+                    )
+                
+                if result is None:
+                    try:
+                        # Use /api/chat with fresh conversation (no history)
+                        # System message ensures complete session isolation
+                        response = await client.post(
+                            f"{self.ollama_host}/api/chat",
+                            json={
+                                "model": model_to_use,
+                                "messages": [
+                                    {"role": "system", "content": "You are a fresh, isolated extraction agent. This is a new, independent task with no previous context. Ignore any previous conversations."},
+                                    {"role": "user", "content": prompt}
+                                ],
+                                "stream": False,
+                                "options": {
+                                    "temperature": 0.1,
+                                    "top_p": 0.9,
+                                    "num_predict": 500,  # Limit response length for isolation
+                                }
+                            }
+                        )
+                        response.raise_for_status()
+                        result = response.json()
+                        if "message" in result and "content" in result["message"]:
+                            result = {"response": result["message"]["content"]}
+                        else:
+                            raise ValueError("Unexpected response format from OLLAMA chat API")
+                        logger.info("Successfully used /api/chat endpoint for skills extraction")
+                    except httpx.HTTPStatusError as e2:
+                        last_error = e2
+                        logger.error(
+                            f"❌ SKILLS EXTRACTION FAILED: OLLAMA /api/chat returned error status",
+                            extra={
+                                "file_name": filename,
+                                "status_code": e2.response.status_code if hasattr(e2, 'response') else None,
+                                "error_message": str(e2),
+                                "response_text": e2.response.text[:500] if hasattr(e2, 'response') and hasattr(e2.response, 'text') else None,
+                                "failure_reason": f"api_chat_http_error_{e2.response.status_code if hasattr(e2, 'response') else 'unknown'}"
+                            }
+                        )
+                    except Exception as e2:
+                        last_error = e2
+                        logger.error(
+                            f"❌ SKILLS EXTRACTION FAILED: OLLAMA /api/chat failed with exception",
+                            extra={
+                                "file_name": filename,
+                                "error": str(e2),
+                                "error_type": type(e2).__name__,
+                                "failure_reason": "api_chat_exception"
+                            }
+                        )
+                
+                if result is None:
+                    logger.error(
+                        f"❌ SKILLS EXTRACTION FAILED: All OLLAMA API endpoints failed",
+                        extra={
+                            "file_name": filename,
+                            "ollama_host": self.ollama_host,
+                            "model": model_to_use,
+                            "last_error": str(last_error) if last_error else None,
+                            "last_error_type": type(last_error).__name__ if last_error else None,
+                            "failure_reason": "all_api_endpoints_failed"
+                        }
+                    )
+                    raise RuntimeError(
+                        f"All OLLAMA API endpoints failed. "
+                        f"OLLAMA is running at {self.ollama_host} but endpoints return errors. "
+                        f"Last error: {last_error}"
+                    )
+            
+            raw_output = ""
+            if isinstance(result, dict):
+                if "response" in result:
+                    raw_output = str(result["response"])
+                elif "text" in result:
+                    raw_output = str(result["text"])
+                elif "content" in result:
+                    raw_output = str(result["content"])
+                elif "message" in result and isinstance(result.get("message"), dict):
+                    raw_output = str(result["message"].get("content", ""))
+                else:
+                    logger.error(
+                        f"❌ SKILLS EXTRACTION FAILED: Unexpected response structure from OLLAMA",
+                        extra={
+                            "file_name": filename,
+                            "result_keys": list(result.keys()) if isinstance(result, dict) else None,
+                            "result_type": type(result).__name__,
+                            "result_preview": str(result)[:500],
+                            "failure_reason": "unexpected_response_structure"
+                        }
+                    )
+            else:
+                raw_output = str(result)
+            
+            # Log if raw_output is empty
+            if not raw_output or not raw_output.strip():
+                logger.error(
+                    f"❌ SKILLS EXTRACTION FAILED: Empty response from OLLAMA",
+                    extra={
+                        "file_name": filename,
+                        "raw_output_length": len(raw_output) if raw_output else 0,
+                        "raw_output_is_none": raw_output is None,
+                        "result_type": type(result).__name__,
+                        "result_keys": list(result.keys()) if isinstance(result, dict) else None,
+                        "failure_reason": "empty_llm_response"
+                    }
+                )
+                return []
+            
+>>>>>>> bffc4bc (skills  extraction gateway)
             # ========== DEBUG: Check raw LLM response ==========
             print("\n" + "="*80)
             print("[DEBUG] RAW LLM RESPONSE")
@@ -459,6 +1079,7 @@ Output (JSON only, no other text, no explanations):"""
             print("-"*80)
             print("="*80 + "\n")
             # ========== END DEBUG ==========
+<<<<<<< HEAD
             
             parsed_data = self._extract_json(raw_output)
             
@@ -491,6 +1112,124 @@ Output (JSON only, no other text, no explanations):"""
                 }
             )
             
+=======
+            
+            parsed_data = self._extract_json(raw_output)
+            
+            # ========== DEBUG: Check parsed data ==========
+            print("\n" + "="*80)
+            print("[DEBUG] PARSED JSON DATA")
+            print("="*80)
+            print(f"Parsed data: {parsed_data}")
+            print(f"Skills found: {parsed_data.get('skills', [])}")
+            print(f"Number of skills: {len(parsed_data.get('skills', []))}")
+            print("="*80 + "\n")
+            # ========== END DEBUG ==========
+            
+            # Log parsing result
+            if not parsed_data:
+                logger.error(
+                    f"❌ SKILLS EXTRACTION FAILED: Parsed data is None or empty",
+                    extra={
+                        "file_name": filename,
+                        "raw_output_length": len(raw_output),
+                        "raw_output_preview": raw_output[:500],
+                        "failure_reason": "parsed_data_is_none"
+                    }
+                )
+                return []
+            
+            if "skills" not in parsed_data:
+                logger.error(
+                    f"❌ SKILLS EXTRACTION FAILED: 'skills' key missing from parsed JSON",
+                    extra={
+                        "file_name": filename,
+                        "parsed_data_keys": list(parsed_data.keys()) if isinstance(parsed_data, dict) else None,
+                        "parsed_data_type": type(parsed_data).__name__,
+                        "parsed_data_preview": str(parsed_data)[:500],
+                        "raw_output_preview": raw_output[:500],
+                        "failure_reason": "skills_key_missing"
+                    }
+                )
+                return []
+            
+            skills = parsed_data.get("skills", [])
+            
+            # Log if skills is not a list
+            if not isinstance(skills, list):
+                logger.error(
+                    f"❌ SKILLS EXTRACTION FAILED: 'skills' is not a list",
+                    extra={
+                        "file_name": filename,
+                        "skills_type": type(skills).__name__,
+                        "skills_value": str(skills)[:500],
+                        "parsed_data": str(parsed_data)[:500],
+                        "failure_reason": "skills_not_a_list"
+                    }
+                )
+                return []
+            
+            # Validate and clean skills
+            if skills and isinstance(skills, list):
+                original_count = len(skills)
+                skills = [str(skill).strip() for skill in skills if skill and str(skill).strip()]
+                after_strip_count = len(skills)
+                skills = list(dict.fromkeys(skills))  # Remove duplicates while preserving order
+                after_dedup_count = len(skills)
+                skills = skills[:50]  # Limit to 50 skills
+                
+                # Log if all skills were filtered out
+                if original_count > 0 and len(skills) == 0:
+                    logger.warning(
+                        f"⚠️ SKILLS EXTRACTION WARNING: All skills were filtered out during cleaning",
+                        extra={
+                            "file_name": filename,
+                            "original_skills_count": original_count,
+                            "after_strip_count": after_strip_count,
+                            "after_dedup_count": after_dedup_count,
+                            "final_skills_count": len(skills),
+                            "original_skills_preview": str(parsed_data.get("skills", []))[:500],
+                            "failure_reason": "all_skills_filtered_out"
+                        }
+                    )
+            else:
+                skills = []
+                logger.warning(
+                    f"⚠️ SKILLS EXTRACTION WARNING: Skills list is empty or invalid",
+                    extra={
+                        "file_name": filename,
+                        "skills_type": type(skills).__name__ if skills else None,
+                        "skills_value": str(skills) if skills else None,
+                        "parsed_data": str(parsed_data)[:500],
+                        "failure_reason": "empty_skills_list"
+                    }
+                )
+            
+            # Final check: log if no skills extracted
+            if not skills or len(skills) == 0:
+                logger.error(
+                    f"❌ SKILLS EXTRACTION FAILED: No skills extracted (returning empty list)",
+                    extra={
+                        "file_name": filename,
+                        "resume_text_length": len(resume_text),
+                        "resume_text_preview": resume_text[:500],
+                        "raw_output_length": len(raw_output),
+                        "raw_output_preview": raw_output[:500],
+                        "parsed_data": str(parsed_data)[:500],
+                        "failure_reason": "no_skills_extracted"
+                    }
+                )
+            else:
+                logger.info(
+                    f"✅ SKILLS EXTRACTED from {filename}",
+                    extra={
+                        "file_name": filename,
+                        "skills_count": len(skills),
+                        "skills": skills[:10]  # Log first 10
+                    }
+                )
+            
+>>>>>>> bffc4bc (skills  extraction gateway)
             return skills
             
         except httpx.HTTPError as e:
@@ -499,6 +1238,11 @@ Output (JSON only, no other text, no explanations):"""
                 "error_type": type(e).__name__,
                 "ollama_host": self.ollama_host,
                 "model": model_to_use,
+<<<<<<< HEAD
+=======
+                "resume_text_length": len(resume_text) if resume_text else 0,
+                "failure_reason": "http_error"
+>>>>>>> bffc4bc (skills  extraction gateway)
             }
             logger.error(
                 f"HTTP error calling OLLAMA for skills extraction: {e}",
@@ -514,8 +1258,12 @@ Output (JSON only, no other text, no explanations):"""
                     "error_type": type(e).__name__,
                     "ollama_host": self.ollama_host,
                     "model": model_to_use,
+<<<<<<< HEAD
+=======
+                    "resume_text_length": len(resume_text) if resume_text else 0,
+                    "failure_reason": "unexpected_exception"
+>>>>>>> bffc4bc (skills  extraction gateway)
                 },
                 exc_info=True
             )
             raise
-

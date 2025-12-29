@@ -160,6 +160,83 @@ class ResumeController:
                 logger.warning(f"Unknown module option: {part}, ignoring")
        
         return modules
+    
+    def _sanitize_resume_text(self, text: str) -> str:
+        """
+        Sanitize resume text by replacing specific characters with spaces.
+        
+        Replaces the following characters with a single space:
+        - ';' (ASCII 59)
+        - ':' (ASCII 58)
+        - '|' (ASCII 124)
+        - '$' (ASCII 36)
+        - '•' (Unicode U+2022, ord 8226)
+        - '●' (Unicode U+25CF, ord 9679)
+        - '◦' (Unicode U+25E6, ord 9702)
+        
+        Also normalizes multiple consecutive spaces into a single space.
+        
+        Args:
+            text: Raw resume text to sanitize
+            
+        Returns:
+            Sanitized text with specified characters replaced by spaces
+        """
+        if not text:
+            return text
+        
+        # Characters to replace (using ord values for comparison)
+        REPLACE_CHARS = {
+            # ---------- ASCII ----------
+            33,   # ! 
+            38,   # &
+            42,   # *
+            43,   # +
+            47,   # /
+            58,   # :
+            59,   # ;
+            92,   # \
+            96,   # `
+            124,  # |
+            36,   # $
+            
+            # ---------- Unicode bullets / shapes ----------
+            8226,  # •  (U+2022) bullet
+            9679,  # ●  (U+25CF) black circle
+            9702,  # ◦  (U+25E6) white bullet
+            9675,  # ○  (U+25CB) white circle
+            9642,  # ▪  (U+25AA) small square
+            9658,  # ►  (U+25BA) black right-pointing pointer
+            8211,  # –  (U+2013) en dash
+            8212,  # —  (U+2014) em dash
+            9989,  # ✅ (U+2705)
+           10060, # ❌ (U+274C)
+            8226, 8228, 183, 8729, 729,
+       9679, 9675, 9702, 9642,
+        }
+        
+        # First pass: replace specified characters with spaces
+        result_chars = []
+        for char in text:
+            char_ord = ord(char)
+            if char_ord in REPLACE_CHARS:
+                result_chars.append(' ')
+            else:
+                result_chars.append(char)
+        
+        # Second pass: normalize multiple spaces to single space
+        normalized_chars = []
+        prev_was_space = False
+        for char in result_chars:
+            if char == ' ':
+                if not prev_was_space:
+                    normalized_chars.append(' ')
+                    prev_was_space = True
+            else:
+                normalized_chars.append(char)
+                prev_was_space = False
+        
+        return ''.join(normalized_chars)
    
     async def upload_resume(
         self,
@@ -433,6 +510,14 @@ class ResumeController:
                     extra={"original_length": len(resume_text), "truncated_length": settings.max_resume_text_length}
                 )
                 resume_text = resume_text[:settings.max_resume_text_length]
+           
+            # Sanitize resume text: replace specific characters with spaces
+            # This ensures all extraction modules receive clean, normalized text
+            resume_text = self._sanitize_resume_text(resume_text)
+            logger.debug(
+                f"Resume text sanitized for resume {resume_metadata.id}",
+                extra={"resume_id": resume_metadata.id, "sanitized_length": len(resume_text)}
+            )
            
             # Parse extract_modules parameter
             # Accepts: "all" or comma-separated list like "designation,skills,name"
