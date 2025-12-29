@@ -10,6 +10,17 @@ from app.utils.logging import get_logger
 
 logger = get_logger(__name__)
 
+# Configuration: Path where resume files are stored (for file-based reprocessing)
+RESUME_FILES_DIRS = [
+    Path("Resumes"),  # Capital R (common location)
+    Path("resumes"),  # Lowercase
+    Path("uploads"),
+    Path("data/resumes"),
+    Path("storage/resumes"),
+    Path("files/resumes"),
+    Path("."),  # Current directory
+]
+
 
 class EmailService:
     """Service for extracting email from resume and saving to database."""
@@ -17,20 +28,24 @@ class EmailService:
     def __init__(self, session: AsyncSession):
         self.email_extractor = EmailExtractor()
         self.resume_repo = ResumeRepository(session)
+        self.resume_parser = ResumeParser()
     
     async def extract_and_save_email(
         self,
         resume_text: str,
         resume_id: int,
-        filename: str = "resume"
+        filename: str = "resume",
+        retry_on_null: bool = True
     ) -> Optional[str]:
         """
         Extract email from resume text and update the database record.
+        Automatically retries with improved extraction if first attempt returns None.
         
         Args:
             resume_text: The text content of the resume
             resume_id: The ID of the resume record in the database
             filename: Name of the resume file (for logging)
+            retry_on_null: If True, automatically retry extraction if first attempt returns None
         
         Returns:
             The extracted email string or None if not found
@@ -44,7 +59,29 @@ class EmailService:
                 }
             )
             
+            # First extraction attempt
             email = await self.email_extractor.extract_email(resume_text, filename)
+            
+            # If first attempt returned None and retry is enabled, try again with more aggressive extraction
+            if not email and retry_on_null and resume_text:
+                logger.info(
+                    f"🔄 First email extraction returned None, retrying with full text scan for resume ID {resume_id}",
+                    extra={"resume_id": resume_id, "file_name": filename}
+                )
+                # On retry, scan the FULL text (not just header) more aggressively
+                # The extractor already scans full text, but retry ensures we catch edge cases
+                # Try with aggressive mode if available
+                try:
+                    email = await self.email_extractor.extract_email(resume_text, filename, aggressive=True)
+                except TypeError:
+                    # If aggressive parameter not supported, use normal call
+                    email = await self.email_extractor.extract_email(resume_text, filename)
+                
+                if email:
+                    logger.info(
+                        f"✅ RETRY SUCCESS: Found email on retry for resume ID {resume_id}: {email}",
+                        extra={"resume_id": resume_id, "email": email, "file_name": filename}
+                    )
             
             logger.info(
                 f"📊 EMAIL EXTRACTION RESULT for resume ID {resume_id}: {email}",

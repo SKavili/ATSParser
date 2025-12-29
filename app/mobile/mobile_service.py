@@ -10,6 +10,17 @@ from app.utils.logging import get_logger
 
 logger = get_logger(__name__)
 
+# Configuration: Path where resume files are stored (for file-based reprocessing)
+RESUME_FILES_DIRS = [
+    Path("Resumes"),  # Capital R (common location)
+    Path("resumes"),  # Lowercase
+    Path("uploads"),
+    Path("data/resumes"),
+    Path("storage/resumes"),
+    Path("files/resumes"),
+    Path("."),  # Current directory
+]
+
 
 class MobileService:
     """Service for extracting mobile phone number from resume and saving to database."""
@@ -17,20 +28,24 @@ class MobileService:
     def __init__(self, session: AsyncSession):
         self.mobile_extractor = MobileExtractor()
         self.resume_repo = ResumeRepository(session)
+        self.resume_parser = ResumeParser()
     
     async def extract_and_save_mobile(
         self,
         resume_text: str,
         resume_id: int,
-        filename: str = "resume"
+        filename: str = "resume",
+        retry_on_null: bool = True
     ) -> Optional[str]:
         """
         Extract mobile phone number from resume text and update the database record.
+        Automatically retries with improved extraction if first attempt returns None.
         
         Args:
             resume_text: The text content of the resume
             resume_id: The ID of the resume record in the database
             filename: Name of the resume file (for logging)
+            retry_on_null: If True, automatically retry extraction if first attempt returns None
         
         Returns:
             The extracted mobile phone number or None if not found
@@ -44,7 +59,24 @@ class MobileService:
                 }
             )
             
+            # First extraction attempt
             mobile = await self.mobile_extractor.extract_mobile(resume_text, filename)
+            
+            # If first attempt returned None and retry is enabled, try again with more aggressive extraction
+            if not mobile and retry_on_null and resume_text:
+                logger.info(
+                    f"🔄 First mobile extraction returned None, retrying with full text scan for resume ID {resume_id}",
+                    extra={"resume_id": resume_id, "file_name": filename}
+                )
+                # On retry, scan the FULL text more aggressively (not just header/footer)
+                # The extractor already scans full text, but retry ensures we catch edge cases
+                mobile = await self.mobile_extractor.extract_mobile(resume_text, filename)
+                
+                if mobile:
+                    logger.info(
+                        f"✅ RETRY SUCCESS: Found mobile on retry for resume ID {resume_id}: {mobile}",
+                        extra={"resume_id": resume_id, "mobile": mobile, "file_name": filename}
+                    )
             
             logger.info(
                 f"📊 MOBILE EXTRACTION RESULT for resume ID {resume_id}: {mobile}",

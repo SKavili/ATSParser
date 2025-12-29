@@ -57,7 +57,62 @@ JSON SCHEMA:
 
 Example valid outputs:
 {"domain": "Healthcare"}
+{"domain": "Defence"}
+{"domain": "Energy"}
+{"domain": "Education"}
+{"domain": "Utility"}
 {"domain": "Finance"}
+{"domain": "Banking"}
+{"domain": "Insurance"}
+{"domain": "Capital Markets"}
+{"domain": "FinTech"}
+{"domain": "Public Sector"}
+{"domain": "Government"}
+{"domain": "Smart Cities"}
+{"domain": "Law Enforcement"}
+{"domain": "Judiciary"}
+{"domain": "Regulatory & Compliance"}
+{"domain": "Information Technology"}
+{"domain": "Software & SaaS"}
+{"domain": "Artificial Intelligence"}
+{"domain": "Cybersecurity"}
+{"domain": "Cloud & Infrastructure"}
+{"domain": "Telecommunications"}
+{"domain": "Manufacturing"}
+{"domain": "Industrial Automation"}
+{"domain": "Automotive"}
+{"domain": "Aerospace"}
+{"domain": "Electronics & Semiconductors"}
+{"domain": "Logistics"}
+{"domain": "Transportation"}
+{"domain": "Supply Chain"}
+{"domain": "Warehousing"}
+{"domain": "Procurement"}
+{"domain": "Human Resources"}
+{"domain": "Finance & Accounting"}
+{"domain": "Sales"}
+{"domain": "Marketing"}
+{"domain": "Customer Support"}
+{"domain": "Retail"}
+{"domain": "E-Commerce"}
+{"domain": "Hospitality"}
+{"domain": "Travel & Tourism"}
+{"domain": "Media & Entertainment"}
+{"domain": "Gaming"}
+{"domain": "Real Estate"}
+{"domain": "Construction"}
+{"domain": "Facilities Management"}
+{"domain": "Mining"}
+{"domain": "Metals"}
+{"domain": "Agriculture"}
+{"domain": "AgriTech"}
+{"domain": "Environmental Sustainability"}
+{"domain": "ESG"}
+{"domain": "ClimateTech"}
+{"domain": "Non-Profit"}
+{"domain": "Social Impact"}
+{"domain": "Sports"}
+{"domain": "Fitness"}
 {"domain": null}
 """
 
