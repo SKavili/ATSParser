@@ -21,10 +21,11 @@ class ResumeMetadata(Base):
     education = Column(Text, nullable=True)
     filename = Column(String(512), nullable=False)
     skillset = Column(Text, nullable=True)
-    status = Column(String(50), nullable=True, default="pending")  # Processing status
-    created_at = Column(TIMESTAMP, server_default=func.current_timestamp())
+    status = Column(String(50), nullable=True, server_default="pending")  # Processing status
+    created_at = Column(TIMESTAMP, nullable=True, server_default=func.current_timestamp())
     updated_at = Column(
         TIMESTAMP,
+        nullable=True,
         server_default=func.current_timestamp(),
         onupdate=func.current_timestamp()
     )

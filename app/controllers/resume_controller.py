@@ -105,6 +105,8 @@ class ResumeController:
         extract_modules: Optional[str] = "all"
     ) -> ResumeUploadResponse:
         """Handle resume upload, parsing, and embedding."""
+        # Track resume ID as a plain int to avoid ORM lazy-loads in error paths
+        resume_id_for_error: Optional[int] = None
         try:
             # Sanitize filename early
             safe_filename = sanitize_filename(file.filename or "resume.pdf")
@@ -129,6 +131,7 @@ class ResumeController:
                         "status": get_failure_status(FAILURE_INVALID_FILE_TYPE),
                     }
                     resume_metadata = await self.resume_repo.create(db_record)
+                    resume_id_for_error = resume_metadata.id
                     logger.warning(
                         f"Invalid file type rejected, created record with failed status: {resume_metadata.id}",
                         extra={"resume_id": resume_metadata.id, "file_name": safe_filename, "file_ext": file_ext}
@@ -248,7 +251,13 @@ class ResumeController:
            
             # Save to database first (before text extraction for proper error handling)
             resume_metadata = await self.resume_repo.create(db_record)
-           
+            
+            # CRITICAL: Capture ID immediately after creation, before any commits
+            # This prevents MissingGreenlet errors from lazy-loading expired attributes
+            # after multiple update operations that each commit separately
+            resume_id = resume_metadata.id  # Safe: ID is available immediately after create+refresh
+            resume_id_for_error = resume_id  # Update error handler variable
+            
             # Extract text from file
             try:
                 resume_text = await self.resume_parser.extract_text(file_content, safe_filename)
@@ -271,12 +280,12 @@ class ResumeController:
             except Exception as e:
                 # Update status to failed for extraction error
                 await self.resume_repo.update(
-                    resume_metadata.id,
+                    resume_id,  # Use captured ID, not ORM attribute
                     {"status": get_failure_status(FAILURE_EXTRACTION_ERROR)}
                 )
                 logger.error(
-                    f"Text extraction failed for resume {resume_metadata.id}: {e}",
-                    extra={"resume_id": resume_metadata.id, "file_name": safe_filename, "error": str(e)}
+                    f"Text extraction failed for resume {resume_id}: {e}",
+                    extra={"resume_id": resume_id, "file_name": safe_filename, "error": str(e)}
                 )
                 raise HTTPException(
                     status_code=400,
@@ -291,7 +300,7 @@ class ResumeController:
             if not resume_text or len(resume_text.strip()) < 50:
                 # Update status to failed for insufficient text
                 await self.resume_repo.update(
-                    resume_metadata.id,
+                    resume_id,  # Use captured ID, not ORM attribute
                     {"status": get_failure_status(FAILURE_INSUFFICIENT_TEXT)}
                 )
                 raise HTTPException(status_code=400, detail="Could not extract sufficient text from resume")
@@ -312,15 +321,15 @@ class ResumeController:
             # Extract and save selected profile fields using dedicated services (SEQUENTIAL)
             # These run one by one - if any fails, the resume upload still succeeds
             logger.info(
-                f"[START] PROFILE EXTRACTION PROCESS for resume ID {resume_metadata.id}",
+                f"[START] PROFILE EXTRACTION PROCESS for resume ID {resume_id}",
                 extra={
-                    "resume_id": resume_metadata.id,
+                    "resume_id": resume_id,
                     "file_name": safe_filename,
                     "modules_to_extract": list(modules_to_extract)
                 }
             )
             print(f"\n[START] PROFILE EXTRACTION PROCESS")
-            print(f"   Resume ID: {resume_metadata.id}")
+            print(f"   Resume ID: {resume_id}")
             print(f"   Filename: {safe_filename}")
             print(f"   Modules to extract: {', '.join(sorted(modules_to_extract)) if modules_to_extract else 'None'}")
             print(f"   [SESSION ISOLATION] Each extraction uses a fresh, isolated LLM context")
@@ -333,107 +342,117 @@ class ResumeController:
                 try:
                     await self.designation_service.extract_and_save_designation(
                         resume_text=resume_text,
-                        resume_id=resume_metadata.id,
+                        resume_id=resume_id,  # Use captured ID
                         filename=safe_filename
                     )
                 except Exception as e:
-                    logger.error(f"[ERROR] DESIGNATION EXTRACTION FAILED: {e}", extra={"resume_id": resume_metadata.id, "error": str(e)})
+                    logger.error(f"[ERROR] DESIGNATION EXTRACTION FAILED: {e}", extra={"resume_id": resume_id, "error": str(e)})
            
             # Extract name (2)
             if "name" in modules_to_extract:
                 try:
                     await self.name_service.extract_and_save_name(
                         resume_text=resume_text,
-                        resume_id=resume_metadata.id,
+                        resume_id=resume_id,  # Use captured ID
                         filename=safe_filename
                     )
                 except Exception as e:
-                    logger.error(f"[ERROR] NAME EXTRACTION FAILED: {e}", extra={"resume_id": resume_metadata.id, "error": str(e)})
+                    logger.error(f"[ERROR] NAME EXTRACTION FAILED: {e}", extra={"resume_id": resume_id, "error": str(e)})
            
             # Extract email (3)
             if "email" in modules_to_extract:
                 try:
                     await self.email_service.extract_and_save_email(
                         resume_text=resume_text,
-                        resume_id=resume_metadata.id,
+                        resume_id=resume_id,  # Use captured ID
                         filename=safe_filename
                     )
                 except Exception as e:
-                    logger.error(f"[ERROR] EMAIL EXTRACTION FAILED: {e}", extra={"resume_id": resume_metadata.id, "error": str(e)})
+                    logger.error(f"[ERROR] EMAIL EXTRACTION FAILED: {e}", extra={"resume_id": resume_id, "error": str(e)})
            
             # Extract mobile (4)
             if "mobile" in modules_to_extract:
                 try:
                     await self.mobile_service.extract_and_save_mobile(
                         resume_text=resume_text,
-                        resume_id=resume_metadata.id,
+                        resume_id=resume_id,  # Use captured ID
                         filename=safe_filename
                     )
                 except Exception as e:
-                    logger.error(f"[ERROR] MOBILE EXTRACTION FAILED: {e}", extra={"resume_id": resume_metadata.id, "error": str(e)})
+                    logger.error(f"[ERROR] MOBILE EXTRACTION FAILED: {e}", extra={"resume_id": resume_id, "error": str(e)})
            
             # Extract experience (5)
             if "experience" in modules_to_extract:
                 try:
                     await self.experience_service.extract_and_save_experience(
                         resume_text=resume_text,
-                        resume_id=resume_metadata.id,
+                        resume_id=resume_id,  # Use captured ID
                         filename=safe_filename
                     )
                 except Exception as e:
-                    logger.error(f"[ERROR] EXPERIENCE EXTRACTION FAILED: {e}", extra={"resume_id": resume_metadata.id, "error": str(e)})
+                    logger.error(f"[ERROR] EXPERIENCE EXTRACTION FAILED: {e}", extra={"resume_id": resume_id, "error": str(e)})
            
             # Extract domain (6)
             if "domain" in modules_to_extract:
                 try:
                     await self.domain_service.extract_and_save_domain(
                         resume_text=resume_text,
-                        resume_id=resume_metadata.id,
+                        resume_id=resume_id,  # Use captured ID
                         filename=safe_filename
                     )
                 except Exception as e:
-                    logger.error(f"[ERROR] DOMAIN EXTRACTION FAILED: {e}", extra={"resume_id": resume_metadata.id, "error": str(e)})
+                    logger.error(f"[ERROR] DOMAIN EXTRACTION FAILED: {e}", extra={"resume_id": resume_id, "error": str(e)})
            
             # Extract education (7)
             if "education" in modules_to_extract:
                 try:
                     await self.education_service.extract_and_save_education(
                         resume_text=resume_text,
-                        resume_id=resume_metadata.id,
+                        resume_id=resume_id,  # Use captured ID
                         filename=safe_filename
                     )
                 except Exception as e:
-                    logger.error(f"[ERROR] EDUCATION EXTRACTION FAILED: {e}", extra={"resume_id": resume_metadata.id, "error": str(e)})
+                    logger.error(f"[ERROR] EDUCATION EXTRACTION FAILED: {e}", extra={"resume_id": resume_id, "error": str(e)})
            
             # Extract skills (8)
             if "skills" in modules_to_extract:
                 try:
                     await self.skills_service.extract_and_save_skills(
                         resume_text=resume_text,
-                        resume_id=resume_metadata.id,
+                        resume_id=resume_id,  # Use captured ID
                         filename=safe_filename
                     )
                 except Exception as e:
-                    logger.error(f"[ERROR] SKILLS EXTRACTION FAILED: {e}", extra={"resume_id": resume_metadata.id, "error": str(e)})
-           
+                    logger.error(f"[ERROR] SKILLS EXTRACTION FAILED: {e}", extra={"resume_id": resume_id, "error": str(e)})
+            
             # All extractions completed - session contexts are automatically cleared
             # Each extraction used a fresh HTTP client with isolated context
+            # resume_id already captured above, no need to access ORM attribute
             logger.info(
-                f"[SUCCESS] PROFILE EXTRACTION PROCESS COMPLETED for resume ID {resume_metadata.id}",
-                extra={"resume_id": resume_metadata.id, "file_name": safe_filename}
+                f"[SUCCESS] PROFILE EXTRACTION PROCESS COMPLETED for resume ID {resume_id}",
+                extra={"resume_id": resume_id, "file_name": safe_filename}
             )
             print(f"\n[SUCCESS] PROFILE EXTRACTION PROCESS COMPLETED")
-            print(f"   Resume ID: {resume_metadata.id}")
+            print(f"   Resume ID: {resume_id}")
             print(f"   [SESSION CLEARED] All extraction contexts have been isolated and cleared")
            
             # Final refresh to get all updated fields from database
-            await self.resume_repo.session.refresh(resume_metadata)
-           
+            # Use refresh with the captured ID to avoid ORM attribute access issues
+            try:
+                await self.resume_repo.session.refresh(resume_metadata)
+            except Exception as refresh_error:
+                # If refresh fails, log warning but continue - we can still build response
+                logger.warning(
+                    f"Failed to refresh resume metadata: {refresh_error}",
+                    extra={"resume_id": resume_id}
+                )
+            
             # Log all extracted fields for verification
+            # Access ORM attributes only after successful refresh
             logger.info(
-                f"[SUCCESS] PROFILE EXTRACTION COMPLETED for resume ID {resume_metadata.id}",
+                f"[SUCCESS] PROFILE EXTRACTION COMPLETED for resume ID {resume_id}",
                 extra={
-                    "resume_id": resume_metadata.id,
+                    "resume_id": resume_id,
                     "candidatename": resume_metadata.candidatename,
                     "designation": resume_metadata.designation,
                     "email": resume_metadata.email,
@@ -445,7 +464,7 @@ class ResumeController:
                 }
             )
             print(f"\n[SUCCESS] PROFILE EXTRACTION COMPLETED")
-            print(f"   Resume ID: {resume_metadata.id}")
+            print(f"   Resume ID: {resume_id}")
             print(f"   Name: {resume_metadata.candidatename}")
             print(f"   Designation: {resume_metadata.designation}")
             print(f"   Email: {resume_metadata.email}")
@@ -496,22 +515,38 @@ class ResumeController:
             #         del chunk_embeddings
             #         gc.collect()
            
-            logger.info(f"Embeddings disabled - skipping vector generation for resume {resume_metadata.id}")
-           
-            # Update status to completed on success
-            await self.resume_repo.update(
-                resume_metadata.id,
-                {"status": STATUS_COMPLETED}
-            )
-           
+            logger.info(f"Embeddings disabled - skipping vector generation for resume {resume_id}")
+            
+            # Update status to completed on success (always update, even if some extractions failed)
+            try:
+                await self.resume_repo.update(
+                    resume_id,  # Use captured ID, not ORM attribute
+                    {"status": STATUS_COMPLETED}
+                )
+                logger.info(
+                    f"✅ Status updated to COMPLETED for resume ID {resume_id}",
+                    extra={"resume_id": resume_id}
+                )
+            except Exception as status_error:
+                logger.error(
+                    f"❌ Failed to update status to COMPLETED: {status_error}",
+                    extra={"resume_id": resume_id, "error": str(status_error)}
+                )
+            
             # Final refresh to ensure all extracted fields are loaded from database
-            await self.resume_repo.session.refresh(resume_metadata)
+            try:
+                await self.resume_repo.session.refresh(resume_metadata)
+            except Exception as refresh_error:
+                logger.warning(
+                    f"Failed to refresh resume metadata: {refresh_error}",
+                    extra={"resume_id": resume_id_for_error}
+                )
            
             # Verify all fields are updated (log for debugging)
             logger.info(
-                f"[RESULT] FINAL DATABASE STATE for resume ID {resume_metadata.id}",
+                f"[RESULT] FINAL DATABASE STATE for resume ID {resume_id}",
                 extra={
-                    "resume_id": resume_metadata.id,
+                    "resume_id": resume_id,
                     "candidatename": resume_metadata.candidatename,
                     "designation": resume_metadata.designation,
                     "email": resume_metadata.email,
@@ -525,8 +560,9 @@ class ResumeController:
             )
            
             # Build response with all extracted fields
+            # Access ORM attributes only after refresh - these should be safe now
             return ResumeUploadResponse(
-                id=resume_metadata.id,
+                id=resume_id,  # Use captured ID for primary key
                 candidateName=resume_metadata.candidatename or "",
                 jobrole=resume_metadata.jobrole or "",
                 designation=resume_metadata.designation or "",  # Extracted designation
@@ -544,17 +580,17 @@ class ResumeController:
         except HTTPException:
             raise
         except Exception as e:
-            # Update status to failed if we have a resume_metadata record
-            if 'resume_metadata' in locals() and resume_metadata and resume_metadata.id:
+            # Update status to failed if we have a resume record ID
+            if resume_id_for_error is not None:
                 try:
                     await self.resume_repo.update(
-                        resume_metadata.id,
+                        resume_id_for_error,
                         {"status": get_failure_status(FAILURE_UNKNOWN_ERROR)}
                     )
                 except Exception as update_error:
                     logger.error(
                         f"Failed to update status after error: {update_error}",
-                        extra={"resume_id": resume_metadata.id, "error": str(update_error)}
+                        extra={"resume_id": resume_id_for_error, "error": str(update_error)}
                     )
            
             logger.error(

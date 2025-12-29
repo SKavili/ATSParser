@@ -1,9 +1,11 @@
 """Service for extracting and saving mobile phone number to database."""
-from typing import Optional
+from pathlib import Path
+from typing import Optional, Dict
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.mobile.mobile_extractor import MobileExtractor
 from app.repositories.resume_repo import ResumeRepository
+from app.services.resume_parser import ResumeParser
 from app.utils.logging import get_logger
 
 logger = get_logger(__name__)
@@ -90,4 +92,76 @@ class MobileService:
                 logger.error(f"Failed to update database with NULL mobile: {db_error}")
             
             return None
+    
+    async def reprocess_from_file(
+        self,
+        resume_id: int,
+        filename: str,
+        resume_parser: ResumeParser,
+        resume_files_dirs: list = None
+    ) -> Dict:
+        """
+        Reprocess mobile extraction from resume file.
+        Finds the resume file and re-extracts mobile.
+        
+        Args:
+            resume_id: The ID of the resume record
+            filename: Name of the resume file
+            resume_parser: ResumeParser instance for text extraction
+            resume_files_dirs: List of directories to search for resume files
+        
+        Returns:
+            Dictionary with status and extracted mobile
+        """
+        result = {
+            "resume_id": resume_id,
+            "filename": filename,
+            "mobile_extracted": None,
+            "status": "error",
+            "error": None
+        }
+        
+        if resume_files_dirs is None:
+            resume_files_dirs = [
+                Path("Resumes"),
+                Path("resumes"),
+                Path("uploads"),
+                Path("data/resumes"),
+                Path("storage/resumes"),
+                Path("files/resumes"),
+                Path("."),
+            ]
+        
+        try:
+            # Find resume file
+            file_path = None
+            for base_dir in resume_files_dirs:
+                path = base_dir / filename
+                if path.exists() and path.is_file():
+                    file_path = path
+                    break
+            
+            if not file_path or not file_path.exists():
+                result["error"] = f"Resume file not found: {filename}"
+                return result
+            
+            # Read and extract text
+            with open(file_path, 'rb') as f:
+                file_content = f.read()
+            
+            resume_text = await resume_parser.extract_text(file_content, filename)
+            if not resume_text or len(resume_text.strip()) < 50:
+                result["error"] = "Insufficient text extracted from resume"
+                return result
+            
+            # Extract mobile
+            mobile = await self.extract_and_save_mobile(resume_text, resume_id, filename)
+            result["mobile_extracted"] = mobile
+            result["status"] = "success"
+            return result
+            
+        except Exception as e:
+            result["error"] = f"Unexpected error: {str(e)}"
+            logger.error(f"Error reprocessing mobile for resume ID {resume_id}: {e}", exc_info=True)
+            return result
 

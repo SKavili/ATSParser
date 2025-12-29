@@ -56,3 +56,9 @@ alembic.ini.bak
 
 Resumes/
 
+# Test Data - exclude Hasina folder
+TestData/Hasina/
+
+# Temporary files
+temp_response.txt
+

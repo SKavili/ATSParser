@@ -31,22 +31,157 @@ domain knowledge areas, tools, techniques, methodologies, or certifications
 that a candidate can actively use or perform.
 
 TASK:
-Extract all NON-IT professional skills from the profile text.
+Extract ALL IT and technical skills from the profile text.
+Focus on skills explicitly mentioned in the profile summary, designation, career objective,
+or anywhere in the profile.
+Include and must cover all skills from ALL IT skills categories and return them as a **single combined list**.
 
-SELECTION RULES:
-1. Extract ONLY practical, functional, or domain skills that represent WHAT the candidate CAN DO.
-2. Include domain skills (e.g., Financial Accounting, Cost Accounting, HR Operations, Sales Management).
-3. Include tools and software used in non-IT roles (e.g., MS Excel, MS Word, Tally, SAP, QuickBooks, CRM).
-4. Include techniques, methodologies, standards, or processes explicitly mentioned (e.g., Research Methodology, Audit Planning, Financial Analysis).
-5. Include certifications or professional qualifications ONLY as skills (e.g., CA Foundation, GST Certification).
-6. Include subject areas ONLY if they represent applied professional knowledge (e.g., Financial Management, Management Accounting).
-7. Do NOT include programming languages, coding technologies, frameworks, or development libraries.
-8. Do NOT include soft skills (e.g., Communication, Leadership, Teamwork).
-9. Do NOT include company names, organization names, institutions, colleges, universities, banks, or employers.
-10. Do NOT include conference names, seminar names, workshop names, journal names, or event titles.
-11. Do NOT include research paper titles, thesis titles, presentation titles, or publication headings.
-12. Do NOT include locations, cities, states, or countries.
-13. Do NOT include job titles, roles, or designations.
+
+IT skills categories:
+1 Full Stack Development (Java):
+   - Backend: Java, Core Java, Java EE, Spring, Spring Boot, Hibernate, Microservices, REST APIs
+   - Build & Persistence: Maven, Gradle, JPA, JDBC
+   - Frontend: HTML, CSS, JavaScript, React, Angular
+
+2. Full Stack Development (Python):
+   - Backend: Python, Django, Flask, FastAPI, Microservices, REST APIs
+   - Databases: PostgreSQL, MySQL, MongoDB
+   - Frontend: HTML, CSS, JavaScript, React
+
+3. Full Stack Development (.NET):
+   - Backend: C#, .NET, .NET Core, ASP.NET, ASP.NET MVC, Web API
+   - ORM & Language Features: Entity Framework, LINQ
+   - Cloud & UI: Azure, Blazor
+   - Frontend: HTML, CSS, JavaScript
+  
+4- Business Analysis: Requirements Gathering, Stakeholder Management, BRD, FRD, Use Case Modeling, Process Mapping, Gap Analysis, Data Analysis
+   - Documentation & Modeling: UML, BPMN, User Stories, Acceptance Criteria
+
+5. Project & Program Management (IT):
+   - Project Management: Project Management, Program Management, Agile Project Management, Risk Management, Resource Management, Change Management
+   - Tools & Frameworks: Scrum, Sprint Planning, JIRA, MS Project, PMO Processes
+
+1. Programming & Scripting:
+   - Languages: Python, Java, C#, C++, JavaScript, TypeScript, Go, Ruby, PHP, R, Scala, Kotlin, Swift
+   - Scripting/Automation: Bash, PowerShell, Perl
+
+3. Databases & Data Technologies:
+   - RDBMS: MySQL, PostgreSQL, Oracle, SQL Server
+   - NoSQL: MongoDB, Cassandra, Redis, DynamoDB
+   - Big Data/Analytics: Hadoop, Spark, Kafka, Hive, Presto
+   - BI/Visualization: Tableau, Power BI, Looker, Qlik
+
+4.  Azure/Microsoft Azure Cloud:
+   - Azure Fundamentals (Entry Level): Azure Basics, Azure Portal, Azure Resource Groups, Azure Virtual Machines, Azure Storage Accounts, Azure Blob Storage, Azure Virtual Network, Azure Load Balancer
+   - Azure Compute & Networking: Azure VM Scale Sets, Azure App Service, Azure Functions, Azure Kubernetes Service (AKS), Azure VPN Gateway, Azure Application Gateway, Azure DNS
+   - Azure Data & Integration: Azure SQL Database, Azure Cosmos DB, Azure Data Factory, Azure Synapse Analytics, Azure Service Bus, Azure Event Grid
+   - Azure Security & Identity: Azure Active Directory, Azure RBAC, Azure Key Vault, Azure Security Center, Azure Defender, Azure MFA
+   - Azure DevOps & Automation: Azure DevOps, Azure Pipelines, ARM Templates, Bicep, Azure Automation, CI/CD Pipelines
+   - Azure Monitoring & Management: Azure Monitor, Log Analytics, Application Insights, Azure Cost Management
+   - Azure Administration & Architecture: Azure Backup, Azure Site Recovery, Azure Governance, Azure Policy, Azure Blueprints, High Availability, Disaster Recovery
+
+5 AWS/Amazon Web Services (AWS) Cloud:
+   - AWS Fundamentals (Entry Level): AWS Basics, AWS Management Console, IAM Basics, EC2 Basics, S3 Basics, VPC Basics, AWS Regions and Availability Zones
+   - AWS Compute & Networking: Amazon EC2, Auto Scaling, Elastic Load Balancer, Amazon ECS, Amazon EKS, AWS Lambda, Amazon VPC, Route 53
+   - AWS Storage & Databases: Amazon S3, S3 Glacier, Amazon EBS, Amazon EFS, Amazon RDS, DynamoDB, Amazon Aurora
+   - AWS Security & Identity: AWS IAM, Security Groups, Network ACLs, AWS KMS, AWS Shield, AWS WAF, AWS Secrets Manager
+   - AWS DevOps & Automation: AWS CloudFormation, AWS CDK, CodePipeline, CodeBuild, CodeDeploy, CI/CD Pipelines
+   - AWS Monitoring & Management: Amazon CloudWatch, AWS CloudTrail, AWS Config, AWS Cost Explorer
+   - AWS Administration & Architecture: Backup and Recovery, Fault Tolerance, High Availability, Disaster Recovery, Well-Architected Framework, Multi-Account Strategy
+
+8. DevOps & Platform Engineering:
+   - DevOps Fundamentals (Entry Level): DevOps Basics, CI/CD Basics, Version Control, Git, Linux Basics, Shell Scripting, YAML
+   - CI/CD & Build Tools: Jenkins, GitHub Actions, GitLab CI, Azure DevOps Pipelines, Bitbucket Pipelines
+   - Containerization & Orchestration: Docker, Docker Compose, Kubernetes, Helm, Kubernetes Networking, Kubernetes Security
+   - Infrastructure as Code (IaC): Terraform, Ansible, CloudFormation, ARM Templates, Bicep
+   - Configuration & Automation: Ansible Playbooks, Chef, Puppet, SaltStack
+   - Cloud DevOps Practices: Blue-Green Deployment, Canary Deployment, Rolling Deployment, Auto Scaling
+   - Monitoring & Logging: Prometheus, Grafana, ELK Stack, Fluentd, Loki, Datadog, New Relic
+   - Security & DevSecOps: DevSecOps, Secrets Management, HashiCorp Vault, SAST, DAST, Container Security, OWASP
+   - Reliability & Operations: Site Reliability Engineering (SRE), Incident Management, Root Cause Analysis, High Availability, Disaster Recovery
+   - DevOps Administration & Architecture: Platform Engineering, CI/CD Architecture, GitOps, ArgoCD, FluxCD, Scalability, Performance Optimization
+
+9. Artificial Intelligence & Machine Learning:
+   - AI/ML Fundamentals (Entry Level): Machine Learning Basics, Supervised Learning, Unsupervised Learning, Feature Engineering, Model Evaluation, Data Preprocessing
+   - Machine Learning Algorithms: Linear Regression, Logistic Regression, Decision Trees, Random Forest, Gradient Boosting, XGBoost, Support Vector Machines, K-Means
+   - Deep Learning: Neural Networks, Convolutional Neural Networks (CNN), Recurrent Neural Networks (RNN), LSTM, Transformers
+   - ML Frameworks & Libraries: Scikit-learn, TensorFlow, PyTorch, Keras
+   - Model Training & Optimization: Hyperparameter Tuning, Cross Validation, Regularization, Model Deployment
+   - MLOps & Production: ML Pipelines, Model Versioning, Model Monitoring, MLflow, Kubeflow, Model Serving
+
+10. Generative AI & Large Language Models:
+   - Generative AI Fundamentals: Generative AI, Large Language Models (LLMs), Prompt Engineering, In-Context Learning
+   - LLM Frameworks & APIs: OpenAI API, Azure OpenAI, Hugging Face Transformers, LangChain, LlamaIndex
+   - Text & Language Models: GPT, BERT, T5, LLaMA
+   - Image & Multimodal Models: Stable Diffusion, DALL·E, Vision Transformers, Multimodal Models
+   - Vector Databases & RAG: Embeddings, Vector Search, FAISS, Pinecone, Weaviate, ChromaDB, Retrieval-Augmented Generation (RAG)
+   - Fine-Tuning & Optimization: LoRA, PEFT, Instruction Tuning, Model Quantization
+   - GenAI Deployment & Governance: LLM Deployment, Model Monitoring, Prompt Evaluation, AI Safety, Responsible AI
+
+11. Data Science:
+   - Data Science Fundamentals (Entry Level): Data Analysis, Exploratory Data Analysis (EDA), Statistics, Probability, Data Cleaning
+   - Programming & Libraries: Python, NumPy, Pandas, SciPy, Matplotlib, Seaborn
+   - Advanced Analytics & Modeling: Predictive Modeling, Time Series Analysis, Forecasting, Anomaly Detection
+   - Big Data & Distributed Computing: Spark, PySpark, Hadoop, Hive
+   - Data Visualization: Tableau, Power BI, Plotly
+   - Data Science Workflows: Feature Engineering, Model Validation, Experimentation, A/B Testing
+   - Data Science Deployment: Model Deployment, API Integration, Data Pipelines
+
+12. Data Analysis & Business Intelligence:
+   - Data Analyst Fundamentals (Entry Level): Data Analysis, Data Interpretation, Business Metrics, KPI Tracking
+   - Querying & Databases: SQL, Advanced SQL, Joins, Subqueries, Window Functions
+   - Data Visualization & Reporting: Power BI, Tableau, Excel Dashboards, Data Storytelling
+   - Spreadsheet & Tools: MS Excel, Pivot Tables, Power Query, VBA
+   - BI & Reporting Platforms: Looker, Qlik, SSRS
+   - Data Governance & Quality: Data Validation, Data Quality Checks, Master Data Management
+   - Advanced Data Analysis: Trend Analysis, Cohort Analysis, Root Cause Analysis
+
+6. Networking & Security:
+   - Networking: TCP/IP, DNS, DHCP, VPN, Firewalls
+   - Security: Penetration Testing, Ethical Hacking, OWASP, CIS Controls, SIEM tools
+
+7. Software Tools & Platforms:
+   - Version Control: Git, SVN, Mercurial
+   - IDEs & Editors: VS Code, PyCharm, Eclipse, IntelliJ, NetBeans
+   - Project Management: Jira, Trello, Confluence
+
+8. Methodologies & Practices:
+   - Agile, Scrum, Kanban, DevOps, Test-Driven Development, Continuous Integration/Delivery
+   - Software Development Life Cycle (SDLC), ITIL, Six Sigma (if IT-related)
+
+2. Web & Mobile Development:
+   - Frontend: HTML, CSS, JavaScript, React, Angular, Vue.js
+   - Backend: Node.js, Django, Spring Boot, Flask, Express.js
+   - Mobile: Android, iOS, React Native, Flutter, Swift, Kotlin
+
+
+13. Microsoft Dynamics & Power Platform:
+   - Dynamics 365: Microsoft Dynamics 365, Dynamics Business Central, NAV, AL Development, C/AL
+   - Power Platform: Power BI, Power Apps, Power Automate, Power Virtual Agents, Dataverse, DAX
+
+14. SAP Ecosystem:
+   - SAP Core: SAP, SAP S/4HANA, SAP ECC, SAP HANA
+   - SAP Modules: SAP FICO, SAP MM, SAP SD, SAP CRM, SAP BW
+   - SAP Technical: SAP ABAP, SAP Basis
+
+15. Salesforce Ecosystem:
+   - Salesforce Core: Salesforce, Salesforce CRM, Salesforce Administration
+   - Salesforce Development: Apex, Visualforce, Lightning Web Components (LWC)
+   - Salesforce Clouds: Sales Cloud, Service Cloud
+   - Salesforce Integration: Salesforce Integration
+
+
+12. ERP Systems:
+   - ERP Core: ERP Implementation, ERP Configuration, ERP Integration, ERP Migration, ERP Support
+   - ERP Functional Areas: Finance Modules, Supply Chain Modules, Manufacturing Modules
+
+
+
+9. Certifications:
+   - Include only IT certifications explicitly mentioned (e.g., AWS Certified Solutions Architect, PMP, CCNA, MCSE)
+
+
+
 
 CONSTRAINTS:
 - Extract ONLY relevant NON-IT professional skills.
@@ -72,10 +207,7 @@ JSON SCHEMA:
 }
 
 VALID OUTPUT EXAMPLES:
-{"skills": ["Financial Accounting", "Cost and Management Accounting", "Business Statistics", "Research Methodology", "Financial Management", "MS Excel", "Tally ERP"]}
-{"skills": []}
-
-
+{"skills": ["Python", "java, spring boot, Azuere,AWs , Devops , flutter , Django", "MySQL", "AWS", "Docker", "React", "Agile", "Git, ,ai ml, "]}
 """
 
 
