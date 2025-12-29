@@ -306,4 +306,23 @@ class ResumeRepository:
             query = query.limit(limit)
         result = await self.session.execute(query)
         return list(result.scalars().all())
+    
+    async def get_resumes_with_failed_status(self, failure_reason: str = "insufficient_text", limit: Optional[int] = None) -> List[ResumeMetadata]:
+        """
+        Get resumes that have failed status with specific failure reason.
+        Useful for reprocessing resumes that failed due to insufficient text.
+        
+        Args:
+            failure_reason: The failure reason to filter by (default: "insufficient_text")
+            limit: Optional limit on number of results
+        
+        Returns:
+            List of ResumeMetadata records with the specified failure status
+        """
+        failure_status = f"failed:{failure_reason}"
+        query = select(ResumeMetadata).where(ResumeMetadata.status == failure_status)
+        if limit:
+            query = query.limit(limit)
+        result = await self.session.execute(query)
+        return list(result.scalars().all())
 

@@ -1,7 +1,8 @@
 """Service for extracting years of experience from resumes using OLLAMA LLM."""
 import json
 import re
-from typing import Dict, Optional
+from typing import Dict, Optional, List, Tuple
+from datetime import datetime
 import httpx
 from httpx import Timeout
 
@@ -33,16 +34,23 @@ Extract the candidate's total years of experience from the profile text.
 
 SELECTION RULES (in priority order):
 1. FIRST: Look for explicitly stated total experience in summary sections, profile sections, or header areas.
+   CRITICAL: If you find experience with a "+" sign (e.g., "25+ years", "18+ years"), ALWAYS prefer it over 
+   any calculated or work history values, even if work history shows a different number.
    Examples: "18+ years of experience", "over 25+ years of experience", "10 years experience", 
    "Total Work Experience: 18 years", "18 years of experience", "Experience: 15+ years",
    "with 20+ years", "having 12 years", "18 years", "25+ years"
+   PRIORITY: "X+ years" format > "over X+ years" > "X years" in summary > work history values
 
-2. SECOND: Look for experience stated in work history sections:
+2. SECOND: Look for experience stated in work history sections (ONLY if no explicit summary value found):
    Examples: "Total Work Experience: X years", "Work Experience: X years", "Years of Experience: X"
+   NOTE: If summary section has "X+ years" format, use that instead of work history values
 
 3. THIRD: If no explicit total is found, calculate from work history entries:
    - Sum up years from all job positions listed
    - Consider date ranges (e.g., "Jan 2020 - Present" = current year - 2020)
+   - Identify all date patterns (Month Year, DD/MM/YY, MM/DD/YY, YYYY-MM-DD, etc.)
+   - Find the difference between most recent and oldest work dates
+   - Exclude education-related dates (graduation dates, engineering passed dates, etc.)
    - Consider only professional work experience, not internships or education
 
 4. Look for patterns like:
@@ -109,10 +117,298 @@ class ExperienceExtractor:
             logger.warning(f"Failed to check OLLAMA connection: {e}", extra={"error": str(e)})
             return False, None
     
+    def _extract_dates_from_text(self, text: str) -> List[Tuple[datetime, str]]:
+        """
+        Extract all date patterns from text and return as datetime objects with context.
+        
+        Supports formats:
+        - Month Year (e.g., "January 2020", "Jan 2020", "01/2020")
+        - DD/MM/YY or DD/MM/YYYY (e.g., "15/01/20", "15/01/2020")
+        - MM/DD/YY or MM/DD/YYYY (e.g., "01/15/20", "01/15/2020")
+        - YYYY-MM-DD (e.g., "2020-01-15")
+        - Year only (e.g., "2020")
+        
+        Returns:
+            List of tuples (datetime, context_string) where context_string is surrounding text
+        """
+        dates = []
+        month_names = {
+            'january': 1, 'jan': 1, 'february': 2, 'feb': 2, 'march': 3, 'mar': 3,
+            'april': 4, 'apr': 4, 'may': 5, 'june': 6, 'jun': 6, 'july': 7, 'jul': 7,
+            'august': 8, 'aug': 8, 'september': 9, 'sep': 9, 'sept': 9,
+            'october': 10, 'oct': 10, 'november': 11, 'nov': 11, 'december': 12, 'dec': 12
+        }
+        
+        # Pattern 1: Month Year (e.g., "January 2020", "Jan 2020", "Jan. 2020")
+        pattern1 = r'\b(january|february|march|april|may|june|july|august|september|october|november|december|jan|feb|mar|apr|may|jun|jul|aug|sep|sept|oct|nov|dec)\.?\s+(\d{4})\b'
+        for match in re.finditer(pattern1, text, re.IGNORECASE):
+            month_str = match.group(1).lower()
+            year = int(match.group(2))
+            if month_str in month_names:
+                try:
+                    date_obj = datetime(year, month_names[month_str], 1)
+                    context_start = max(0, match.start() - 100)
+                    context_end = min(len(text), match.end() + 100)
+                    context = text[context_start:context_end]
+                    dates.append((date_obj, context))
+                except ValueError:
+                    continue
+        
+        # Pattern 2: DD/MM/YY or DD/MM/YYYY
+        pattern2 = r'\b(\d{1,2})/(\d{1,2})/(\d{2,4})\b'
+        for match in re.finditer(pattern2, text):
+            day = int(match.group(1))
+            month = int(match.group(2))
+            year_str = match.group(3)
+            if len(year_str) == 2:
+                year = 2000 + int(year_str) if int(year_str) < 50 else 1900 + int(year_str)
+            else:
+                year = int(year_str)
+            
+            # Heuristic: if day > 12, likely DD/MM format
+            if day <= 31 and month <= 12:
+                try:
+                    if day > 12:  # Likely DD/MM format
+                        date_obj = datetime(year, month, min(day, 28))
+                    else:  # Could be MM/DD, but we'll try DD/MM first
+                        date_obj = datetime(year, month, min(day, 28))
+                    context_start = max(0, match.start() - 100)
+                    context_end = min(len(text), match.end() + 100)
+                    context = text[context_start:context_end]
+                    dates.append((date_obj, context))
+                except ValueError:
+                    continue
+        
+        # Pattern 3: MM/DD/YY or MM/DD/YYYY (when day > 12, it's clearly MM/DD)
+        pattern3 = r'\b(\d{1,2})/(\d{1,2})/(\d{2,4})\b'
+        for match in re.finditer(pattern3, text):
+            first = int(match.group(1))
+            second = int(match.group(2))
+            year_str = match.group(3)
+            if len(year_str) == 2:
+                year = 2000 + int(year_str) if int(year_str) < 50 else 1900 + int(year_str)
+            else:
+                year = int(year_str)
+            
+            # If first <= 12 and second > 12, it's MM/DD format
+            if first <= 12 and second > 12 and second <= 31:
+                try:
+                    date_obj = datetime(year, first, min(second, 28))
+                    context_start = max(0, match.start() - 100)
+                    context_end = min(len(text), match.end() + 100)
+                    context = text[context_start:context_end]
+                    dates.append((date_obj, context))
+                except ValueError:
+                    continue
+        
+        # Pattern 4: YYYY-MM-DD
+        pattern4 = r'\b(\d{4})-(\d{1,2})-(\d{1,2})\b'
+        for match in re.finditer(pattern4, text):
+            year = int(match.group(1))
+            month = int(match.group(2))
+            day = int(match.group(3))
+            if 1 <= month <= 12 and 1 <= day <= 31:
+                try:
+                    date_obj = datetime(year, month, min(day, 28))
+                    context_start = max(0, match.start() - 100)
+                    context_end = min(len(text), match.end() + 100)
+                    context = text[context_start:context_end]
+                    dates.append((date_obj, context))
+                except ValueError:
+                    continue
+        
+        # Pattern 5: Year only (4 digits, reasonable range)
+        pattern5 = r'\b(19[5-9]\d|20[0-3]\d)\b'
+        for match in re.finditer(pattern5, text):
+            year = int(match.group(1))
+            if 1950 <= year <= datetime.now().year:
+                try:
+                    date_obj = datetime(year, 1, 1)
+                    context_start = max(0, match.start() - 100)
+                    context_end = min(len(text), match.end() + 100)
+                    context = text[context_start:context_end]
+                    dates.append((date_obj, context))
+                except ValueError:
+                    continue
+        
+        return dates
+    
+    def _is_education_date(self, context: str) -> bool:
+        """
+        Check if a date is related to education based on surrounding context.
+        
+        Args:
+            context: Text surrounding the date (typically 200 chars)
+        
+        Returns:
+            True if the date appears to be education-related, False otherwise
+        """
+        context_lower = context.lower()
+        
+        # Education-related keywords
+        education_keywords = [
+            'education', 'degree', 'bachelor', 'master', 'phd', 'doctorate',
+            'graduation', 'graduated', 'graduate', 'university', 'college',
+            'school', 'diploma', 'certificate', 'engineering', 'b.tech', 'm.tech',
+            'b.e.', 'm.e.', 'b.sc', 'm.sc', 'b.a.', 'm.a.', 'passed', 'completed',
+            'academic', 'qualification', 'studied', 'course', 'program'
+        ]
+        
+        # Work-related keywords (if present, likely not education)
+        work_keywords = [
+            'experience', 'work', 'employment', 'job', 'position', 'role',
+            'company', 'employer', 'organization', 'client', 'project',
+            'responsibilities', 'achievements', 'skills', 'technologies',
+            'professional', 'analyst', 'engineer', 'developer', 'manager',
+            'intern', 'internship', 'solutions', 'academy', 'hyderabad',
+            'remote', 'india', 'data analyst', 'quality assurance'
+        ]
+        
+        # Check for education keywords
+        has_education_keyword = any(keyword in context_lower for keyword in education_keywords)
+        
+        # Check for work keywords
+        has_work_keyword = any(keyword in context_lower for keyword in work_keywords)
+        
+        # If it's in a section clearly marked as education (check this first)
+        if any(section in context_lower for section in ['# education', 'education:', 'academic:', 'qualification:']):
+            # But if it also has strong work indicators, it might be work-related
+            if has_work_keyword and any(strong_work in context_lower for strong_work in ['professional experience', 'work experience', 'employment', 'job']):
+                return False
+            return True
+        
+        # If it has education keywords and no work keywords, it's likely education
+        if has_education_keyword and not has_work_keyword:
+            return True
+        
+        # If it has work keywords, it's likely work (even if it has some education keywords)
+        if has_work_keyword:
+            return False
+        
+        return False
+    
+    def _calculate_experience_from_dates(self, resume_text: str) -> Optional[str]:
+        """
+        Calculate years of experience by finding date range from work history.
+        Excludes education-related dates.
+        
+        Returns:
+            Experience string in format "X years" or None if cannot be calculated
+        """
+        if not resume_text:
+            return None
+        
+        logger.info("📅 Starting date-based experience calculation")
+        logger.debug(f"Resume text length: {len(resume_text)} characters")
+        
+        # Extract all dates with context (search full text, not limited)
+        all_dates = self._extract_dates_from_text(resume_text)
+        
+        if not all_dates:
+            logger.warning("❌ No dates found in resume text at all")
+            # Try to see if there are any year-like numbers
+            year_pattern = r'\b(20[0-2][0-9]|19[5-9][0-9])\b'
+            years_found = re.findall(year_pattern, resume_text[:5000])
+            if years_found:
+                logger.debug(f"Found year-like numbers in text: {years_found[:10]}")
+            return None
+        
+        logger.info(f"Found {len(all_dates)} total date occurrences in resume")
+        
+        # Filter out education-related dates, keeping context for work dates
+        work_dates_with_context = []
+        education_dates_count = 0
+        for date_obj, context in all_dates:
+            is_education = self._is_education_date(context)
+            if not is_education:
+                work_dates_with_context.append((date_obj, context))
+                logger.debug(f"✅ Including work date: {date_obj.strftime('%Y-%m')} (context: {context[:100]}...)")
+            else:
+                education_dates_count += 1
+                logger.debug(f"❌ Excluding education date: {date_obj.strftime('%Y-%m')} (context: {context[:100]}...)")
+        
+        logger.info(f"Date filtering: {len(work_dates_with_context)} work dates, {education_dates_count} education dates excluded")
+        
+        if not work_dates_with_context:
+            logger.warning(f"❌ No work-related dates found after filtering. All {len(all_dates)} dates were filtered as education dates.")
+            # Log why dates were filtered
+            for date_obj, context in all_dates[:5]:  # Show first 5 filtered dates
+                is_edu = self._is_education_date(context)
+                logger.debug(f"Filtered date: {date_obj.strftime('%Y-%m')} - Is Education: {is_edu} - Context preview: {context[:100]}...")
+            return None
+        
+        logger.info(f"✅ Found {len(work_dates_with_context)} work-related dates after filtering (excluded {len(all_dates) - len(work_dates_with_context)} education dates)")
+        
+        # Find oldest and most recent dates
+        work_dates = [date_obj for date_obj, _ in work_dates_with_context]
+        oldest_date = min(work_dates)
+        most_recent_date = max(work_dates)
+        
+        # Check if "Present" or "Current" is mentioned near the most recent date
+        # This helps identify ongoing positions
+        current_date = datetime.now()
+        most_recent_context = None
+        for date_obj, context in work_dates_with_context:
+            if date_obj == most_recent_date:
+                most_recent_context = context.lower()
+                break
+        
+        # If "Present" or "Current" is mentioned, treat most recent date as current
+        if most_recent_context and any(keyword in most_recent_context for keyword in ['present', 'current', 'till date', 'till now']):
+            most_recent_date = current_date
+            logger.debug("Found 'Present' or 'Current' keyword, using current date as most recent")
+        elif most_recent_date > current_date:
+            # If most recent date is in the future, use current date
+            most_recent_date = current_date
+            logger.debug(f"Most recent date is in future, using current date")
+        
+        # Calculate years difference
+        years_diff = (most_recent_date.year - oldest_date.year)
+        if most_recent_date.month < oldest_date.month or (
+            most_recent_date.month == oldest_date.month and most_recent_date.day < oldest_date.day
+        ):
+            years_diff -= 1
+        
+        # Add months for more accuracy (round to nearest year)
+        months_diff = (most_recent_date.year - oldest_date.year) * 12 + (most_recent_date.month - oldest_date.month)
+        if most_recent_date.day < oldest_date.day:
+            months_diff -= 1
+        
+        # Round to nearest year
+        years_diff = round(months_diff / 12)
+        
+        logger.debug(f"Date calculation: oldest={oldest_date.strftime('%Y-%m')}, most_recent={most_recent_date.strftime('%Y-%m')}, months_diff={months_diff}, years_diff={years_diff}")
+        
+        # Validate: should be between 0 and 50 years
+        if years_diff < 0:
+            logger.warning(f"Calculated negative years: {years_diff}, using 0")
+            years_diff = 0
+        elif years_diff > 50:
+            logger.warning(f"Calculated unrealistic years: {years_diff}, capping at 50")
+            years_diff = 50
+        
+        # Handle cases where experience is less than 1 year
+        if years_diff == 0:
+            # Check if we have at least 3 months of experience (be more lenient)
+            if months_diff >= 3:
+                experience_str = "1 year"  # Round up to 1 year if >= 3 months
+                logger.info(f"✅ Date-based calculation: {experience_str} (from {oldest_date.strftime('%Y-%m')} to {most_recent_date.strftime('%Y-%m')}, {months_diff} months, rounded up)")
+                return experience_str
+            else:
+                logger.warning(f"❌ Calculated {months_diff} months of experience from dates (less than 3 months, returning None)")
+                logger.debug(f"Oldest date: {oldest_date.strftime('%Y-%m-%d')}, Most recent: {most_recent_date.strftime('%Y-%m-%d')}")
+                return None
+        
+        experience_str = f"{years_diff} years"
+        logger.info(f"✅ Date-based calculation: {experience_str} (from {oldest_date.strftime('%Y-%m')} to {most_recent_date.strftime('%Y-%m')}, {months_diff} months)")
+        
+        return experience_str
+    
     def _extract_experience_fallback(self, resume_text: str) -> Optional[str]:
         """
         Fallback regex-based extraction if LLM fails.
         Looks for common experience patterns in the resume text.
+        Also tries date-based calculation as a secondary method.
         """
         if not resume_text:
             logger.warning("Fallback extraction: resume_text is empty")
@@ -122,65 +418,138 @@ class ExperienceExtractor:
         logger.debug(f"Resume text length: {len(resume_text)} characters")
         
         # Common patterns for experience - capture full "X years" or "X+ years" format
-        # Order matters - more specific patterns first
-        patterns = [
-            # Most specific patterns first - these should match "18+ years of experience"
+        # Priority order: summary patterns first, then work history patterns
+        # Patterns with "+" signs are prioritized
+        summary_patterns = [
+            # High priority: Summary/profile section patterns (these should be checked first)
             r'(\d+\+?\s*years?)\s+of\s+experience',  # "18+ years of experience"
             r'(\d+\+?\s*years?)\s+of\s+professional\s+experience',
-            r'(?:total\s+)?(?:work\s+)?experience[:\s]+(\d+\+?\s*years?)',  # "Total Work Experience: 18 years"
-            r'over\s+(\d+\+?\s*years?)',  # "over 25+ years"
+            r'over\s+(\d+\+?\s*years?)',  # "over 25+ years" - HIGH PRIORITY
             r'more\s+than\s+(\d+\+?\s*years?)',
             r'(\d+\+?\s*years?)\s+experience',  # "18+ years experience"
-            r'experience[:\s]+(\d+\+?\s*years?)',
-            r'(\d+\+?\s*years?)\s+in\s+(?:the\s+)?(?:field|industry|profession)',
-            r'(\d+\+?\s*years?)\s+professional',
-            r'(\d+\+?\s*years?)\s+work',
-            r'(\d+\+?\s*years?)\s+in\s+',
             r'with\s+(\d+\+?\s*years?)',  # "with 18+ years"
             r'having\s+(\d+\+?\s*years?)',
+            r'(\d+\+?\s*years?)\s+in\s+(?:the\s+)?(?:field|industry|profession)',
+            r'(\d+\+?\s*years?)\s+professional',
+        ]
+        
+        work_history_patterns = [
+            # Lower priority: Work history section patterns
+            r'(?:total\s+)?(?:work\s+)?experience[:\s]+(\d+\+?\s*years?)',  # "Total Work Experience: 18 years"
+            r'experience[:\s]+(\d+\+?\s*years?)',
+            r'(\d+\+?\s*years?)\s+work',
+            r'(\d+\+?\s*years?)\s+in\s+',
         ]
         
         # Search in first 15000 characters (usually contains summary/profile sections)
         search_text = resume_text[:15000]
+        summary_text = resume_text[:5000]  # First 5000 chars typically contain summary
         logger.debug(f"Searching in first {len(search_text)} characters")
-        logger.debug(f"First 500 chars of search text: {search_text[:500]}")
+        logger.debug(f"Summary section (first 500 chars): {summary_text[:500]}")
         
-        # Try patterns in order, return first match
-        for idx, pattern in enumerate(patterns):
+        all_matches = []  # Store all matches with priority info
+        
+        # First, check summary patterns in summary section (highest priority)
+        for idx, pattern in enumerate(summary_patterns):
             try:
-                matches = re.findall(pattern, search_text, re.IGNORECASE)
-                logger.debug(f"Pattern {idx+1}/{len(patterns)} '{pattern}': found {len(matches)} matches")
-                
-                if matches:
-                    # Get the first match and normalize it
-                    exp_str = matches[0].strip()
-                    logger.debug(f"Raw match: '{exp_str}'")
+                matches = re.finditer(pattern, summary_text, re.IGNORECASE)
+                for match in matches:
+                    exp_str = match.group(1).strip()
+                    has_plus = '+' in exp_str
+                    position = match.start()
+                    all_matches.append({
+                        'text': exp_str,
+                        'has_plus': has_plus,
+                        'position': position,
+                        'section': 'summary',
+                        'pattern_idx': idx
+                    })
+                    logger.debug(f"Summary pattern {idx+1} '{pattern}': found '{exp_str}' at position {position}")
+            except Exception as e:
+                logger.warning(f"Error processing summary pattern {idx+1} '{pattern}': {e}")
+                continue
+        
+        # Then, check all patterns in full search text
+        all_patterns = summary_patterns + work_history_patterns
+        for idx, pattern in enumerate(all_patterns):
+            try:
+                matches = re.finditer(pattern, search_text, re.IGNORECASE)
+                for match in matches:
+                    exp_str = match.group(1).strip()
+                    has_plus = '+' in exp_str
+                    position = match.start()
+                    section = 'summary' if position < 5000 else 'work_history'
                     
-                    # Ensure it has "years" or "year"
-                    if 'year' not in exp_str.lower():
-                        # Extract number and add "years"
-                        num_match = re.search(r'(\d+\+?)', exp_str)
-                        if num_match:
-                            exp_str = f"{num_match.group(1)} years"
-                        else:
-                            exp_str = f"{exp_str} years"
+                    # Skip if already found in summary section
+                    if section == 'work_history':
+                        # Check if we already have a better match from summary
+                        if any(m['section'] == 'summary' and m['has_plus'] == has_plus for m in all_matches):
+                            continue
                     
-                    # Normalize spacing and ensure proper format
-                    exp_str = re.sub(r'\s+', ' ', exp_str).strip()
-                    
-                    # Validate: should be between 0 and 50 years (reasonable range)
-                    num_match = re.search(r'(\d+)', exp_str)
-                    if num_match:
-                        years_num = int(num_match.group(1))
-                        if years_num > 50:
-                            logger.debug(f"Skipping match '{exp_str}' - value {years_num} > 50 years")
-                            continue  # Skip unrealistic values
-                    
-                    logger.info(f"✅ Fallback regex extracted experience: '{exp_str}' using pattern {idx+1}")
-                    return exp_str
+                    all_matches.append({
+                        'text': exp_str,
+                        'has_plus': has_plus,
+                        'position': position,
+                        'section': section,
+                        'pattern_idx': idx
+                    })
+                    logger.debug(f"Pattern {idx+1} '{pattern}': found '{exp_str}' at position {position} in {section}")
             except Exception as e:
                 logger.warning(f"Error processing pattern {idx+1} '{pattern}': {e}")
                 continue
+        
+        # Prioritize matches: 1) Has "+" sign, 2) From summary section, 3) Earlier position
+        if all_matches:
+            # Sort: has_plus first, then summary section, then position
+            all_matches.sort(key=lambda x: (
+                not x['has_plus'],  # False (has +) comes before True (no +)
+                x['section'] != 'summary',  # summary comes before work_history
+                x['position']  # Earlier position comes first
+            ))
+            
+            best_match = all_matches[0]
+            exp_str = best_match['text']
+            logger.debug(f"Selected best match: '{exp_str}' (has_plus={best_match['has_plus']}, section={best_match['section']}, position={best_match['position']})")
+            
+            # Ensure it has "years" or "year"
+            if 'year' not in exp_str.lower():
+                # Extract number and add "years"
+                num_match = re.search(r'(\d+\+?)', exp_str)
+                if num_match:
+                    exp_str = f"{num_match.group(1)} years"
+                else:
+                    exp_str = f"{exp_str} years"
+            
+            # Normalize spacing and ensure proper format
+            exp_str = re.sub(r'\s+', ' ', exp_str).strip()
+            
+            # Validate: should be between 0 and 50 years (reasonable range)
+            num_match = re.search(r'(\d+)', exp_str)
+            if num_match:
+                years_num = int(num_match.group(1))
+                if years_num > 50:
+                    logger.debug(f"Skipping match '{exp_str}' - value {years_num} > 50 years")
+                    # Try next match
+                    if len(all_matches) > 1:
+                        best_match = all_matches[1]
+                        exp_str = best_match['text']
+                        # Re-normalize
+                        if 'year' not in exp_str.lower():
+                            num_match = re.search(r'(\d+\+?)', exp_str)
+                            if num_match:
+                                exp_str = f"{num_match.group(1)} years"
+                        exp_str = re.sub(r'\s+', ' ', exp_str).strip()
+                        num_match = re.search(r'(\d+)', exp_str)
+                        if num_match:
+                            years_num = int(num_match.group(1))
+                            if years_num > 50:
+                                logger.debug(f"All matches exceed 50 years, skipping")
+                                return None
+                    else:
+                        return None
+            
+            logger.info(f"✅ Fallback regex extracted experience: '{exp_str}' (priority: has_plus={best_match['has_plus']}, section={best_match['section']})")
+            return exp_str
         
         # If no pattern matched, try a more aggressive search in the first 2000 chars
         logger.debug("No matches found with standard patterns, trying aggressive search in first 2000 chars")
@@ -221,6 +590,25 @@ class ExperienceExtractor:
                                 if 1 <= years_num <= 50:
                                     logger.info(f"✅ Fallback aggressive search extracted experience: '{exp_str}'")
                                     return exp_str
+        
+        # If no pattern matched, try date-based calculation
+        logger.debug("No matches found with standard patterns, trying date-based calculation")
+        date_based_experience = self._calculate_experience_from_dates(resume_text)
+        if date_based_experience:
+            logger.info(f"✅ Fallback date-based calculation extracted experience: '{date_based_experience}'")
+            return date_based_experience
+        else:
+            logger.debug("Date-based calculation also returned None - checking if dates were found")
+            # Try to extract dates to see if any were found (for debugging)
+            all_dates = self._extract_dates_from_text(resume_text[:10000])  # Check first 10k chars
+            if all_dates:
+                logger.debug(f"Found {len(all_dates)} dates in resume, but calculation returned None. This might indicate all dates were filtered as education dates.")
+                # Log a sample of dates found
+                for i, (date_obj, context) in enumerate(all_dates[:3]):  # Show first 3
+                    is_edu = self._is_education_date(context)
+                    logger.debug(f"Date {i+1}: {date_obj.strftime('%Y-%m')} - Education: {is_edu} - Context: {context[:80]}...")
+            else:
+                logger.debug("No dates found in resume text at all")
         
         logger.warning("❌ Fallback extraction: No experience pattern found in resume text")
         return None
@@ -444,6 +832,20 @@ Output (JSON only, no other text, no explanations):"""
                             "method": "regex_fallback"
                         }
                     )
+                else:
+                    # Try date-based calculation as last resort
+                    logger.debug(f"Regex fallback failed, trying date-based calculation for {filename}")
+                    date_based_exp = self._calculate_experience_from_dates(resume_text)
+                    if date_based_exp:
+                        experience = date_based_exp
+                        logger.info(
+                            f"✅ EXPERIENCE EXTRACTED via date-based calculation from {filename}",
+                            extra={
+                                "file_name": filename,
+                                "experience": experience,
+                                "method": "date_based_calculation"
+                            }
+                        )
             
             logger.info(
                 f"✅ EXPERIENCE EXTRACTED from {filename}",
@@ -470,6 +872,20 @@ Output (JSON only, no other text, no explanations):"""
             )
             # Try fallback extraction even when LLM fails
             experience = self._extract_experience_fallback(resume_text)
+            if not experience:
+                # Try date-based calculation as last resort
+                experience = self._calculate_experience_from_dates(resume_text)
+                if experience:
+                    logger.info(
+                        f"✅ EXPERIENCE EXTRACTED via date-based calculation after LLM failure from {filename}",
+                        extra={
+                            "file_name": filename,
+                            "experience": experience,
+                            "method": "date_based_after_llm_error"
+                        }
+                    )
+                    return experience
+            
             if experience:
                 logger.info(
                     f"✅ EXPERIENCE EXTRACTED via fallback after LLM failure from {filename}",
@@ -499,6 +915,20 @@ Output (JSON only, no other text, no explanations):"""
             )
             # Try fallback extraction even when other errors occur
             experience = self._extract_experience_fallback(resume_text)
+            if not experience:
+                # Try date-based calculation as last resort
+                experience = self._calculate_experience_from_dates(resume_text)
+                if experience:
+                    logger.info(
+                        f"✅ EXPERIENCE EXTRACTED via date-based calculation after error from {filename}",
+                        extra={
+                            "file_name": filename,
+                            "experience": experience,
+                            "method": "date_based_after_error"
+                        }
+                    )
+                    return experience
+            
             if experience:
                 logger.info(
                     f"✅ EXPERIENCE EXTRACTED via fallback after error from {filename}",

@@ -367,18 +367,33 @@ class ResumeParser:
             # Check if extracted text is minimal (likely a scanned PDF)
             # For image-based PDFs, ALWAYS try OCR - it's the primary extraction method
             text_length = len(normalized_text.strip())
+            word_count = len(re.findall(r'\b\w+\b', normalized_text)) if normalized_text else 0
+            
+            # Detect if PDF is image-based (scanned PDF):
+            # 1. Very little text extracted (< 100 chars)
+            # 2. Very few words (< 10 words)
+            # 3. Text is mostly whitespace or special characters
+            is_likely_image_based = (
+                text_length < 100 or 
+                word_count < 10 or
+                (text_length > 0 and word_count == 0)  # Has characters but no words
+            )
             
             # ALWAYS try OCR for PDFs if available (OCR is better for image-based PDFs)
             # For image-based PDFs, OCR is the primary extraction method
-            # Always attempt OCR regardless of regular extraction results
-            # If OCR is not available, try PyMuPDF's built-in text extraction as fallback
-            if text_length < 100:  # Only try alternatives if regular extraction was minimal
+            # Always attempt OCR if text is minimal OR if we suspect it's image-based
+            if is_likely_image_based:  # More aggressive: try OCR for any suspicious PDF
                 # Try OCR first if available
                 if OCR_AVAILABLE and (PDF2IMAGE_AVAILABLE or PYMUPDF_AVAILABLE):
                     logger.info(
-                        f"📄 PDF text extraction: {text_length} chars. "
-                        f"Attempting OCR for image-based PDF: {filename}",
-                        extra={"file_name": filename, "text_length": text_length}
+                        f"📄 PDF text extraction: {text_length} chars, {word_count} words. "
+                        f"Detected as image-based PDF. Attempting OCR: {filename}",
+                        extra={
+                            "file_name": filename, 
+                            "text_length": text_length,
+                            "word_count": word_count,
+                            "is_image_based": is_likely_image_based
+                        }
                     )
                     
                     try:
@@ -386,19 +401,33 @@ class ResumeParser:
                         if ocr_text and len(ocr_text.strip()) > 0:
                             # OCR succeeded - use OCR text (it's better for image-based PDFs)
                             ocr_length = len(ocr_text.strip())
-                            # ALWAYS prefer OCR text if regular extraction was minimal (< 100 chars)
-                            # OR if OCR got more text
-                            if text_length < 100 or ocr_length > text_length:
+                            ocr_word_count = len(re.findall(r'\b\w+\b', ocr_text)) if ocr_text else 0
+                            
+                            # ALWAYS prefer OCR text if:
+                            # 1. Regular extraction was minimal (< 100 chars OR < 10 words)
+                            # 2. OCR got more text
+                            # 3. OCR got more words (even if same length)
+                            if (is_likely_image_based or 
+                                ocr_length > text_length or 
+                                (ocr_length >= text_length and ocr_word_count > word_count)):
                                 logger.info(
                                     f"✅ OCR extraction SUCCESS for {filename}: "
-                                    f"extracted {ocr_length} chars (vs {text_length} from regular extraction)",
-                                    extra={"file_name": filename, "ocr_text_length": ocr_length, "regular_text_length": text_length}
+                                    f"extracted {ocr_length} chars, {ocr_word_count} words "
+                                    f"(vs {text_length} chars, {word_count} words from regular extraction)",
+                                    extra={
+                                        "file_name": filename, 
+                                        "ocr_text_length": ocr_length,
+                                        "ocr_word_count": ocr_word_count,
+                                        "regular_text_length": text_length,
+                                        "regular_word_count": word_count
+                                    }
                                 )
                                 return ocr_text
                             else:
                                 # OCR got less text but regular extraction was good, use regular
                                 logger.info(
-                                    f"Using regular extraction for {filename} (OCR: {ocr_length} chars, Regular: {text_length} chars)",
+                                    f"Using regular extraction for {filename} "
+                                    f"(OCR: {ocr_length} chars, Regular: {text_length} chars)",
                                     extra={"file_name": filename, "ocr_text_length": ocr_length, "regular_text_length": text_length}
                                 )
                         else:
@@ -407,10 +436,10 @@ class ResumeParser:
                                 extra={"file_name": filename}
                             )
                             # If OCR returned empty and regular extraction was also minimal, return empty
-                            if text_length < 100:
+                            if is_likely_image_based:
                                 logger.warning(
-                                    f"Both OCR and regular extraction failed for {filename}",
-                                    extra={"file_name": filename, "regular_text_length": text_length}
+                                    f"Both OCR and regular extraction failed for image-based PDF: {filename}",
+                                    extra={"file_name": filename, "regular_text_length": text_length, "regular_word_count": word_count}
                                 )
                                 return ""
                     except Exception as ocr_error:

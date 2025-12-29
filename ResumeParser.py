@@ -268,7 +268,7 @@ def extract_doc_text(file_content: bytes) -> str:
         temp_file.write(file_content)
         temp_doc_path = temp_file.name
     
-    
+    try:
         # Method 1: LibreOffice headless conversion (MOST RELIABLE FOR PRODUCTION)
         if LIBREOFFICE_AVAILABLE:
             try:

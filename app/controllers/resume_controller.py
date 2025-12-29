@@ -1,5 +1,6 @@
 """Controller for resume-related operations."""
 import gc
+from pathlib import Path
 from typing import Optional
 from io import BytesIO
 from fastapi import UploadFile, HTTPException
@@ -175,7 +176,7 @@ class ResumeController:
             safe_filename = sanitize_filename(file.filename or "resume.pdf")
            
             # Validate file type
-            allowed_extensions = {'.pdf', '.docx', '.doc', '.txt'}
+            allowed_extensions = {'.pdf', '.docx', '.doc', '.txt', '.jpg', '.jpeg', '.png', '.html', '.htm'}
             file_ext = '.' + file.filename.split('.')[-1].lower() if '.' in file.filename else ''
             if file_ext not in allowed_extensions:
                 # Create record with failed status for invalid file type
@@ -745,3 +746,358 @@ class ResumeController:
                 exc_info=True
             )
             raise HTTPException(status_code=500, detail=f"Failed to process resume: {str(e)}")
+    
+    async def retry_failed_resume_with_ocr(
+        self,
+        resume_id: int,
+        extract_modules: Optional[str] = "all"
+    ) -> ResumeUploadResponse:
+        """
+        Retry processing a resume that failed with insufficient_text status.
+        Finds the file from disk, retries extraction with OCR, and re-runs extraction modules.
+        
+        Args:
+            resume_id: The ID of the failed resume to retry
+            extract_modules: Modules to extract (default: "all")
+        
+        Returns:
+            ResumeUploadResponse with updated data
+        """
+        # Configuration: Path where resume files are stored
+        RESUME_FILES_DIRS = [
+            Path("Resumes"),  # Capital R (common location)
+            Path("resumes"),  # Lowercase
+            Path("uploads"),
+            Path("data/resumes"),
+            Path("storage/resumes"),
+            Path("files/resumes"),
+            Path("."),  # Current directory
+        ]
+        
+        try:
+            # Get resume record from database
+            resume_metadata = await self.resume_repo.get_by_id(resume_id)
+            if not resume_metadata:
+                raise HTTPException(status_code=404, detail=f"Resume with ID {resume_id} not found")
+            
+            # Check if status is failed:insufficient_text
+            if not resume_metadata.status or not resume_metadata.status.startswith("failed:insufficient_text"):
+                logger.warning(
+                    f"Resume {resume_id} does not have failed:insufficient_text status. Current status: {resume_metadata.status}",
+                    extra={"resume_id": resume_id, "current_status": resume_metadata.status}
+                )
+                # Still allow retry, but log warning
+            
+            filename = resume_metadata.filename
+            if not filename:
+                raise HTTPException(status_code=400, detail=f"Resume {resume_id} has no filename")
+            
+            logger.info(
+                f"🔄 RETRYING RESUME with OCR: ID {resume_id}, filename: {filename}",
+                extra={"resume_id": resume_id, "file_name": filename}
+            )
+            
+            # Try to find the resume file in multiple possible locations
+            file_path = None
+            possible_paths = []
+            
+            # Add all configured directories
+            for base_dir in RESUME_FILES_DIRS:
+                possible_paths.append(base_dir / filename)
+            
+            # Also try as absolute path or in current directory
+            possible_paths.append(Path(filename))
+            
+            # Try each path
+            for path in possible_paths:
+                if path.exists() and path.is_file():
+                    file_path = path
+                    logger.info(f"Found resume file at: {file_path}")
+                    break
+            
+            if not file_path or not file_path.exists():
+                raise HTTPException(
+                    status_code=404,
+                    detail=f"Resume file not found for ID {resume_id}: {filename}. Searched in: {[str(p) for p in possible_paths]}"
+                )
+            
+            # Read file content
+            with open(file_path, 'rb') as f:
+                file_content = f.read()
+            
+            if not file_content:
+                raise HTTPException(status_code=400, detail="File is empty")
+            
+            logger.info(f"Processing resume ID {resume_id}: {filename} ({len(file_content)} bytes)")
+            
+            # Update status to processing
+            await self.resume_repo.update(
+                resume_id,
+                {"status": STATUS_PROCESSING}
+            )
+            
+            # Store file_content for potential OCR retry later
+            self._last_file_content = file_content
+            
+            # Extract text from file with OCR fallback
+            resume_text = None
+            try:
+                resume_text = await self.resume_parser.extract_text(file_content, filename)
+            except Exception as e:
+                logger.warning(
+                    f"Initial text extraction failed for resume {resume_id}, trying OCR fallback: {e}",
+                    extra={"resume_id": resume_id, "file_name": filename, "error": str(e)}
+                )
+                resume_text = None
+            
+            # If extraction failed or returned insufficient text, try OCR fallback
+            if not resume_text or len(resume_text.strip()) < 50:
+                logger.info(
+                    f"🔄 Text extraction returned insufficient text ({len(resume_text.strip()) if resume_text else 0} chars), "
+                    f"trying OCR fallback for {filename}",
+                    extra={
+                        "resume_id": resume_id,
+                        "file_name": filename,
+                        "initial_text_length": len(resume_text.strip()) if resume_text else 0
+                    }
+                )
+                try:
+                    # Try OCR fallback using extract_text_with_fallback
+                    ocr_text = await self.resume_parser.extract_text_with_fallback(
+                        file_content, 
+                        filename, 
+                        original_text=resume_text
+                    )
+                    if ocr_text and len(ocr_text.strip()) > len(resume_text.strip() if resume_text else ""):
+                        logger.info(
+                            f"✅ OCR fallback succeeded: extracted {len(ocr_text.strip())} chars "
+                            f"(vs {len(resume_text.strip()) if resume_text else 0} from initial extraction)",
+                            extra={
+                                "resume_id": resume_id,
+                                "file_name": filename,
+                                "ocr_text_length": len(ocr_text.strip()),
+                                "initial_text_length": len(resume_text.strip()) if resume_text else 0
+                            }
+                        )
+                        resume_text = ocr_text
+                    elif ocr_text and len(ocr_text.strip()) >= 50:
+                        logger.info(
+                            f"✅ OCR fallback provided sufficient text: {len(ocr_text.strip())} chars",
+                            extra={
+                                "resume_id": resume_id,
+                                "file_name": filename,
+                                "ocr_text_length": len(ocr_text.strip())
+                            }
+                        )
+                        resume_text = ocr_text
+                except Exception as ocr_error:
+                    logger.warning(
+                        f"OCR fallback also failed for {filename}: {ocr_error}",
+                        extra={
+                            "resume_id": resume_id,
+                            "file_name": filename,
+                            "error": str(ocr_error)
+                        }
+                    )
+            
+            # If still no sufficient text after OCR fallback, update status and raise error
+            if not resume_text or len(resume_text.strip()) < 50:
+                await self.resume_repo.update(
+                    resume_id,
+                    {"status": get_failure_status(FAILURE_INSUFFICIENT_TEXT)}
+                )
+                logger.error(
+                    f"❌ All text extraction methods failed for resume {resume_id}. "
+                    f"Initial: {len(resume_text.strip()) if resume_text else 0} chars",
+                    extra={
+                        "resume_id": resume_id,
+                        "file_name": filename,
+                        "final_text_length": len(resume_text.strip()) if resume_text else 0
+                    }
+                )
+                raise HTTPException(
+                    status_code=400, 
+                    detail="Could not extract sufficient text from resume even with OCR fallback"
+                )
+            
+            # Limit text length to prevent excessive memory usage
+            if len(resume_text) > settings.max_resume_text_length:
+                logger.warning(
+                    f"Resume text truncated from {len(resume_text)} to {settings.max_resume_text_length} characters",
+                    extra={"original_length": len(resume_text), "truncated_length": settings.max_resume_text_length}
+                )
+                resume_text = resume_text[:settings.max_resume_text_length]
+            
+            # Parse extract_modules parameter
+            modules_to_extract = self._parse_extract_modules(extract_modules)
+            
+            # Extract and save selected profile fields using dedicated services (SEQUENTIAL)
+            logger.info(
+                f"[START] PROFILE EXTRACTION PROCESS (RETRY) for resume ID {resume_id}",
+                extra={
+                    "resume_id": resume_id,
+                    "file_name": filename,
+                    "modules_to_extract": list(modules_to_extract)
+                }
+            )
+            
+            # Sequential extraction with session isolation
+            if "designation" in modules_to_extract:
+                try:
+                    await self.designation_service.extract_and_save_designation(
+                        resume_text=resume_text,
+                        resume_id=resume_id,
+                        filename=filename
+                    )
+                except Exception as e:
+                    logger.error(f"[ERROR] DESIGNATION EXTRACTION FAILED: {e}", extra={"resume_id": resume_id, "error": str(e)})
+            
+            if "name" in modules_to_extract:
+                try:
+                    await self.name_service.extract_and_save_name(
+                        resume_text=resume_text,
+                        resume_id=resume_id,
+                        filename=filename
+                    )
+                except Exception as e:
+                    logger.error(f"[ERROR] NAME EXTRACTION FAILED: {e}", extra={"resume_id": resume_id, "error": str(e)})
+            
+            if "email" in modules_to_extract:
+                try:
+                    await self.email_service.extract_and_save_email(
+                        resume_text=resume_text,
+                        resume_id=resume_id,
+                        filename=filename
+                    )
+                except Exception as e:
+                    logger.error(f"[ERROR] EMAIL EXTRACTION FAILED: {e}", extra={"resume_id": resume_id, "error": str(e)})
+            
+            if "mobile" in modules_to_extract:
+                try:
+                    await self.mobile_service.extract_and_save_mobile(
+                        resume_text=resume_text,
+                        resume_id=resume_id,
+                        filename=filename
+                    )
+                except Exception as e:
+                    logger.error(f"[ERROR] MOBILE EXTRACTION FAILED: {e}", extra={"resume_id": resume_id, "error": str(e)})
+            
+            if "experience" in modules_to_extract:
+                try:
+                    await self.experience_service.extract_and_save_experience(
+                        resume_text=resume_text,
+                        resume_id=resume_id,
+                        filename=filename
+                    )
+                except Exception as e:
+                    logger.error(f"[ERROR] EXPERIENCE EXTRACTION FAILED: {e}", extra={"resume_id": resume_id, "error": str(e)})
+            
+            if "domain" in modules_to_extract:
+                try:
+                    await self.domain_service.extract_and_save_domain(
+                        resume_text=resume_text,
+                        resume_id=resume_id,
+                        filename=filename
+                    )
+                except Exception as e:
+                    logger.error(f"[ERROR] DOMAIN EXTRACTION FAILED: {e}", extra={"resume_id": resume_id, "error": str(e)})
+            
+            if "education" in modules_to_extract:
+                try:
+                    await self.education_service.extract_and_save_education(
+                        resume_text=resume_text,
+                        resume_id=resume_id,
+                        filename=filename
+                    )
+                except Exception as e:
+                    logger.error(f"[ERROR] EDUCATION EXTRACTION FAILED: {e}", extra={"resume_id": resume_id, "error": str(e)})
+            
+            if "skills" in modules_to_extract:
+                try:
+                    await self.skills_service.extract_and_save_skills(
+                        resume_text=resume_text,
+                        resume_id=resume_id,
+                        filename=filename
+                    )
+                except Exception as e:
+                    logger.error(f"[ERROR] SKILLS EXTRACTION FAILED: {e}", extra={"resume_id": resume_id, "error": str(e)})
+            
+            # Clear file_content from memory
+            if settings.enable_memory_cleanup:
+                if hasattr(self, '_last_file_content'):
+                    del self._last_file_content
+                del file_content
+                gc.collect()
+            
+            logger.info(
+                f"[SUCCESS] PROFILE EXTRACTION PROCESS COMPLETED (RETRY) for resume ID {resume_id}",
+                extra={"resume_id": resume_id, "file_name": filename}
+            )
+            
+            # Update status to completed on success
+            try:
+                await self.resume_repo.update(
+                    resume_id,
+                    {"status": STATUS_COMPLETED}
+                )
+                logger.info(
+                    f"✅ Status updated to COMPLETED for resume ID {resume_id}",
+                    extra={"resume_id": resume_id}
+                )
+            except Exception as status_error:
+                logger.error(
+                    f"❌ Failed to update status to COMPLETED: {status_error}",
+                    extra={"resume_id": resume_id, "error": str(status_error)}
+                )
+            
+            # Final refresh to get all updated fields from database
+            try:
+                await self.resume_repo.session.refresh(resume_metadata)
+            except Exception as refresh_error:
+                logger.warning(
+                    f"Failed to refresh resume metadata: {refresh_error}",
+                    extra={"resume_id": resume_id}
+                )
+            
+            # Build response with all extracted fields
+            return ResumeUploadResponse(
+                id=resume_id,
+                candidateName=resume_metadata.candidatename or "",
+                jobrole=resume_metadata.jobrole or "",
+                designation=resume_metadata.designation or "",
+                experience=resume_metadata.experience or "",
+                domain=resume_metadata.domain or "",
+                mobile=resume_metadata.mobile or "",
+                email=resume_metadata.email or "",
+                education=resume_metadata.education or "",
+                filename=resume_metadata.filename,
+                skillset=resume_metadata.skillset or "",
+                status=resume_metadata.status or STATUS_PENDING,
+                created_at=resume_metadata.created_at.isoformat() if resume_metadata.created_at else "",
+            )
+        
+        except HTTPException:
+            raise
+        except Exception as e:
+            # Update status to failed if we have a resume record ID
+            try:
+                await self.resume_repo.update(
+                    resume_id,
+                    {"status": get_failure_status(FAILURE_EXTRACTION_ERROR)}
+                )
+            except Exception as update_error:
+                logger.error(
+                    f"Failed to update status after retry error: {update_error}",
+                    extra={"resume_id": resume_id, "error": str(update_error)}
+                )
+            
+            logger.error(
+                f"Error retrying resume with OCR: {e}",
+                extra={
+                    "error": str(e),
+                    "error_type": type(e).__name__,
+                    "resume_id": resume_id,
+                },
+                exc_info=True
+            )
+            raise HTTPException(status_code=500, detail=f"Failed to retry resume with OCR: {str(e)}")

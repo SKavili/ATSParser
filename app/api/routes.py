@@ -122,6 +122,34 @@ async def match_job(
     return await controller.match_job(match_request)
 
 
+@router.post("/retry-failed-resume/{resume_id}", response_model=ResumeUploadResponse, status_code=200)
+async def retry_failed_resume(
+    resume_id: int,
+    extract_modules: Optional[str] = Form("all"),
+    controller: ResumeController = Depends(get_resume_controller)
+):
+    """
+    Retry processing a resume that failed with insufficient_text status.
+    Finds the file from disk, retries extraction with OCR, and re-runs extraction modules.
+    
+    Args:
+        resume_id: The ID of the failed resume to retry
+        extract_modules: Modules to extract (default: "all")
+            Options:
+            - "all" - Extract all modules (default)
+            - "1" or "designation" - Extract designation only
+            - "2" or "name" - Extract name only
+            - "3" or "email" - Extract email only
+            - "4" or "mobile" - Extract mobile only
+            - "5" or "experience" - Extract experience only
+            - "6" or "domain" - Extract domain only
+            - "7" or "education" - Extract education only
+            - "8" or "skills" - Extract skills only
+            - Comma-separated: "1,2,3" or "designation,name,email" - Extract multiple modules
+    """
+    return await controller.retry_failed_resume_with_ocr(resume_id, extract_modules)
+
+
 @router.get("/health")
 async def health_check():
     """Health check endpoint."""
