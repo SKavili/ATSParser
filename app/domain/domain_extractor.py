@@ -19,106 +19,183 @@ except ImportError:
     logger.warning("OLLAMA Python client not available, using HTTP API directly")
 
 DOMAIN_PROMPT = """
-IMPORTANT: This is a FRESH, ISOLATED extraction task. Ignore any previous context or conversations.
+IMPORTANT:
+This is a FRESH, ISOLATED, SINGLE-TASK extraction.
+Ignore ALL previous conversations, memory, instructions, or assumptions.
+You are responsible for accurate resume domain classification.
 
 ROLE:
-You are an ATS resume parsing expert specializing in US IT staffing profiles.
+You are an ATS resume-parsing expert specializing in industry and business domain identification.
+You MUST behave conservatively, responsibly, and professionally.
 
-CONTEXT:
-Candidate profiles and resumes may be unstructured and inconsistently formatted.
-Domain refers to the primary industry domain or business domain the candidate has worked in (e.g., Healthcare, Finance, E-commerce, Banking, Insurance, Retail, etc.).
+DEFINITION:
+"Domain" means the PRIMARY BUSINESS / INDUSTRY DOMAIN in which the candidate has worked.
+It is NOT the candidate's skills, technologies, tools, or job role.
 
 TASK:
-Extract the candidate's primary industry domain from the profile text.
+Analyze the resume text and extract ONE primary industry domain.
 
-SELECTION RULES:
-1. Look for domain information in work experience sections, company names, project descriptions, and client names.
-2. Identify the industry domain from:
-   - Company names (e.g., "Bank of America" → Banking, "Mayo Clinic" → Healthcare)
-   - Project descriptions mentioning industry (e.g., "healthcare system", "financial application", "e-commerce platform")
-   - Client names or client industries mentioned
-   - Industry-specific keywords in job descriptions
-3. If multiple domains are mentioned, select the most prominent or recent one.
-4. Common domains: Healthcare, Finance, Banking, Insurance, E-commerce, Retail, Manufacturing, Education, Government, etc.
-5. Look for industry indicators even if not explicitly stated (e.g., "worked on hospital management system" → Healthcare).
+WHERE TO LOOK (IN PRIORITY ORDER):
+1. Company names
+2. Client names
+3. Project descriptions
+4. Business context of work
+5. Industry-specific terminology tied to business operations
 
-CONSTRAINTS:
-- Extract only one primary domain.
-- Preserve the domain name exactly as written or use standard industry terminology.
-- Return as a string (e.g., "Healthcare", "Finance", "E-commerce").
-- Be thorough in searching for domain clues throughout the resume.
+DO NOT USE:
+- Skills alone
+- Programming languages
+- Tools or platforms alone
+- Job titles alone (unless clearly industry-specific)
+
+DOMAIN SELECTION RULES:
+1. If multiple domains appear, select the MOST RECENT or MOST DOMINANT one.
+2. If IT skills are used INSIDE a non-IT industry (e.g., Banking, Healthcare), return the BUSINESS DOMAIN — NOT IT.
+3. Use STANDARDIZED domain names from the allowed list below.
+4. Do NOT invent or guess domains.
+5. If no reasonable inference is possible, return null.
+
+IMPORTANT DISTINCTIONS:
+- "Information Technology", "Software & SaaS", "Cloud", "Cybersecurity", "AI", "Data & Analytics"
+  → Use ONLY if the candidate worked on IT PRODUCTS / IT COMPANIES.
+  → DO NOT use these if they are just skills inside another industry.
 
 ANTI-HALLUCINATION RULES:
-- If absolutely no domain information can be inferred from company names, projects, or work descriptions, return null.
-- You may infer domain from project descriptions and company context, but not from skills alone.
-- Prefer returning a domain if there are reasonable indicators, even if not explicitly stated.
+- Never infer domain from skills alone.
+- Never assume domain based on job title alone.
+- Never combine domains.
+- Never return explanations or extra text.
 
-OUTPUT FORMAT:
-Return only valid JSON. No additional text. No explanations. No markdown formatting.
+ALLOWED DOMAIN LIST (STANDARDIZED OUTPUT VALUES):
+
+Healthcare  
+Healthcare & Life Sciences  
+Pharmaceuticals & Clinical Research  
+
+Banking  
+Finance  
+Finance & Accounting  
+Banking, Financial Services & Insurance (BFSI)  
+Insurance  
+Capital Markets  
+FinTech  
+
+Retail  
+E-Commerce  
+Retail & E-Commerce  
+
+Manufacturing  
+Manufacturing & Production  
+Supply Chain  
+Operations & Supply Chain Management  
+Logistics  
+Logistics & Transportation  
+Procurement & Vendor Management  
+
+Education  
+Education, Training & Learning  
+
+Government  
+Public Sector  
+Public Sector & Government Services  
+Defense  
+
+Energy  
+Utilities  
+Energy, Utilities & Sustainability  
+
+Telecommunications  
+Media & Entertainment  
+Media, Advertising & Communications  
+Gaming  
+
+Real Estate  
+Real Estate & Facilities Management  
+
+Construction  
+Construction & Infrastructure  
+
+Hospitality  
+Travel & Tourism  
+
+Agriculture  
+Agri-Business  
+
+Legal, Risk & Corporate Governance  
+Quality, Compliance & Audit  
+
+Human Resources  
+Sales & Marketing  
+Customer Service & Customer Experience  
+Administration & Office Management  
+
+Non-Profit  
+NGOs, Social Impact & CSR  
+
+Software & SaaS  
+Cloud & Infrastructure  
+Cybersecurity  
+Information Technology  
+
+Artificial Intelligence  
+→ ONLY if candidate worked on AI products or AI companies (NOT skills)
+
+Data & Analytics  
+→ ONLY if candidate worked on analytics/data companies or platforms (NOT skills)
+
+OUTPUT REQUIREMENTS:
+- Output ONLY valid JSON
+- No explanations
+- No markdown
+- No comments
+- Exactly ONE domain or null
 
 JSON SCHEMA:
 {
   "domain": "string | null"
 }
 
-Example valid outputs:
+VALID OUTPUT EXAMPLES:
 {"domain": "Healthcare"}
-{"domain": "Defence"}
-{"domain": "Energy"}
-{"domain": "Education"}
-{"domain": "Utility"}
-{"domain": "Finance"}
 {"domain": "Banking"}
+{"domain": "Finance"}
+{"domain": "Banking, Financial Services & Insurance (BFSI)"}
 {"domain": "Insurance"}
 {"domain": "Capital Markets"}
 {"domain": "FinTech"}
-{"domain": "Public Sector"}
-{"domain": "Government"}
-{"domain": "Smart Cities"}
-{"domain": "Law Enforcement"}
-{"domain": "Judiciary"}
-{"domain": "Regulatory & Compliance"}
-{"domain": "Information Technology"}
-{"domain": "Software & SaaS"}
-{"domain": "Artificial Intelligence"}
-{"domain": "Cybersecurity"}
-{"domain": "Cloud & Infrastructure"}
-{"domain": "Telecommunications"}
-{"domain": "Manufacturing"}
-{"domain": "Industrial Automation"}
-{"domain": "Automotive"}
-{"domain": "Aerospace"}
-{"domain": "Electronics & Semiconductors"}
-{"domain": "Logistics"}
-{"domain": "Transportation"}
-{"domain": "Supply Chain"}
-{"domain": "Warehousing"}
-{"domain": "Procurement"}
-{"domain": "Human Resources"}
-{"domain": "Finance & Accounting"}
-{"domain": "Sales"}
-{"domain": "Marketing"}
-{"domain": "Customer Support"}
 {"domain": "Retail"}
 {"domain": "E-Commerce"}
-{"domain": "Hospitality"}
-{"domain": "Travel & Tourism"}
+{"domain": "Manufacturing"}
+{"domain": "Supply Chain"}
+{"domain": "Logistics"}
+{"domain": "Transportation"}
+{"domain": "Education"}
+{"domain": "Government"}
+{"domain": "Public Sector"}
+{"domain": "Defense"}
+{"domain": "Energy"}
+{"domain": "Utilities"}
+{"domain": "Telecommunications"}
 {"domain": "Media & Entertainment"}
 {"domain": "Gaming"}
 {"domain": "Real Estate"}
 {"domain": "Construction"}
-{"domain": "Facilities Management"}
+{"domain": "Hospitality"}
+{"domain": "Travel & Tourism"}
+{"domain": "Automotive"}
+{"domain": "Aerospace"}
+{"domain": "Electronics & Semiconductors"}
 {"domain": "Mining"}
 {"domain": "Metals"}
 {"domain": "Agriculture"}
 {"domain": "AgriTech"}
-{"domain": "Environmental Sustainability"}
-{"domain": "ESG"}
-{"domain": "ClimateTech"}
 {"domain": "Non-Profit"}
-{"domain": "Social Impact"}
-{"domain": "Sports"}
-{"domain": "Fitness"}
+{"domain": "Software & SaaS"}
+{"domain": "Cloud & Infrastructure"}
+{"domain": "Cybersecurity"}
+{"domain": "Information Technology"}
+{"domain": "Artificial Intelligence"}
+{"domain": "Data & Analytics"}
 {"domain": null}
 """
 
@@ -302,17 +379,125 @@ class DomainExtractor:
             },
             "Information Technology": {
                 "high": [
-                    "information technology", "it services", "it consulting", "software development",
-                    "saas", "software as a service", "cloud computing", "cybersecurity", "data center",
-                    "it infrastructure", "enterprise software", "software company"
+                    "software company", "it company", "tech company", "saas company", "software as a service company",
+                    "enterprise software", "software product", "it services company", "it consulting firm",
+                    "cloud services company", "cybersecurity company", "data center company", "it infrastructure company"
                 ],
                 "medium": [
-                    "it", "software", "technology", "tech", "developer", "programming",
-                    "application development", "system administration", "network administration"
+                    "information technology company", "software development company", "technology company",
+                    "saas", "software as a service", "cloud computing company", "cybersecurity firm"
                 ],
-                "low": [
-                    "technology", "tech", "software"
-                ]
+                "low": []  # Removed generic tech keywords - only use if IT company/product context found
+            },
+            "Software & SaaS": {
+                "high": [
+                    "software company", "saas company", "software as a service company", "software product company",
+                    "enterprise software company", "saas platform", "software vendor"
+                ],
+                "medium": [
+                    "saas", "software as a service", "software development company", "software product"
+                ],
+                "low": []
+            },
+            "Cloud & Infrastructure": {
+                "high": [
+                    "cloud services company", "cloud infrastructure company", "cloud provider", "aws", "azure", "gcp",
+                    "cloud computing company", "infrastructure as a service", "iaas company"
+                ],
+                "medium": [
+                    "cloud computing", "cloud services", "cloud infrastructure", "cloud platform"
+                ],
+                "low": []
+            },
+            "Cybersecurity": {
+                "high": [
+                    "cybersecurity company", "security software company", "security services company",
+                    "cyber security firm", "information security company"
+                ],
+                "medium": [
+                    "cybersecurity", "cyber security", "security company", "security services"
+                ],
+                "low": []
+            },
+            "Supply Chain": {
+                "high": [
+                    "supply chain management", "supply chain operations", "supply chain company",
+                    "supply chain consulting", "supply chain services"
+                ],
+                "medium": [
+                    "supply chain", "scm", "supply chain management"
+                ],
+                "low": []
+            },
+            "Defense": {
+                "high": [
+                    "defense contractor", "defense industry", "defense company", "defense sector",
+                    "defense department", "department of defense", "dod contractor"
+                ],
+                "medium": [
+                    "defense", "defence", "defense contractor", "defense industry"
+                ],
+                "low": []
+            },
+            "Public Sector": {
+                "high": [
+                    "public sector", "public sector services", "government services", "public administration",
+                    "federal government", "state government", "municipal government"
+                ],
+                "medium": [
+                    "public sector", "government services", "public administration"
+                ],
+                "low": []
+            },
+            "Finance & Accounting": {
+                "high": [
+                    "finance and accounting", "financial accounting", "accounting firm", "cpa firm",
+                    "accounting services", "financial services company"
+                ],
+                "medium": [
+                    "finance and accounting", "accounting", "financial accounting"
+                ],
+                "low": []
+            },
+            "Banking, Financial Services & Insurance (BFSI)": {
+                "high": [
+                    "bfsi", "banking financial services insurance", "financial services and insurance",
+                    "banking and financial services", "bfsi company", "bfsi sector"
+                ],
+                "medium": [
+                    "bfsi", "banking financial services", "financial services insurance"
+                ],
+                "low": []
+            },
+            "Sales & Marketing": {
+                "high": [
+                    "sales and marketing", "marketing company", "sales company", "marketing agency",
+                    "marketing services", "advertising agency"
+                ],
+                "medium": [
+                    "sales and marketing", "marketing", "sales"
+                ],
+                "low": []
+            },
+            "Data & Analytics": {
+                "high": [
+                    "data analytics company", "analytics company", "data company", "data services company",
+                    "analytics platform", "data platform", "business intelligence company", "bi company"
+                ],
+                "medium": [
+                    "data analytics", "analytics company", "data company", "analytics platform"
+                ],
+                "low": []
+            },
+            "Artificial Intelligence": {
+                "high": [
+                    "ai company", "artificial intelligence company", "machine learning company", "ml company",
+                    "ai platform", "ai product", "ai services company"
+                ],
+                "medium": [
+                    "ai company", "artificial intelligence company", "machine learning company"
+                ],
+                "low": []
             },
             "Telecommunications": {
                 "high": [
@@ -512,10 +697,8 @@ class DomainExtractor:
                     extra={"file_name": filename, "domain": best_domain, "score": best_score}
                 )
         
-        # Additional fallback: Try to infer from job titles and roles
-        inferred_domain = self._infer_domain_from_job_titles(resume_text, filename)
-        if inferred_domain:
-            return inferred_domain
+        # Note: We do NOT infer from job titles alone per new prompt rules
+        # Domain must be inferred from company names, client names, project descriptions, or business context
         
         # Final attempt: Even if no strong matches, return the domain with highest score if any score > 0
         # This ensures we extract domain for ALL resumes, even with weak indicators
@@ -577,9 +760,9 @@ class DomainExtractor:
                 "population health", "value-based care", "revenue cycle", "health insurance", "medicare", "medicaid"
             ],
             "Information Technology": [
-                "software", "developer", "programmer", "engineer", "it", "information technology", "technology", 
-                "tech", "coding", "programming", "application", "system", "software development", "it services",
-                "cloud computing", "cybersecurity", "data center", "saas", "software as a service"
+                "software company", "it company", "tech company", "saas company", "software as a service company",
+                "enterprise software", "software product", "it services company", "it consulting firm",
+                "information technology company", "software development company", "technology company"
             ],
             "Finance": [
                 "finance", "financial", "accounting", "cpa", "audit", "tax", "investment", "wealth",
@@ -673,20 +856,16 @@ class DomainExtractor:
             )
             return best_domain
         
-        # If still nothing, check for "Developer" role and default to IT
-        if "developer" in text_lower:
-            logger.info(
-                f"✅ Minimal threshold: Defaulting to Information Technology (Developer role)",
-                extra={"file_name": filename, "domain": "Information Technology", "reason": "developer_role"}
-            )
-            return "Information Technology"
+        # Do NOT default to IT from "developer" role alone - per new prompt rules
+        # IT domain should only be used if candidate worked at IT companies/products
         
         return None
     
     def _infer_domain_from_job_titles(self, resume_text: str, filename: str = "resume") -> Optional[str]:
         """
-        Additional fallback: Infer domain from job titles, roles, and common patterns.
-        This is a last-resort method to avoid returning null.
+        Conservative fallback: Only infer domain from clearly industry-specific job titles.
+        Per new prompt rules: Never infer domain from job titles alone unless clearly industry-specific.
+        This method is very conservative and only used as last resort.
         
         Args:
             resume_text: The resume text to analyze
@@ -700,72 +879,62 @@ class DomainExtractor:
         
         text_lower = resume_text.lower()
         
-        # Job title patterns that indicate specific domains
-        title_patterns = {
+        # Only use clearly industry-specific job titles that indicate business domain
+        # NOT generic tech roles - those could be in any industry
+        industry_specific_titles = {
             "Healthcare": [
-                "healthcare", "health care", "medical", "clinical", "nurse", "physician", "doctor",
-                "healthcare data", "healthcare analytics", "healthcare it", "healthcare consultant",
-                "cdo", "chief data officer", "healthcare director", "healthcare manager"
-            ],
-            "Information Technology": [
-                "software engineer", "developer", "programmer", "it", "information technology",
-                "tech lead", "technical", "software", "application", "system", "network",
-                "data engineer", "data scientist", "data analyst", "cloud", "devops", "sre",
-                "java developer", "python developer", ".net developer", "web developer",
-                "full stack developer", "frontend developer", "backend developer", "mobile developer"
-            ],
-            "Finance": [
-                "financial", "finance", "accountant", "cpa", "auditor", "treasury", "financial analyst",
-                "investment", "wealth", "asset management", "financial advisor"
+                "healthcare director", "healthcare manager", "healthcare consultant", "healthcare analyst",
+                "chief medical officer", "cmo", "chief nursing officer", "cno", "healthcare administrator",
+                "hospital administrator", "clinic manager", "healthcare operations"
             ],
             "Banking": [
-                "banker", "banking", "loan officer", "credit analyst", "mortgage", "bank"
+                "banker", "loan officer", "credit analyst", "mortgage officer", "branch manager",
+                "bank manager", "commercial banker", "investment banker"
+            ],
+            "Finance": [
+                "financial advisor", "financial planner", "wealth manager", "investment advisor",
+                "asset manager", "portfolio manager", "financial consultant"
+            ],
+            "Insurance": [
+                "insurance agent", "insurance broker", "actuary", "underwriter", "claims adjuster",
+                "insurance sales", "insurance consultant"
             ],
             "Education": [
-                "teacher", "professor", "educator", "academic", "curriculum", "education",
-                "university", "college", "school"
+                "teacher", "professor", "educator", "principal", "superintendent", "curriculum director",
+                "academic dean", "school administrator"
             ],
             "Government": [
-                "government", "federal", "state", "municipal", "public sector", "civil service"
+                "government contractor", "federal employee", "state employee", "municipal employee",
+                "civil servant", "public administrator"
             ],
             "Retail": [
-                "retail", "store manager", "merchandiser", "retail sales", "store operations"
+                "store manager", "retail manager", "merchandiser", "retail operations manager",
+                "buyer", "category manager"
             ],
             "Manufacturing": [
-                "manufacturing", "production", "factory", "industrial", "quality control"
+                "production manager", "manufacturing manager", "plant manager", "operations manager",
+                "quality control manager", "supply chain manager"
             ]
         }
         
-        # Check for job title patterns (more lenient - check all patterns)
+        # Check for industry-specific job titles only
         domain_matches = {}
-        for domain, patterns in title_patterns.items():
-            match_count = sum(1 for pattern in patterns if pattern in text_lower)
+        for domain, titles in industry_specific_titles.items():
+            match_count = sum(1 for title in titles if title in text_lower)
             if match_count > 0:
                 domain_matches[domain] = match_count
         
-        # Return domain with most matches
+        # Return domain with most matches (only if clearly industry-specific)
         if domain_matches:
             best_domain = max(domain_matches, key=domain_matches.get)
             logger.info(
-                f"✅ Domain inferred from job title/role: {best_domain} (matches: {domain_matches[best_domain]})",
+                f"✅ Domain inferred from industry-specific job title: {best_domain} (matches: {domain_matches[best_domain]})",
                 extra={"file_name": filename, "domain": best_domain, "match_count": domain_matches[best_domain]}
             )
             return best_domain
         
-        # Last resort: Check if it's clearly a tech/IT resume
-        tech_keywords = ["software", "developer", "programmer", "engineer", "it", "technology", 
-                        "data engineer", "data scientist", "cloud", "devops", "api", "database",
-                        "java", "python", "javascript", "sql", "aws", "azure", "gcp", "coding",
-                        "programming", "application", "system", "technical", "tech"]
-        tech_count = sum(1 for keyword in tech_keywords if keyword in text_lower)
-        
-        # More lenient: Accept if 1+ tech keywords found (especially "developer")
-        if tech_count >= 1 or "developer" in text_lower:
-            logger.info(
-                f"✅ Domain inferred as Information Technology from tech keywords (count: {tech_count})",
-                extra={"file_name": filename, "domain": "Information Technology", "tech_keyword_count": tech_count}
-            )
-            return "Information Technology"
+        # Do NOT default to IT from generic tech keywords - per new prompt rules
+        # IT domain should only be used if candidate worked at IT companies/products
         
         return None
     
@@ -804,18 +973,19 @@ class DomainExtractor:
             )
             return "Healthcare"
         
-        # IT/Tech indicators (more lenient - accept with 1+ indicator)
-        tech_indicators = sum(1 for indicator in [
-            "software", "developer", "programmer", "engineer", "it", "technology",
-            "java", "python", "javascript", "sql", "aws", "azure", "gcp", "cloud",
-            "api", "database", "devops", "sre", "data engineer", "data scientist",
-            "coding", "programming", "application", "system", "technical", "tech"
+        # IT/Tech indicators - ONLY if IT company/product context found (per new prompt rules)
+        # Do NOT infer IT domain from skills alone - must be IT company/product indicators
+        it_company_indicators = sum(1 for indicator in [
+            "software company", "it company", "tech company", "saas company", "software as a service company",
+            "enterprise software", "software product", "it services company", "it consulting firm",
+            "cloud services company", "cybersecurity company", "data center company", "it infrastructure company",
+            "information technology company", "software development company", "technology company"
         ] if indicator in text_lower)
         
-        if tech_indicators >= 1:  # More lenient: accept with just 1 indicator
+        if it_company_indicators >= 1:  # Only if IT company/product context found
             logger.info(
-                f"✅ Domain inferred as Information Technology from general patterns (indicators: {tech_indicators})",
-                extra={"file_name": filename, "domain": "Information Technology", "indicator_count": tech_indicators}
+                f"✅ Domain inferred as Information Technology from IT company indicators (indicators: {it_company_indicators})",
+                extra={"file_name": filename, "domain": "Information Technology", "indicator_count": it_company_indicators}
             )
             return "Information Technology"
         
@@ -856,7 +1026,7 @@ class DomainExtractor:
         # This ensures we catch domains even with very weak indicators
         all_domain_keywords = {
             "Healthcare": ["healthcare", "health care", "hospital", "clinic", "medical", "clinical", "patient", "epic", "cerner"],
-            "Information Technology": ["software", "developer", "programmer", "engineer", "it", "technology", "tech", "coding"],
+            "Information Technology": ["software company", "it company", "tech company", "saas company", "software as a service company", "enterprise software", "software product", "it services company"],
             "Finance": ["finance", "financial", "accounting", "cpa", "audit", "tax", "investment"],
             "Banking": ["bank", "banking", "loan", "mortgage", "credit"],
             "Education": ["education", "university", "college", "school", "teacher", "professor"],
@@ -886,14 +1056,8 @@ class DomainExtractor:
                 )
                 return domain
         
-        # Absolute final fallback: If resume has any content, default to IT (most common for tech resumes)
-        if len(resume_text.strip()) > 100:
-            if any(keyword in text_lower for keyword in ["developer", "software", "engineer", "programmer", "it", "tech", "technical", "system", "application"]):
-                logger.info(
-                    f"✅ Domain defaulted to Information Technology (final fallback - tech content found)",
-                    extra={"file_name": filename, "domain": "Information Technology", "method": "final_fallback"}
-                )
-                return "Information Technology"
+        # Do NOT default to IT from tech keywords alone - per new prompt rules
+        # IT domain should only be used if candidate worked at IT companies/products
         
         return None
     
@@ -917,7 +1081,7 @@ class DomainExtractor:
         # Comprehensive domain keyword list - single keyword match is enough
         domain_checks = {
             "Healthcare": ["healthcare", "health care", "hospital", "clinic", "medical", "clinical", "patient", "epic", "cerner", "ehr", "emr", "physician", "nurse", "healthcare data", "healthcare analytics"],
-            "Information Technology": ["software", "developer", "programmer", "engineer", "it", "technology", "tech", "coding", "programming", "application", "system", "technical", "data engineer", "data scientist", "cloud", "api", "database"],
+            "Information Technology": ["software company", "it company", "tech company", "saas company", "software as a service company", "enterprise software", "software product", "it services company", "information technology company"],
             "Finance": ["finance", "financial", "accounting", "cpa", "audit", "tax", "investment", "wealth", "asset management", "capital markets"],
             "Banking": ["bank", "banking", "loan", "mortgage", "credit", "teller", "deposit"],
             "Education": ["education", "university", "college", "school", "teacher", "professor", "academic", "curriculum"],
@@ -947,15 +1111,8 @@ class DomainExtractor:
                 )
                 return domain
         
-        # If still nothing and resume has substantial content, default to IT (most common)
-        if len(resume_text.strip()) > 200:
-            # Check for any tech-related content
-            if any(keyword in text_lower for keyword in ["developer", "software", "engineer", "programmer", "it", "tech", "technical", "system", "application"]):
-                logger.info(
-                    f"✅ Comprehensive detection: Defaulting to Information Technology (tech content found)",
-                    extra={"file_name": filename, "domain": "Information Technology", "method": "comprehensive_default"}
-                )
-                return "Information Technology"
+        # Do NOT default to IT from tech keywords alone - per new prompt rules
+        # IT domain should only be used if candidate worked at IT companies/products
         
         return None
     
@@ -979,7 +1136,7 @@ class DomainExtractor:
         # Ultra-aggressive keyword list - single keyword match is enough
         aggressive_keywords = {
             "Healthcare": ["health", "medical", "hospital", "clinic", "patient", "clinical", "epic", "cerner", "ehr", "emr", "physician", "nurse", "medicare", "medicaid"],
-            "Information Technology": ["software", "developer", "programmer", "engineer", "it", "technology", "tech", "coding", "programming", "application", "system", "technical", "java", "python", "sql", "aws", "azure", "cloud", "api", "database", "devops"],
+            "Information Technology": ["software company", "it company", "tech company", "saas company", "software as a service company", "enterprise software", "software product", "it services company", "information technology company"],
             "Finance": ["finance", "financial", "accounting", "cpa", "audit", "tax", "investment", "wealth", "asset", "capital"],
             "Banking": ["bank", "banking", "loan", "mortgage", "credit", "teller", "deposit"],
             "Education": ["education", "university", "college", "school", "teacher", "professor", "academic", "curriculum"],
@@ -1010,13 +1167,8 @@ class DomainExtractor:
                     )
                     return domain
         
-        # If still nothing, check for common tech patterns (most common domain)
-        if any(word in text_lower for word in ["developer", "software", "engineer", "programmer", "it", "tech", "technical", "system", "application", "code", "coding"]):
-            logger.info(
-                f"✅ Aggressive detection: Defaulting to Information Technology (tech keywords found)",
-                extra={"file_name": filename, "domain": "Information Technology", "method": "tech_default"}
-            )
-            return "Information Technology"
+        # Do NOT default to IT from tech keywords alone - per new prompt rules
+        # IT domain should only be used if candidate worked at IT companies/products
         
         return None
     
