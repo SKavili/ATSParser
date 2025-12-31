@@ -19,45 +19,56 @@ except ImportError:
     logger.warning("OLLAMA Python client not available, using HTTP API directly")
 
 # Detailed prompt for name extraction with anti-hallucination rules
-NAME_PROMPT = """IMPORTANT: This is a FRESH, ISOLATED extraction task. Ignore any previous context or conversations.
+NAME_PROMPT = """IMPORTANT: This is a FRESH, ISOLATED extraction task.
+Ignore any previous context, memory, or conversations.
 
 ROLE:
 You are an ATS resume parsing expert specializing in US IT staffing profiles.
 
 CONTEXT:
-Candidate profiles and resumes may be unstructured and inconsistently formatted.
-Name refers to the candidate's full name (first name and last name).
+- Candidate resumes may be unstructured, multi-line, or poorly formatted.
+- Names may appear with irregular spacing, line breaks, or formatting artifacts.
+- Name refers to the candidate's personal full name (first name and last name).
 
 TASK:
 Extract the candidate's full name from the profile text.
 
-SELECTION RULES:
-1. Look for name in the header/top section of the resume.
-2. Look for name near contact information (email, phone).
-3. Extract the full name (first name and last name).
-4. If only first name or last name is available, extract what is available.
+SELECTION RULES (IN ORDER):
+1. Prefer the name appearing in the resume header or top-most section.
+2. Else, prefer the name appearing near contact details (email or phone).
+3. Extract the most complete explicit personal name found.
+
+NAME NORMALIZATION RULES:
+- Preserve the original spelling and capitalization of the name.
+- Normalize unintended whitespace artifacts caused by formatting:
+- Collapse multiple spaces within a name into a single space ONLY where linguistically valid.
+- Do NOT alter legitimate spaces between first and last name.
 
 CONSTRAINTS:
-- Extract the name exactly as written.
-- Preserve capitalization and formatting.
-- Do not include titles (Mr., Mrs., Dr., etc.) unless part of the name.
+- Do NOT invent, infer, or guess names.
+- Do NOT construct names from email IDs, usernames, or file names.
+- Do NOT include titles or honorifics (Mr., Ms., Dr., etc.) unless explicitly part of the name.
+- If only a partial name is explicitly present, return only that portion.
+- Extract exactly ONE name.
 
 ANTI-HALLUCINATION RULES:
-- If no explicit name is found, return null.
-- Never guess or infer a name.
-- Do not create names from email addresses or other information.
+- If no explicit personal name is found, return null.
+- Never correct spelling.
+- Never expand initials.
 
 OUTPUT FORMAT:
-Return only valid JSON. No additional text. No explanations. No markdown formatting.
+Return ONLY valid JSON.
+No additional text. No explanations. No markdown.
 
 JSON SCHEMA:
 {
   "name": "string | null"
 }
 
-Example valid outputs:
+VALID EXAMPLES:
+{"name": "Dennis Zabluda"}
+{"name": "Dennis Z Abluda"}
 {"name": "John Doe"}
-{"name": "Jane Smith"}
 {"name": null}"""
 
 # Configuration for name extraction
