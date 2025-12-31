@@ -19,75 +19,75 @@ except ImportError:
     OLLAMA_CLIENT_AVAILABLE = False
     logger.warning("OLLAMA Python client not available, using HTTP API directly")
 
-EXPERIENCE_PROMPT = """
-IMPORTANT: This is a FRESH, ISOLATED extraction task. Ignore any previous context or conversations.
+EXPERIENCE_PROMPT = """IMPORTANT: This is a FRESH, ISOLATED extraction task. Ignore any previous context.
 
 ROLE:
 You are an ATS resume parsing expert specializing in US IT staffing profiles.
 
 CONTEXT:
-Candidate profiles and resumes may be unstructured and inconsistently formatted.
-Experience refers to the total years of professional work experience of the candidate.
+Resumes may be unstructured and inconsistently formatted.
+Experience refers to TOTAL PROFESSIONAL WORK EXPERIENCE in YEARS.
 
 TASK:
-Extract the candidate's total years of experience from the profile text.
+Extract the candidate's total years of experience from the resume text.
 
-SELECTION RULES (in priority order):
-1. FIRST: Look for explicitly stated total experience in summary sections, profile sections, or header areas.
-   CRITICAL: If you find experience with a "+" sign (e.g., "25+ years", "18+ years"), ALWAYS prefer it over 
-   any calculated or work history values, even if work history shows a different number.
-   Examples: "18+ years of experience", "over 25+ years of experience", "10 years experience", 
-   "Total Work Experience: 18 years", "18 years of experience", "Experience: 15+ years",
-   "with 20+ years", "having 12 years", "18 years", "25+ years"
-   PRIORITY: "X+ years" format > "over X+ years" > "X years" in summary > work history values
+SELECTION RULES (STRICT ORDER):
 
-2. SECOND: Look for experience stated in work history sections (ONLY if no explicit summary value found):
-   Examples: "Total Work Experience: X years", "Work Experience: X years", "Years of Experience: X"
-   NOTE: If summary section has "X+ years" format, use that instead of work history values
+1. FIRST PRIORITY – EXPLICIT TOTAL EXPERIENCE:
+   If the resume explicitly states total experience anywhere in summary, header, or profile:
+   - Examples: "8 years experience", "10+ years", "over 15 years", "Total Experience: 12 years"
+   - ALWAYS return this value AS-IS
+   - Preserve "+" if present
 
-3. THIRD: If no explicit total is found, calculate from work history entries:
-   - Sum up years from all job positions listed
-   - Consider date ranges (e.g., "Jan 2020 - Present" = current year - 2020)
-   - Identify all date patterns (Month Year, DD/MM/YY, MM/DD/YY, YYYY-MM-DD, etc.)
-   - Find the difference between most recent and oldest work dates
-   - Exclude education-related dates (graduation dates, engineering passed dates, etc.)
-   - Consider only professional work experience, not internships or education
+2. SECOND PRIORITY – CALCULATED FROM WORK HISTORY (MOST IMPORTANT):
+   If NO explicit total experience is found:
 
-4. Look for patterns like:
-   - "X years" (e.g., "5 years", "10 years")
-   - "X+ years" (e.g., "5+ years", "10+ years")
-   - "over X years" (e.g., "over 25 years")
-   - "X-Y years" (e.g., "3-5 years") - use the higher number
-   - "X to Y years" (e.g., "5 to 10 years") - use the higher number
-   - "more than X years" (e.g., "more than 10 years")
-   - "X+ years of experience" (e.g., "18+ years of experience")
+   CALCULATION METHOD (MANDATORY):
+   - Identify ALL professional job date ranges
+   - Determine:
+     • Earliest job START date
+     • Most recent job END date (or Present)
+   - Calculate experience as:
+     (Most Recent End Year) − (Earliest Start Year)
 
-CONSTRAINTS:
-- Return experience as a string (e.g., "5 years", "10+ years", "18+ years", "25+ years").
-- Preserve the format as written if explicitly stated (especially "+" signs).
-- If calculated, return in format "X years" or "X+ years" if the original had a "+".
-- Always include "years" in the response.
+   IMPORTANT CALCULATION RULES:
+   - DO NOT sum individual job durations
+   - DO NOT use "(X years Y months)" text
+   - Use ONLY date ranges
+   - If end date is "Present", use CURRENT YEAR
+   - Ignore education, certifications, internships,date of birth
+   - Ignore overlapping jobs (use overall range only)
+   - Round DOWN to nearest whole year
+
+   Example:
+   Dec 2017 – Present → 2025 − 2017 = 8 years
+
+3. FORMATTING RULES:
+   - Return ONLY whole years
+   - Output format must be: "X years"
+   - NEVER return months
+   - NEVER return "+"
+   - ALWAYS include the word "years"
 
 ANTI-HALLUCINATION RULES:
-- Extract experience ONLY if it is clearly stated or can be reliably calculated from work history.
-- Do not count education or internship years unless explicitly stated as experience.
-- If experience is ambiguous or cannot be determined, return null.
+- Do not guess or infer experience
+- If dates are missing or ambiguous, return null
+- Use ONLY resume content
 
 OUTPUT FORMAT:
-Return only valid JSON. No additional text. No explanations. No markdown formatting.
+Return ONLY valid JSON. No explanation. No markdown.
 
 JSON SCHEMA:
 {
   "experience": "string | null"
 }
 
-Example valid outputs:
-{"experience": "5 years"}
-{"experience": "10+ years"}
-{"experience": "18+ years"}
+VALID OUTPUT EXAMPLES:
+{"experience": "8 years"}
+{"experience": "15 years"}
 {"experience": "25+ years"}
-{"experience": null}
-"""
+{"experience": null}"""
+
 
 
 class ExperienceExtractor:
