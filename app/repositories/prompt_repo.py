@@ -25,7 +25,8 @@ class PromptRepository:
         
         Args:
             mastercategory: "IT" or "NON_IT"
-            category: The specific category name (e.g., "Full Stack Development (Java)")
+            category: The specific category name (e.g., "Full Stack Development (Java)", "Python", "other")
+                     Note: "other" is used as fallback when specific category is not found or category is NULL
         
         Returns:
             Prompt object or None if not found

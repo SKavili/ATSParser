@@ -536,42 +536,55 @@ class ResumeController:
             print(f"   Skills: {resume_metadata.skillset[:50] if resume_metadata.skillset else None}...")
             print()
             
-            # Generate embeddings for resume text
-            chunk_embeddings = await self.embedding_service.generate_chunk_embeddings(
-                resume_text,
-                metadata={
-                    "resume_id": resume_metadata.id,
-                    "filename": safe_filename,
-                    "candidate_name": candidate_name or "",
-                }
-            )
+            # ============================================================================
+            # EMBEDDINGS & PINECONE STORAGE - TEMPORARILY DISABLED FOR DEVELOPMENT
+            # ============================================================================
+            # TODO: Re-enable when ready to use embeddings and vector search
+            # This section generates embeddings and stores them in Pinecone for semantic search.
+            # Currently disabled to focus on resume parsing functionality.
+            # 
+            # To re-enable:
+            # 1. Uncomment the code below
+            # 2. Ensure EMBEDDING_DIMENSION matches your embedding model (1024 for mxbai-embed-large, 768 for nomic-embed-text)
+            # 3. Ensure Pinecone index dimension matches EMBEDDING_DIMENSION
+            # ============================================================================
             
-            # Store embeddings in vector DB
-            vectors_to_store = []
-            for chunk_data in chunk_embeddings:
-                vector_id = f"resume_{resume_metadata.id}_chunk_{chunk_data['chunk_index']}"
-                vectors_to_store.append({
-                    "id": vector_id,
-                    "embedding": chunk_data["embedding"],
-                    "metadata": {
-                        **chunk_data["metadata"],
-                        "type": "resume",  # Mark as resume vector
-                        "chunk_index": chunk_data["chunk_index"],
-                        "text_preview": chunk_data["text"][:200],
-                    }
-                })
-            
-            if vectors_to_store:
-                await self.vector_db.upsert_vectors(vectors_to_store)
-                logger.info(
-                    f"Stored {len(vectors_to_store)} embeddings for resume {resume_metadata.id}",
-                    extra={"resume_id": resume_metadata.id, "vector_count": len(vectors_to_store)}
-                )
-                # Clear embeddings from memory after storing
-                if settings.enable_memory_cleanup:
-                    del vectors_to_store
-                    del chunk_embeddings
-                    gc.collect()
+            # # Generate embeddings for resume text
+            # chunk_embeddings = await self.embedding_service.generate_chunk_embeddings(
+            #     resume_text,
+            #     metadata={
+            #         "resume_id": resume_metadata.id,
+            #         "filename": safe_filename,
+            #         "candidate_name": candidate_name or "",
+            #     }
+            # )
+            # 
+            # # Store embeddings in vector DB
+            # vectors_to_store = []
+            # for chunk_data in chunk_embeddings:
+            #     vector_id = f"resume_{resume_metadata.id}_chunk_{chunk_data['chunk_index']}"
+            #     vectors_to_store.append({
+            #         "id": vector_id,
+            #         "embedding": chunk_data["embedding"],
+            #         "metadata": {
+            #             **chunk_data["metadata"],
+            #             "type": "resume",  # Mark as resume vector
+            #             "chunk_index": chunk_data["chunk_index"],
+            #             "text_preview": chunk_data["text"][:200],
+            #         }
+            #     })
+            # 
+            # if vectors_to_store:
+            #     await self.vector_db.upsert_vectors(vectors_to_store)
+            #     logger.info(
+            #         f"Stored {len(vectors_to_store)} embeddings for resume {resume_metadata.id}",
+            #         extra={"resume_id": resume_metadata.id, "vector_count": len(vectors_to_store)}
+            #     )
+            #     # Clear embeddings from memory after storing
+            #     if settings.enable_memory_cleanup:
+            #         del vectors_to_store
+            #         del chunk_embeddings
+            #         gc.collect()
             
             # Update status to completed on success
             await self.resume_repo.update(

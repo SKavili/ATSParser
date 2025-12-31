@@ -10,9 +10,11 @@ from app.services.job_parser import JobParser
 from app.services.embedding_service import EmbeddingService
 from app.services.vector_db_service import get_vector_db_service, VectorDBService
 from app.repositories.resume_repo import ResumeRepository
+from app.repositories.prompt_repo import PromptRepository
 from app.database.connection import get_db_session
 from app.models.resume_models import ResumeUpload, ResumeUploadResponse
 from app.models.job_models import JobCreate, JobCreateResponse, MatchRequest, MatchResponse
+from app.skills.skills_service import SkillsService
 from app.utils.logging import get_logger
 
 logger = get_logger(__name__)
@@ -151,7 +153,56 @@ async def retry_failed_resume(
 
 
 @router.get("/health")
-async def health_check():
-    """Health check endpoint."""
-    return {"status": "healthy", "service": "ATS Backend"}
+async def health_check(session: AsyncSession = Depends(get_db_session)):
+    """
+    Health check endpoint with prompt validation.
+    
+    Validates that required 'other' prompts exist in the database.
+    """
+    health_status = {
+        "status": "healthy",
+        "service": "ATS Backend",
+        "checks": {
+            "database": "ok",
+            "prompts": "unknown"
+        }
+    }
+    
+    try:
+        # Validate required prompts
+        prompt_repo = PromptRepository(session)
+        skills_service = SkillsService(session)
+        
+        is_valid, missing_prompts = await skills_service.validate_required_prompts()
+        
+        if is_valid:
+            health_status["checks"]["prompts"] = "ok"
+            health_status["prompt_validation"] = {
+                "status": "valid",
+                "message": "All required 'other' prompts exist in database"
+            }
+        else:
+            health_status["status"] = "degraded"
+            health_status["checks"]["prompts"] = "missing"
+            health_status["prompt_validation"] = {
+                "status": "invalid",
+                "message": f"Missing required prompts: {', '.join(missing_prompts)}",
+                "missing_prompts": missing_prompts,
+                "action_required": "Please add the missing prompts to the prompts table"
+            }
+            logger.warning(
+                f"Health check: Missing required prompts: {missing_prompts}",
+                extra={"missing_prompts": missing_prompts}
+            )
+    
+    except Exception as e:
+        health_status["status"] = "degraded"
+        health_status["checks"]["prompts"] = "error"
+        health_status["prompt_validation"] = {
+            "status": "error",
+            "message": f"Failed to validate prompts: {str(e)}"
+        }
+        logger.error(f"Health check: Failed to validate prompts: {e}", exc_info=True)
+    
+    return health_status
 

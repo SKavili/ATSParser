@@ -648,23 +648,51 @@ Output (one word only: IT or NON_IT):"""
             cleaned_text = cleaned_text[:-3]
         cleaned_text = cleaned_text.strip()
         
-        # Find the first { and last }
-        start_idx = cleaned_text.find('{')
-        end_idx = cleaned_text.rfind('}')
+        # Find the first { and last } for object format
+        obj_start_idx = cleaned_text.find('{')
+        obj_end_idx = cleaned_text.rfind('}')
         
-        if start_idx != -1 and end_idx != -1 and end_idx > start_idx:
-            cleaned_text = cleaned_text[start_idx:end_idx + 1]
+        # Find the first [ and last ] for array format
+        arr_start_idx = cleaned_text.find('[')
+        arr_end_idx = cleaned_text.rfind(']')
         
         # Try parsing the cleaned text
         try:
             parsed = json.loads(cleaned_text)
+            # Handle object format: {"skills": [...]}
             if isinstance(parsed, dict) and "skills" in parsed:
-                logger.debug(f"Successfully extracted JSON: {parsed}")
+                logger.debug(f"Successfully extracted JSON (object format): {parsed}")
                 return parsed
+            # Handle plain array format: ["skill1", "skill2", ...]
+            elif isinstance(parsed, list):
+                logger.debug(f"Successfully extracted JSON (array format), converting to object: {parsed}")
+                return {"skills": parsed}
         except json.JSONDecodeError:
             pass
         
-        # Try to find JSON with balanced braces
+        # Try extracting object format if braces found
+        if obj_start_idx != -1 and obj_end_idx != -1 and obj_end_idx > obj_start_idx:
+            try:
+                obj_text = cleaned_text[obj_start_idx:obj_end_idx + 1]
+                parsed = json.loads(obj_text)
+                if isinstance(parsed, dict) and "skills" in parsed:
+                    logger.debug(f"Successfully extracted JSON object from braces: {parsed}")
+                    return parsed
+            except json.JSONDecodeError:
+                pass
+        
+        # Try extracting array format if brackets found
+        if arr_start_idx != -1 and arr_end_idx != -1 and arr_end_idx > arr_start_idx:
+            try:
+                arr_text = cleaned_text[arr_start_idx:arr_end_idx + 1]
+                parsed = json.loads(arr_text)
+                if isinstance(parsed, list):
+                    logger.debug(f"Successfully extracted JSON array from brackets, converting to object: {parsed}")
+                    return {"skills": parsed}
+            except json.JSONDecodeError:
+                pass
+        
+        # Try to find JSON object with balanced braces
         try:
             start_idx = cleaned_text.find('{')
             if start_idx != -1:
@@ -687,6 +715,29 @@ Output (one word only: IT or NON_IT):"""
         except (json.JSONDecodeError, ValueError) as e:
             logger.warning(f"Failed to parse JSON with balanced braces: {e}")
         
+        # Try to find JSON array with balanced brackets
+        try:
+            start_idx = cleaned_text.find('[')
+            if start_idx != -1:
+                bracket_count = 0
+                end_idx = start_idx
+                for i in range(start_idx, len(cleaned_text)):
+                    if cleaned_text[i] == '[':
+                        bracket_count += 1
+                    elif cleaned_text[i] == ']':
+                        bracket_count -= 1
+                        if bracket_count == 0:
+                            end_idx = i + 1
+                            break
+                if bracket_count == 0:
+                    json_str = cleaned_text[start_idx:end_idx]
+                    parsed = json.loads(json_str)
+                    if isinstance(parsed, list):
+                        logger.debug(f"Successfully extracted JSON array with balanced brackets, converting to object: {parsed}")
+                        return {"skills": parsed}
+        except (json.JSONDecodeError, ValueError) as e:
+            logger.warning(f"Failed to parse JSON array with balanced brackets: {e}")
+        
         logger.error(
             "ERROR: Failed to parse JSON from LLM response", 
             extra={
@@ -706,15 +757,29 @@ Output (one word only: IT or NON_IT):"""
         """
         Extract skills from resume text using OLLAMA LLM.
         
+        This method requires a custom_prompt from the database. Gateway classification
+        has been removed - prompts must be provided based on mastercategory and category.
+        
         Args:
             resume_text: The text content of the resume
             filename: Name of the resume file (for logging)
-            custom_prompt: Optional custom prompt to use instead of gateway routing
+            custom_prompt: Required prompt from database (based on mastercategory/category)
         
         Returns:
             List of extracted skills
+        
+        Raises:
+            ValueError: If custom_prompt is not provided
+            RuntimeError: If OLLAMA is not accessible
         """
         try:
+            # Validate that custom_prompt is provided (required, no gateway fallback)
+            if not custom_prompt:
+                raise ValueError(
+                    "custom_prompt is required. Gateway classification has been removed. "
+                    "Please provide a prompt from the database based on mastercategory and category."
+                )
+            
             is_connected, available_model = await self._check_ollama_connection()
             if not is_connected:
                 raise RuntimeError(
@@ -730,42 +795,23 @@ Output (one word only: IT or NON_IT):"""
                 )
                 model_to_use = available_model
             
-            # Use custom prompt if provided, otherwise use gateway routing
-            if custom_prompt:
-                active_prompt = custom_prompt
-                logger.info(
-                    "Using custom prompt for skills extraction",
-                    extra={
-                        "file_name": filename,
-                        "prompt_source": "database",
-                        "prompt_length": len(custom_prompt)
-                    }
-                )
-            else:
-                # Gateway decision: Classify resume as IT or NON-IT
-                gateway_result = await self._gateway_decision(resume_text)
-                logger.info(
-                    "Resume classified by gateway",
-                    extra={
-                        "file_name": filename,
-                        "gateway_result": gateway_result,
-                        "analyzed_characters": 300
-                    }
-                )
-                
-                # Route to appropriate prompt based on gateway decision
-                if gateway_result == "IT":
-                    active_prompt = SKILLS_PROMPT
-                else:
-                    active_prompt = NON_IT_SKILLS_PROMPT
+            # Use custom prompt from database (gateway routing removed)
+            active_prompt = custom_prompt
+            logger.info(
+                "Using prompt from database for skills extraction",
+                extra={
+                    "file_name": filename,
+                    "prompt_source": "database",
+                    "prompt_length": len(custom_prompt)
+                }
+            )
             
             # ========== DEBUG: Check what's being sent to LLM ==========
             text_to_send = resume_text[:10000]
             print("\n" + "="*80)
             print("[DEBUG] TEXT BEING SENT TO LLM FOR SKILLS EXTRACTION")
             print("="*80)
-            print(f"Gateway classification: {gateway_result}")
-            print(f"Using prompt: {'IT Skills' if gateway_result == 'IT' else 'NON-IT Skills'}")
+            print(f"Using prompt: Database prompt (length: {len(custom_prompt)} chars)")
             print(f"Full resume text length: {len(resume_text)} characters")
             print(f"Text being sent to LLM: {len(text_to_send)} characters (first 10,000)")
             print(f"Text truncated: {'YES' if len(resume_text) > 10000 else 'NO'}")

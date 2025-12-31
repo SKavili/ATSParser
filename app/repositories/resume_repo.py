@@ -113,6 +113,7 @@ class ResumeRepository:
         
         # Define valid updatable columns (excluding read-only: id, created_at, updated_at)
         valid_columns = {
+            'mastercategory', 'category',
             'candidatename', 'jobrole', 'designation', 'experience', 'domain',
             'mobile', 'email', 'education', 'filename', 'skillset', 'status'
         }
