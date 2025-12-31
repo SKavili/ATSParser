@@ -26,17 +26,18 @@ echo.
 echo   0 - Extract ALL modules (default)
 echo   1 - Designation only
 echo   2 - Name only
-echo   3 - Email only
-echo   4 - Mobile only
-echo   5 - Experience only
-echo   6 - Domain only
-echo   7 - Education only
-echo   8 - Skills only
+echo   3 - Role only
+echo   4 - Email only
+echo   5 - Mobile only
+echo   6 - Experience only
+echo   7 - Domain only
+echo   8 - Education only
+echo   9 - Skills only
 echo.
 echo   You can also select multiple modules:
-echo   Example: 1,2,3 or 1,8 or designation,skills
+echo   Example: 1,2,3 or 1,9 or designation,skills,role
 echo.
-set /p MODULE_CHOICE="Enter your choice (0-8, comma-separated, or 'all'): "
+set /p MODULE_CHOICE="Enter your choice (0-9, comma-separated, or 'all'): "
 
 REM Default to "all" if empty
 if "!MODULE_CHOICE!"=="" set MODULE_CHOICE=0
@@ -169,23 +170,37 @@ set "CANDIDATE_NAME=!CANDIDATE_NAME:.png=!"
 set "CANDIDATE_NAME=!CANDIDATE_NAME:_= !"
 set "CANDIDATE_NAME=!CANDIDATE_NAME:-= !"
  
-REM Default job role (you can modify this or extract from filename)
-set "JOB_ROLE=Developer"
+REM Job role is now automatically extracted from resume using OLLAMA
+REM You can optionally provide a job_role hint, but it will be extracted automatically
+REM Set to empty to let the system extract it automatically
+set "JOB_ROLE="
  
 echo [INFO] Candidate Name: !CANDIDATE_NAME!
-echo [INFO] Job Role: !JOB_ROLE!
+echo [INFO] Job Role: (will be extracted automatically from resume)
 echo [INFO] Modules to extract: !EXTRACT_MODULES!
 echo.
  
 REM Upload the file - this triggers extraction based on selected modules
+REM Note: If "role" is in extract_modules, job role will be extracted automatically
 echo [INFO] Uploading to API and extracting selected modules...
-curl -X POST "%API_URL%" ^
-  -H "accept: application/json" ^
-  -H "Content-Type: multipart/form-data" ^
-  -F "file=@\"!RESUME_FILE!\"" ^
-  -F "candidate_name=!CANDIDATE_NAME!" ^
-  -F "job_role=!JOB_ROLE!" ^
-  -F "extract_modules=!EXTRACT_MODULES!" > temp_response.txt 2>&1
+if "!JOB_ROLE!"=="" (
+    REM No job_role provided - let system extract it automatically
+    curl -X POST "%API_URL%" ^
+      -H "accept: application/json" ^
+      -H "Content-Type: multipart/form-data" ^
+      -F "file=@\"!RESUME_FILE!\"" ^
+      -F "candidate_name=!CANDIDATE_NAME!" ^
+      -F "extract_modules=!EXTRACT_MODULES!" > temp_response.txt 2>&1
+) else (
+    REM Optional job_role hint provided (will still be extracted if "role" module is selected)
+    curl -X POST "%API_URL%" ^
+      -H "accept: application/json" ^
+      -H "Content-Type: multipart/form-data" ^
+      -F "file=@\"!RESUME_FILE!\"" ^
+      -F "candidate_name=!CANDIDATE_NAME!" ^
+      -F "job_role=!JOB_ROLE!" ^
+      -F "extract_modules=!EXTRACT_MODULES!" > temp_response.txt 2>&1
+)
  
 REM Check if curl command succeeded and if response contains error
 set CURL_SUCCESS=0

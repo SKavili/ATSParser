@@ -31,23 +31,37 @@ process_file() {
     CANDIDATE_NAME="${CANDIDATE_NAME//_/ }"
     CANDIDATE_NAME="${CANDIDATE_NAME//-/ }"
     
-    # Default job role (you can modify this or extract from filename)
-    JOB_ROLE="Developer"
+    # Job role is now automatically extracted from resume using OLLAMA
+    # You can optionally provide a job_role hint, but it will be extracted automatically
+    # Set to empty to let the system extract it automatically
+    JOB_ROLE=""
     
     echo "[INFO] Candidate Name: ${CANDIDATE_NAME}"
-    echo "[INFO] Job Role: ${JOB_ROLE}"
+    echo "[INFO] Job Role: (will be extracted automatically from resume)"
     echo "[INFO] Modules to extract: ${EXTRACT_MODULES}"
     echo ""
     
     # Upload the file - this triggers extraction based on selected modules
+    # Note: If "role" is in extract_modules, job role will be extracted automatically
     echo "[INFO] Uploading to API and extracting selected modules..."
-    curl -X POST "${API_URL}" \
-      -H "accept: application/json" \
-      -H "Content-Type: multipart/form-data" \
-      -F "file=@${RESUME_FILE}" \
-      -F "candidate_name=${CANDIDATE_NAME}" \
-      -F "job_role=${JOB_ROLE}" \
-      -F "extract_modules=${EXTRACT_MODULES}"
+    if [ -z "$JOB_ROLE" ]; then
+        # No job_role provided - let system extract it automatically
+        curl -X POST "${API_URL}" \
+          -H "accept: application/json" \
+          -H "Content-Type: multipart/form-data" \
+          -F "file=@${RESUME_FILE}" \
+          -F "candidate_name=${CANDIDATE_NAME}" \
+          -F "extract_modules=${EXTRACT_MODULES}"
+    else
+        # Optional job_role hint provided (will still be extracted if "role" module is selected)
+        curl -X POST "${API_URL}" \
+          -H "accept: application/json" \
+          -H "Content-Type: multipart/form-data" \
+          -F "file=@${RESUME_FILE}" \
+          -F "candidate_name=${CANDIDATE_NAME}" \
+          -F "job_role=${JOB_ROLE}" \
+          -F "extract_modules=${EXTRACT_MODULES}"
+    fi
     
     if [ $? -ne 0 ]; then
         echo ""
@@ -77,17 +91,18 @@ echo ""
 echo "  0 - Extract ALL modules (default)"
 echo "  1 - Designation only"
 echo "  2 - Name only"
-echo "  3 - Email only"
-echo "  4 - Mobile only"
-echo "  5 - Experience only"
-echo "  6 - Domain only"
-echo "  7 - Education only"
-echo "  8 - Skills only"
+echo "  3 - Role only"
+echo "  4 - Email only"
+echo "  5 - Mobile only"
+echo "  6 - Experience only"
+echo "  7 - Domain only"
+echo "  8 - Education only"
+echo "  9 - Skills only"
 echo ""
 echo "  You can also select multiple modules:"
-echo "  Example: 1,2,3 or 1,8 or designation,skills"
+echo "  Example: 1,2,3 or 1,9 or designation,skills,role"
 echo ""
-read -p "Enter your choice (0-8, comma-separated, or 'all'): " MODULE_CHOICE
+read -p "Enter your choice (0-9, comma-separated, or 'all'): " MODULE_CHOICE
 
 # Default to "all" if empty
 if [ -z "$MODULE_CHOICE" ]; then

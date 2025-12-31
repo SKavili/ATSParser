@@ -18,6 +18,7 @@ from app.domain import DomainService
 from app.education import EducationService
 from app.mastercategory import MasterCategoryService
 from app.category import CategoryService
+from app.role import RoleService
 from app.repositories.resume_repo import ResumeRepository
 from app.models.resume_models import ResumeUpload, ResumeUploadResponse
 from app.utils.cleaning import sanitize_filename
@@ -58,6 +59,7 @@ class ResumeController:
         self.education_service = EducationService(session)
         self.mastercategory_service = MasterCategoryService(session)
         self.category_service = CategoryService(session)
+        self.role_service = RoleService(session)
     
     def _parse_extract_modules(self, extract_modules: Optional[str]) -> set:
         """
@@ -71,18 +73,19 @@ class ResumeController:
         """
         if not extract_modules or extract_modules.lower().strip() == "all":
             # Extract all modules
-            return {"designation", "name", "email", "mobile", "experience", "domain", "education", "skills"}
+            return {"designation", "name", "role", "email", "mobile", "experience", "domain", "education", "skills"}
         
         # Map numbers to module names
         module_map = {
             "1": "designation",
             "2": "name",
-            "3": "email",
-            "4": "mobile",
-            "5": "experience",
-            "6": "domain",
-            "7": "education",
-            "8": "skills",
+            "3": "role",
+            "4": "email",
+            "5": "mobile",
+            "6": "experience",
+            "7": "domain",
+            "8": "education",
+            "9": "skills",
         }
         
         # Parse comma-separated list
@@ -96,7 +99,7 @@ class ResumeController:
             if part in module_map:
                 modules.add(module_map[part])
             # Check if it's a direct module name
-            elif part in {"designation", "name", "email", "mobile", "experience", "domain", "education", "skills"}:
+            elif part in {"designation", "name", "role", "email", "mobile", "experience", "domain", "education", "skills"}:
                 modules.add(part)
             else:
                 logger.warning(f"Unknown module option: {part}, ignoring")
@@ -381,8 +384,8 @@ class ResumeController:
                 )
             
             # Parse extract_modules parameter
-            # Accepts: "all" or comma-separated list like "designation,skills,name"
-            # Valid options: designation, name, email, mobile, experience, domain, education, skills
+            # Accepts: "all" or comma-separated list like "designation,skills,name,role"
+            # Valid options: designation, name, role, email, mobile, experience, domain, education, skills
             modules_to_extract = self._parse_extract_modules(extract_modules)
             
             # Extract and save selected profile fields using dedicated services (SEQUENTIAL)
@@ -426,7 +429,18 @@ class ResumeController:
                 except Exception as e:
                     logger.error(f"❌ NAME EXTRACTION FAILED: {e}", extra={"resume_id": resume_metadata.id, "error": str(e)})
             
-            # Extract email (3)
+            # Extract role (3)
+            if "role" in modules_to_extract:
+                try:
+                    await self.role_service.extract_and_save_role(
+                        resume_text=resume_text,
+                        resume_id=resume_metadata.id,
+                        filename=safe_filename
+                    )
+                except Exception as e:
+                    logger.error(f"❌ ROLE EXTRACTION FAILED: {e}", extra={"resume_id": resume_metadata.id, "error": str(e)})
+            
+            # Extract email (4)
             if "email" in modules_to_extract:
                 try:
                     await self.email_service.extract_and_save_email(
@@ -437,7 +451,7 @@ class ResumeController:
                 except Exception as e:
                     logger.error(f"❌ EMAIL EXTRACTION FAILED: {e}", extra={"resume_id": resume_metadata.id, "error": str(e)})
             
-            # Extract mobile (4)
+            # Extract mobile (5)
             if "mobile" in modules_to_extract:
                 try:
                     await self.mobile_service.extract_and_save_mobile(
@@ -448,7 +462,7 @@ class ResumeController:
                 except Exception as e:
                     logger.error(f"❌ MOBILE EXTRACTION FAILED: {e}", extra={"resume_id": resume_metadata.id, "error": str(e)})
             
-            # Extract experience (5)
+            # Extract experience (6)
             if "experience" in modules_to_extract:
                 try:
                     await self.experience_service.extract_and_save_experience(
@@ -459,7 +473,7 @@ class ResumeController:
                 except Exception as e:
                     logger.error(f"❌ EXPERIENCE EXTRACTION FAILED: {e}", extra={"resume_id": resume_metadata.id, "error": str(e)})
             
-            # Extract domain (6)
+            # Extract domain (7)
             if "domain" in modules_to_extract:
                 try:
                     await self.domain_service.extract_and_save_domain(
@@ -470,7 +484,7 @@ class ResumeController:
                 except Exception as e:
                     logger.error(f"❌ DOMAIN EXTRACTION FAILED: {e}", extra={"resume_id": resume_metadata.id, "error": str(e)})
             
-            # Extract education (7)
+            # Extract education (8)
             if "education" in modules_to_extract:
                 try:
                     await self.education_service.extract_and_save_education(
@@ -481,7 +495,7 @@ class ResumeController:
                 except Exception as e:
                     logger.error(f"❌ EDUCATION EXTRACTION FAILED: {e}", extra={"resume_id": resume_metadata.id, "error": str(e)})
             
-            # Extract skills (8)
+            # Extract skills (9)
             # Refresh resume metadata to ensure we have latest mastercategory and category
             await self.resume_repo.session.refresh(resume_metadata)
             if "skills" in modules_to_extract:
@@ -513,6 +527,7 @@ class ResumeController:
                 extra={
                     "resume_id": resume_metadata.id,
                     "candidatename": resume_metadata.candidatename,
+                    "jobrole": resume_metadata.jobrole,
                     "designation": resume_metadata.designation,
                     "email": resume_metadata.email,
                     "mobile": resume_metadata.mobile,
@@ -525,6 +540,7 @@ class ResumeController:
             print(f"\n✅ PROFILE EXTRACTION COMPLETED")
             print(f"   Resume ID: {resume_metadata.id}")
             print(f"   Name: {resume_metadata.candidatename}")
+            print(f"   Job Role: {resume_metadata.jobrole}")
             print(f"   Designation: {resume_metadata.designation}")
             print(f"   Email: {resume_metadata.email}")
             print(f"   Mobile: {resume_metadata.mobile}")
