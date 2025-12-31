@@ -5,28 +5,37 @@ from typing import List, Optional
 
 def normalize_phone(phone: Optional[str]) -> Optional[str]:
     """
-    Normalize phone number to E.164 format if possible.
-    Otherwise return cleaned digits.
+    Normalize phone number to 10-digit US format.
+    Removes +1, spaces, dashes, brackets, and other formatting.
+    
+    Rules:
+    - Remove all non-digit characters
+    - If 11 digits starting with 1, remove leading 1 to get 10 digits
+    - If already 10 digits, return as-is
+    - Otherwise return None
+    
+    Examples:
+    - 17372492121 → 7372492121
+    - 17089275276 → 7089275276
+    - +1 (708) 927-5276 → 7089275276
+    - 7089275276 → 7089275276 (already 10 digits)
     """
     if not phone:
         return None
     
-    # Remove all non-digit characters except +
-    cleaned = re.sub(r'[^\d+]', '', phone.strip())
+    # Remove all non-digit characters (including +, spaces, dashes, brackets, etc.)
+    digits_only = re.sub(r'[^\d]', '', phone.strip())
     
-    # Try to format as E.164
-    if cleaned.startswith('+'):
-        # Already has country code
-        if len(cleaned) >= 10:
-            return cleaned
-    else:
-        # Add +1 for US numbers if 10 digits
-        if len(cleaned) == 10:
-            return f"+1{cleaned}"
-        elif len(cleaned) == 11 and cleaned.startswith('1'):
-            return f"+{cleaned}"
+    # If 11 digits and starts with 1, remove leading 1 to get 10 digits
+    if len(digits_only) == 11 and digits_only.startswith('1'):
+        return digits_only[1:]  # Return last 10 digits
     
-    return cleaned if cleaned else None
+    # If already 10 digits, return as-is
+    if len(digits_only) == 10:
+        return digits_only
+    
+    # If not 10 or 11 digits, return None
+    return None
 
 
 def normalize_email(email: Optional[str]) -> Optional[str]:
