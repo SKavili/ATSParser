@@ -48,6 +48,7 @@ The designation is extracted following strict rules:
 
 import json
 import re
+import gc
 from typing import Dict, Optional, List
 from io import BytesIO
 import httpx
@@ -228,11 +229,19 @@ def extract_pdf_text(file_content: bytes) -> str:
         raise ValueError("PyPDF2 is not installed. Install it with: pip install PyPDF2")
     
     pdf_file = BytesIO(file_content)
-    pdf_reader = PyPDF2.PdfReader(pdf_file)
-    text_parts = []
-    for page in pdf_reader.pages:
-        text_parts.append(page.extract_text())
-    return "\n".join(text_parts)
+    try:
+        pdf_reader = PyPDF2.PdfReader(pdf_file)
+        text_parts = []
+        for page in pdf_reader.pages:
+            text_parts.append(page.extract_text())
+        text = "\n".join(text_parts)
+        # Explicitly clean up reader
+        del pdf_reader
+        return text
+    finally:
+        # Explicitly close BytesIO
+        pdf_file.close()
+        del pdf_file
 
 
 def extract_docx_text(file_content: bytes) -> str:
@@ -241,11 +250,19 @@ def extract_docx_text(file_content: bytes) -> str:
         raise ValueError("python-docx is not installed. Install it with: pip install python-docx")
     
     doc_file = BytesIO(file_content)
-    doc = Document(doc_file)
-    text_parts = []
-    for paragraph in doc.paragraphs:
-        text_parts.append(paragraph.text)
-    return "\n".join(text_parts)
+    try:
+        doc = Document(doc_file)
+        text_parts = []
+        for paragraph in doc.paragraphs:
+            text_parts.append(paragraph.text)
+        text = "\n".join(text_parts)
+        # Explicitly clean up document object
+        del doc
+        return text
+    finally:
+        # Explicitly close BytesIO
+        doc_file.close()
+        del doc_file
 
 
 def extract_doc_text(file_content: bytes) -> str:
@@ -300,6 +317,9 @@ def extract_doc_text(file_content: bytes) -> str:
                             with open(converted_docx, 'rb') as f:
                                 docx_content = f.read()
                             text = extract_docx_text(docx_content)
+                            # Free docx_content immediately after extraction
+                            del docx_content
+                            gc.collect()
                             if text.strip():
                                 print("Successfully extracted .doc file using LibreOffice conversion")
                                 return text
@@ -356,36 +376,46 @@ def extract_doc_text(file_content: bytes) -> str:
             try:
                 print("Attempting .doc extraction using python-docx fallback")
                 doc_file = BytesIO(file_content)
-                doc = Document(doc_file)
-                text_parts = []
-                for paragraph in doc.paragraphs:
-                    text_parts.append(paragraph.text)
-                # Also try to extract from tables
-                for table in doc.tables:
-                    for row in table.rows:
-                        row_text = []
-                        for cell in row.cells:
-                            row_text.append(cell.text)
-                        if row_text:
-                            text_parts.append(" | ".join(row_text))
-                extracted_text = "\n".join(text_parts)
-                if extracted_text.strip():
-                    print("Successfully extracted .doc file using python-docx fallback")
-                    return extracted_text
+                try:
+                    doc = Document(doc_file)
+                    text_parts = []
+                    for paragraph in doc.paragraphs:
+                        text_parts.append(paragraph.text)
+                    # Also try to extract from tables
+                    for table in doc.tables:
+                        for row in table.rows:
+                            row_text = []
+                            for cell in row.cells:
+                                row_text.append(cell.text)
+                            if row_text:
+                                text_parts.append(" | ".join(row_text))
+                    extracted_text = "\n".join(text_parts)
+                    if extracted_text.strip():
+                        print("Successfully extracted .doc file using python-docx fallback")
+                        del doc
+                        return extracted_text
+                    del doc
+                finally:
+                    doc_file.close()
+                    del doc_file
             except Exception:
                 pass
         
         # Method 6: Try to extract using olefile (for binary .doc files)
         if OLEFILE_AVAILABLE:
+            ole = None
+            doc_file = None
             try:
                 print("Attempting .doc extraction using olefile")
                 # .doc files are OLE compound documents
-                ole = olefile.OleFileIO(BytesIO(file_content))
+                doc_file = BytesIO(file_content)
+                ole = olefile.OleFileIO(doc_file)
                 # Try to find WordDocument stream
                 if ole.exists('WordDocument'):
                     stream = ole.openstream('WordDocument')
                     # Read and try to extract text (basic extraction)
                     data = stream.read()
+                    stream.close()
                     # Simple text extraction from binary data
                     # This is a basic approach - look for readable text
                     text_chunks = []
@@ -405,14 +435,28 @@ def extract_doc_text(file_content: bytes) -> str:
                             text_chunks.append(current_chunk.decode('ascii', errors='ignore'))
                         except:
                             pass
-                    ole.close()
+                    del data  # Free memory immediately
                     extracted_text = "\n".join(text_chunks)
+                    del text_chunks  # Free memory immediately
                     if extracted_text.strip():
                         print("Successfully extracted .doc file using olefile")
                         return extracted_text
-                ole.close()
             except Exception as ole_error:
                 print(f"olefile extraction failed: {ole_error}")
+            finally:
+                # Always close olefile and BytesIO
+                if ole is not None:
+                    try:
+                        ole.close()
+                    except:
+                        pass
+                    del ole
+                if doc_file is not None:
+                    try:
+                        doc_file.close()
+                    except:
+                        pass
+                    del doc_file
         
         # If all methods fail, raise an error with helpful message
         raise ValueError(
@@ -678,6 +722,10 @@ async def parse_resume_file(
     print("Extracting text from file...")
     resume_text = extract_text(file_content, filename)
     
+    # Free file_content memory immediately after extraction
+    del file_content
+    gc.collect()  # Force garbage collection to free memory
+    
     if not resume_text or len(resume_text.strip()) < 50:
         raise ValueError("Could not extract sufficient text from resume")
     
@@ -694,6 +742,10 @@ async def parse_resume_file(
         ollama_host,
         model_name
     )
+    
+    # Free resume_text memory after parsing
+    del resume_text
+    gc.collect()  # Force garbage collection to free memory
     
     print("\n" + "="*50)
     print("DESIGNATION EXTRACTION COMPLETE")
