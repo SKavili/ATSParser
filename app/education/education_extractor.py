@@ -7,6 +7,7 @@ from httpx import Timeout
 
 from app.config import settings
 from app.utils.logging import get_logger
+from app.education.isolateeducationtxt import isolate_education_text
 
 logger = get_logger(__name__)
 
@@ -164,6 +165,19 @@ class EducationExtractor:
             The extracted education string or None if not found
         """
         try:
+            # Isolate education-relevant text from resume to reduce LLM processing time
+            isolated_text = isolate_education_text(resume_text)
+            
+            # If no education text was isolated, use a limited portion of original text as fallback
+            if not isolated_text or not isolated_text.strip():
+                logger.warning(
+                    f"No education keywords found, using first 10000 characters as fallback",
+                    extra={"file_name": filename}
+                )
+                text_for_llm = resume_text[:10000]
+            else:
+                text_for_llm = isolated_text
+            
             is_connected, available_model = await self._check_ollama_connection()
             if not is_connected:
                 raise RuntimeError(
@@ -182,7 +196,7 @@ class EducationExtractor:
             prompt = f"""{EDUCATION_PROMPT}
 
 Input resume text:
-{resume_text[:10000]}
+{text_for_llm}
 
 Output (JSON only, no other text, no explanations):"""
             
