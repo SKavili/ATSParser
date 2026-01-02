@@ -30,7 +30,7 @@ You MUST behave conservatively, responsibly, and professionally.
 
 DEFINITION:
 "Domain" means the PRIMARY BUSINESS / INDUSTRY DOMAIN in which the candidate has worked.
-It is NOT the candidate's skills, technologies, tools, or job role.
+It is NOT the candidate's skills, technologies, tools, job role, or academic background.
 
 TASK:
 Analyze the resume text and extract ONE primary industry domain.
@@ -47,26 +47,55 @@ DO NOT USE:
 - Programming languages
 - Tools or platforms alone
 - Job titles alone (unless clearly industry-specific)
+- Academic qualifications or education history
+
+CRITICAL EDUCATION DOMAIN DISAMBIGUATION (MANDATORY):
+The "Education" domain MUST be extracted ONLY if the candidate has WORKED in the education industry.
+
+HARD EXCLUSION RULE:
+- NEVER infer "Education" as a domain from:
+  - Degree names (e.g., B.Ed, M.Ed, MA Education, Instructional Technology)
+  - University, college, or school names
+  - Teaching credentials or certifications
+  - Academic programs, majors, minors, or coursework
+  - Sections titled "Education", "Academic Background", "Qualifications", or similar
+  - Continuous degree listings with institutions and years
+
+If "Education" appears ONLY in academic qualifications, then the domain is not Education, might be something else.
+
+VALID INCLUSION RULE (ALL CONDITIONS REQUIRED):
+Extract "Education" ONLY IF:
+1. Education-related terms appear in WORK EXPERIENCE, PROJECTS, or CLIENT CONTEXT
+2. The resume explicitly indicates professional work such as:
+   - Education domain projects
+   - EdTech products or platforms
+   - eLearning or LMS development/implementation
+   - Work for schools, universities, or academic institutions as clients
+   - Student information systems, curriculum platforms, or online learning systems
+3. The education reference is clearly tied to a job role, project, client, or product
+
+If professional education-domain evidence is missing or ambiguous, return null.
 
 DOMAIN SELECTION RULES:
 1. If multiple domains appear, select the MOST RECENT or MOST DOMINANT one.
 2. If IT skills are used INSIDE a non-IT industry (e.g., Banking, Healthcare), return the BUSINESS DOMAIN — NOT IT.
 3. Use STANDARDIZED domain names from the allowed list below.
-4. Do NOT invent or guess domains.
+4. Do NOT invent, assume, or guess domains.
 5. If no reasonable inference is possible, return null.
 
 IMPORTANT DISTINCTIONS:
 - "Information Technology", "Software & SaaS", "Cloud", "Cybersecurity", "AI", "Data & Analytics"
-  → Use ONLY if the candidate worked on IT PRODUCTS / IT COMPANIES.
-  → DO NOT use these if they are just skills inside another industry.
+  → Use ONLY if the candidate worked on IT PRODUCTS or IT COMPANIES.
+  → DO NOT use these if they are merely skills applied within another industry.
 
 ANTI-HALLUCINATION RULES:
 - Never infer domain from skills alone.
+- Never infer domain from education or certifications.
 - Never assume domain based on job title alone.
-- Never combine domains.
+- Never combine multiple domains.
 - Never return explanations or extra text.
 
-ALLOWED DOMAIN LIST (STANDARDIZED OUTPUT VALUES):
+ALLOWED SAMPLE DOMAIN LIST (STANDARDIZED OUTPUT VALUES):
 
 Healthcare  
 Healthcare & Life Sciences  
@@ -141,7 +170,7 @@ Artificial Intelligence
 → ONLY if candidate worked on AI products or AI companies (NOT skills)
 
 Data & Analytics  
-→ ONLY if candidate worked on analytics/data companies or platforms (NOT skills)
+→ ONLY if candidate worked on data/analytics companies or platforms (NOT skills)
 
 OUTPUT REQUIREMENTS:
 - Output ONLY valid JSON
@@ -198,6 +227,7 @@ VALID OUTPUT EXAMPLES:
 {"domain": "Data & Analytics"}
 {"domain": null}
 """
+
 
 
 class DomainExtractor:
