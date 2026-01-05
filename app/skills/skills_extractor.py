@@ -486,7 +486,7 @@ Output (JSON only, no other text, no explanations):"""
                 after_strip_count = len(skills)
                 skills = list(dict.fromkeys(skills))  # Remove duplicates while preserving order
                 after_dedup_count = len(skills)
-                skills = skills[:50]  # Limit to 50 skills
+                skills = skills[:100]  # Limit to 50 skills
                 
                 # Log if all skills were filtered out
                 if original_count > 0 and len(skills) == 0:
