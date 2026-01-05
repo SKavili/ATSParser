@@ -237,6 +237,138 @@ class DomainExtractor:
         self.ollama_host = settings.ollama_host
         self.model = "llama3.1"
     
+    def _filter_education_sections(self, resume_text: str) -> str:
+        """
+        Filter out education sections from resume text to prevent false domain detection.
+        This ensures Education domain is only detected from work experience, not academic qualifications.
+        
+        Args:
+            resume_text: The full resume text
+            
+        Returns:
+            Text with education sections removed, containing only work-related content
+        """
+        if not resume_text:
+            return ""
+        
+        lines = resume_text.split('\n')
+        filtered_lines = []
+        skip_section = False
+        
+        # Section headers that indicate education/academic content
+        education_keywords = [
+            r'^#?\s*(education|academic|qualification|qualifications)',
+            r'^#?\s*(degree|degrees|bachelor|master|phd|doctorate)',
+            r'^#?\s*(university|college|school)\s*$',  # Only if standalone header
+        ]
+        
+        # Work section indicators - when we see these, stop skipping
+        work_keywords = [
+            r'^#?\s*(experience|work\s+experience|employment|professional\s+experience)',
+            r'^#?\s*(career|career\s+history|work\s+history)',
+            r'^#?\s*(project|projects)',  # Projects can indicate work
+        ]
+        
+        for i, line in enumerate(lines):
+            line_stripped = line.strip()
+            line_lower = line_stripped.lower()
+            
+            # Check if this line starts an education section
+            is_education_header = False
+            for pattern in education_keywords:
+                if re.match(pattern, line_lower, re.IGNORECASE):
+                    is_education_header = True
+                    skip_section = True
+                    logger.debug(f"Filtering education section: {line_stripped[:50]}")
+                    break
+            
+            # Check if this line starts a work section (stops skipping)
+            if not is_education_header:
+                for pattern in work_keywords:
+                    if re.match(pattern, line_lower, re.IGNORECASE):
+                        skip_section = False
+                        break
+            
+            # Skip lines in education sections
+            if skip_section:
+                # Check if we've reached a new major section
+                if i < len(lines) - 1:
+                    next_line = lines[i + 1].strip() if i + 1 < len(lines) else ""
+                    # If next line looks like a work section header, stop skipping
+                    if next_line:
+                        for pattern in work_keywords:
+                            if re.match(pattern, next_line.lower(), re.IGNORECASE):
+                                skip_section = False
+                                break
+                continue
+            
+            filtered_lines.append(line)
+        
+        filtered_text = '\n'.join(filtered_lines)
+        
+        logger.debug(
+            f"Education section filtering: {len(resume_text)} -> {len(filtered_text)} characters",
+            extra={
+                "original_length": len(resume_text),
+                "filtered_length": len(filtered_text),
+                "removed_chars": len(resume_text) - len(filtered_text)
+            }
+        )
+        return filtered_text
+    
+    def _is_education_keyword_in_work_context(self, text: str, keyword: str) -> bool:
+        """
+        Check if an education-related keyword appears in work context (not education section).
+        
+        Args:
+            text: The resume text to check
+            keyword: The keyword to search for
+            
+        Returns:
+            True if keyword appears in work context, False if in education section
+        """
+        if not text or not keyword:
+            return False
+        
+        # Find all occurrences of the keyword
+        text_lower = text.lower()
+        keyword_lower = keyword.lower()
+        
+        # Get context around each occurrence (200 chars before and after)
+        import re
+        for match in re.finditer(re.escape(keyword_lower), text_lower):
+            start = max(0, match.start() - 200)
+            end = min(len(text), match.end() + 200)
+            context = text_lower[start:end]
+            
+            # Check if context contains work indicators
+            work_indicators = [
+                'company', 'worked', 'employed', 'role', 'position', 'job', 'experience',
+                'client', 'project', 'developed', 'managed', 'implemented', 'designed',
+                'work experience', 'professional experience', 'employment'
+            ]
+            
+            # Check if context contains education section indicators
+            education_indicators = [
+                'education:', 'academic:', 'qualification:', 'degree', 'bachelor', 'master',
+                'phd', 'graduated', 'university', 'college', 'school'
+            ]
+            
+            has_work_context = any(indicator in context for indicator in work_indicators)
+            has_education_section = any(
+                indicator in context and 
+                ('education' in context[:context.find(indicator)] or 
+                 'academic' in context[:context.find(indicator)] or
+                 'qualification' in context[:context.find(indicator)])
+                for indicator in education_indicators
+            )
+            
+            # If it has work context and not clearly in education section, it's valid
+            if has_work_context and not has_education_section:
+                return True
+        
+        return False
+    
     async def _check_ollama_connection(self) -> tuple[bool, Optional[str]]:
         """Check if OLLAMA is accessible and running. Returns (is_connected, available_model)."""
         try:
@@ -262,6 +394,7 @@ class DomainExtractor:
         Fallback method to detect domain from keywords when LLM returns null.
         This is a safety net to catch obvious domain indicators that LLM might miss.
         Uses strict scoring to ensure only resume-related domains are detected.
+        Filters out education sections to prevent false Education domain detection.
         
         Args:
             resume_text: The resume text to analyze
@@ -273,7 +406,13 @@ class DomainExtractor:
         if not resume_text:
             return None
         
-        text_lower = resume_text.lower()
+        # Filter out education sections to prevent false positives
+        filtered_text = self._filter_education_sections(resume_text)
+        if not filtered_text or len(filtered_text.strip()) < 50:
+            # If filtering removed too much, use original but be more careful with Education
+            filtered_text = resume_text
+        
+        text_lower = filtered_text.lower()
         
         # Domain keyword mappings with weights (higher weight = more specific/important)
         # Keywords are categorized: high_weight (company names, specific terms), medium_weight (domain terms), low_weight (general terms)
@@ -382,16 +521,14 @@ class DomainExtractor:
             },
             "Education": {
                 "high": [
-                    "university", "college", "school district", "educational institution",
-                    "higher education", "k-12", "academic", "curriculum development", "educational technology"
+                    "school district", "educational institution", "edtech company", "education consulting",
+                    "educational technology company", "lms platform", "e-learning platform", "education services"
                 ],
                 "medium": [
-                    "education", "school", "academic", "curriculum", "student", "teacher",
-                    "professor", "educational", "learning management", "lms", "edtech"
+                    "education consulting", "educational technology", "curriculum development", "learning management system",
+                    "worked at university", "worked at college", "education sector", "education industry"
                 ],
-                "low": [
-                    "learning", "teaching", "training"
-                ]
+                "low": []  # Removed generic terms - only use if clearly work-related
             },
             "Government": {
                 "high": [
@@ -699,6 +836,24 @@ class DomainExtractor:
             best_data = domain_scores[best_domain]
             best_score = best_data["score"]
             
+            # Special handling for Education domain - must have work context
+            if best_domain == "Education":
+                # For Education, require high-weight matches (work-related terms) or verify work context
+                if best_data["high_matches"] == 0:
+                    # No high-weight matches means no clear work context - skip Education
+                    logger.debug(
+                        f"Education domain detected but no work context found - skipping to avoid false positive",
+                        extra={"file_name": filename, "score": best_score}
+                    )
+                    # Remove Education from scores and try next best domain
+                    domain_scores.pop("Education", None)
+                    if domain_scores:
+                        best_domain = max(domain_scores, key=lambda x: domain_scores[x]["score"])
+                        best_data = domain_scores[best_domain]
+                        best_score = best_data["score"]
+                    else:
+                        return None
+            
             # Very lenient threshold: Accept if we have any matches (to avoid null results)
             # Priority: high matches > medium matches > any matches
             has_high_match = best_data["high_matches"] > 0
@@ -769,6 +924,7 @@ class DomainExtractor:
         """
         Ultimate fallback with minimal threshold - accepts domain with just 1 keyword match.
         This is the last resort to avoid null results.
+        Filters out education sections to prevent false Education domain detection.
         
         Args:
             resume_text: The resume text to analyze
@@ -780,9 +936,15 @@ class DomainExtractor:
         if not resume_text:
             return None
         
-        text_lower = resume_text.lower()
+        # Filter out education sections to prevent false positives
+        filtered_text = self._filter_education_sections(resume_text)
+        if not filtered_text or len(filtered_text.strip()) < 50:
+            filtered_text = resume_text
+        
+        text_lower = filtered_text.lower()
         
         # Comprehensive keyword list - check for any domain indicator with more keywords
+        # Education keywords are more specific to work context
         domain_indicators = {
             "Healthcare": [
                 "healthcare", "health care", "hospital", "clinic", "medical", "epic", "cerner", "ehr", "emr", 
@@ -803,8 +965,9 @@ class DomainExtractor:
                 "retail banking", "investment bank", "banking services"
             ],
             "Education": [
-                "education", "university", "college", "school", "teacher", "professor", "academic",
-                "educational", "curriculum", "higher education", "k-12"
+                "school district", "educational institution", "edtech company", "education consulting",
+                "educational technology company", "lms platform", "e-learning platform", "education services",
+                "worked at university", "worked at college", "education sector", "education industry"
             ],
             "Government": [
                 "government", "federal", "state", "public sector", "government agency", "public administration",
@@ -876,9 +1039,24 @@ class DomainExtractor:
                 domain_matches[domain] = matches
         
         # Return domain with most matches (even if just 1)
+        # Special handling: Skip Education if no clear work context
         if domain_matches:
             best_domain = max(domain_matches, key=domain_matches.get)
             best_count = domain_matches[best_domain]
+            
+            # For Education domain, ensure it's work-related (not from education section)
+            if best_domain == "Education" and best_count < 2:
+                # Education with only 1 match might be from education section - skip it
+                logger.debug(
+                    f"Education domain with low match count ({best_count}) - skipping to avoid false positive",
+                    extra={"file_name": filename}
+                )
+                domain_matches.pop("Education", None)
+                if domain_matches:
+                    best_domain = max(domain_matches, key=domain_matches.get)
+                    best_count = domain_matches[best_domain]
+                else:
+                    return None
             
             logger.info(
                 f"✅ Minimal threshold detection: {best_domain} (matches: {best_count})",
@@ -896,6 +1074,7 @@ class DomainExtractor:
         Conservative fallback: Only infer domain from clearly industry-specific job titles.
         Per new prompt rules: Never infer domain from job titles alone unless clearly industry-specific.
         This method is very conservative and only used as last resort.
+        Filters out education sections to prevent false Education domain detection.
         
         Args:
             resume_text: The resume text to analyze
@@ -907,7 +1086,12 @@ class DomainExtractor:
         if not resume_text:
             return None
         
-        text_lower = resume_text.lower()
+        # Filter out education sections to prevent false positives
+        filtered_text = self._filter_education_sections(resume_text)
+        if not filtered_text or len(filtered_text.strip()) < 50:
+            filtered_text = resume_text
+        
+        text_lower = filtered_text.lower()
         
         # Only use clearly industry-specific job titles that indicate business domain
         # NOT generic tech roles - those could be in any industry
@@ -930,8 +1114,9 @@ class DomainExtractor:
                 "insurance sales", "insurance consultant"
             ],
             "Education": [
-                "teacher", "professor", "educator", "principal", "superintendent", "curriculum director",
-                "academic dean", "school administrator"
+                # Only include titles that clearly indicate work in education industry (not academic roles)
+                "education director", "education manager", "education consultant", "edtech manager",
+                "lms administrator", "curriculum developer", "instructional designer", "education coordinator"
             ],
             "Government": [
                 "government contractor", "federal employee", "state employee", "municipal employee",
@@ -972,6 +1157,7 @@ class DomainExtractor:
         """
         Final fallback: Infer domain from general patterns, skills, and common industry indicators.
         This is the last resort to avoid returning null.
+        Filters out education sections to prevent false Education domain detection.
         
         Args:
             resume_text: The resume text to analyze
@@ -983,7 +1169,12 @@ class DomainExtractor:
         if not resume_text:
             return None
         
-        text_lower = resume_text.lower()
+        # Filter out education sections to prevent false positives
+        filtered_text = self._filter_education_sections(resume_text)
+        if not filtered_text or len(filtered_text.strip()) < 50:
+            filtered_text = resume_text
+        
+        text_lower = filtered_text.lower()
         
         # Check for very common domain indicators (even if not in main keywords)
         # These are patterns that strongly suggest a domain
@@ -1042,24 +1233,29 @@ class DomainExtractor:
             )
             return "Banking"
         
-        # Education indicators
-        if any(indicator in text_lower for indicator in [
-            "university", "college", "school", "teacher", "professor", "academic", "curriculum"
-        ]):
+        # Education indicators - only if clearly work-related (not from education section)
+        # Use more specific work-related education terms
+        education_work_indicators = [
+            "school district", "educational institution", "edtech company", "education consulting",
+            "educational technology", "lms platform", "e-learning platform", "education services",
+            "worked at university", "worked at college", "education sector", "education industry"
+        ]
+        if any(indicator in text_lower for indicator in education_work_indicators):
             logger.info(
-                f"✅ Domain inferred as Education from general patterns",
+                f"✅ Domain inferred as Education from work-related patterns",
                 extra={"file_name": filename, "domain": "Education"}
             )
             return "Education"
         
         # Final comprehensive check - try all domains one more time with minimal threshold
         # This ensures we catch domains even with very weak indicators
+        # Education keywords are work-specific to avoid false positives
         all_domain_keywords = {
             "Healthcare": ["healthcare", "health care", "hospital", "clinic", "medical", "clinical", "patient", "epic", "cerner"],
             "Information Technology": ["software company", "it company", "tech company", "saas company", "software as a service company", "enterprise software", "software product", "it services company"],
             "Finance": ["finance", "financial", "accounting", "cpa", "audit", "tax", "investment"],
             "Banking": ["bank", "banking", "loan", "mortgage", "credit"],
-            "Education": ["education", "university", "college", "school", "teacher", "professor"],
+            "Education": ["school district", "educational institution", "edtech company", "education consulting", "lms platform", "education services"],
             "Government": ["government", "federal", "state", "public sector"],
             "Retail": ["retail", "store", "merchandising"],
             "Manufacturing": ["manufacturing", "production", "factory"],
@@ -1095,6 +1291,7 @@ class DomainExtractor:
         """
         Comprehensive domain detection - absolute last resort to avoid null.
         Checks for ANY domain indicator with minimal threshold.
+        Filters out education sections to prevent false Education domain detection.
         
         Args:
             resume_text: The resume text to analyze
@@ -1106,15 +1303,21 @@ class DomainExtractor:
         if not resume_text or len(resume_text.strip()) < 50:
             return None
         
-        text_lower = resume_text.lower()
+        # Filter out education sections to prevent false positives
+        filtered_text = self._filter_education_sections(resume_text)
+        if not filtered_text or len(filtered_text.strip()) < 30:
+            filtered_text = resume_text
+        
+        text_lower = filtered_text.lower()
         
         # Comprehensive domain keyword list - single keyword match is enough
+        # Education keywords are work-specific
         domain_checks = {
             "Healthcare": ["healthcare", "health care", "hospital", "clinic", "medical", "clinical", "patient", "epic", "cerner", "ehr", "emr", "physician", "nurse", "healthcare data", "healthcare analytics"],
             "Information Technology": ["software company", "it company", "tech company", "saas company", "software as a service company", "enterprise software", "software product", "it services company", "information technology company"],
             "Finance": ["finance", "financial", "accounting", "cpa", "audit", "tax", "investment", "wealth", "asset management", "capital markets"],
             "Banking": ["bank", "banking", "loan", "mortgage", "credit", "teller", "deposit"],
-            "Education": ["education", "university", "college", "school", "teacher", "professor", "academic", "curriculum"],
+            "Education": ["school district", "educational institution", "edtech company", "education consulting", "lms platform", "education services", "worked at university", "worked at college"],
             "Government": ["government", "federal", "state", "municipal", "public sector", "civil service"],
             "Retail": ["retail", "store", "merchandising", "retailer"],
             "Manufacturing": ["manufacturing", "production", "factory", "industrial"],
@@ -1150,6 +1353,7 @@ class DomainExtractor:
         """
         Most aggressive domain detection - scans for ANY domain indicator.
         This is the final safety net to avoid null results.
+        Filters out education sections to prevent false Education domain detection.
         
         Args:
             resume_text: The resume text to analyze
@@ -1161,15 +1365,21 @@ class DomainExtractor:
         if not resume_text or len(resume_text.strip()) < 30:
             return None
         
-        text_lower = resume_text.lower()
+        # Filter out education sections to prevent false positives
+        filtered_text = self._filter_education_sections(resume_text)
+        if not filtered_text or len(filtered_text.strip()) < 20:
+            filtered_text = resume_text
+        
+        text_lower = filtered_text.lower()
         
         # Ultra-aggressive keyword list - single keyword match is enough
+        # Education keywords are work-specific to avoid false positives
         aggressive_keywords = {
             "Healthcare": ["health", "medical", "hospital", "clinic", "patient", "clinical", "epic", "cerner", "ehr", "emr", "physician", "nurse", "medicare", "medicaid"],
             "Information Technology": ["software company", "it company", "tech company", "saas company", "software as a service company", "enterprise software", "software product", "it services company", "information technology company"],
             "Finance": ["finance", "financial", "accounting", "cpa", "audit", "tax", "investment", "wealth", "asset", "capital"],
             "Banking": ["bank", "banking", "loan", "mortgage", "credit", "teller", "deposit"],
-            "Education": ["education", "university", "college", "school", "teacher", "professor", "academic", "curriculum"],
+            "Education": ["school district", "educational institution", "edtech company", "education consulting", "lms platform", "education services"],
             "Government": ["government", "federal", "state", "municipal", "public sector"],
             "Retail": ["retail", "store", "merchandising", "retailer"],
             "Manufacturing": ["manufacturing", "production", "factory", "industrial"],
