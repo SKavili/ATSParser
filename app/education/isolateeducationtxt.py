@@ -29,7 +29,14 @@ def isolate_education_text(resume_text: str) -> str:
         return ""
     
     # Keywords to search for (case-insensitive)
-    education_keywords = ['education', 'academic']
+    education_keywords = ['Education',
+    'academic',
+    'qualification',
+    'qualifications',
+    'degree',
+    'university',
+    'college',
+    'institute']
     
     # Track which line indices have been extracted (to avoid duplicates)
     extracted_indices: Set[int] = set()
@@ -41,6 +48,27 @@ def isolate_education_text(resume_text: str) -> str:
     for line_idx, line in enumerate(lines):
         line_lower = line.lower()
         
+        # DEBUG 1: Confirm resume scanning
+        logger.debug(
+            "EDU_SCAN_LINE",
+            extra={
+                "line_number": line_idx + 1,
+                "line_preview": line.strip()[:100]
+            }
+        )
+        
+        # DEBUG 2: Detect keyword presence (case-insensitive visibility check)
+        visible_match = any(k.lower() in line_lower for k in education_keywords)
+        if visible_match:
+            logger.warning(
+                "EDU_KEYWORD_VISIBLE",
+                extra={
+                    "line_number": line_idx + 1,
+                    "line_text": line.strip()
+                }
+            )
+        
+        # EXISTING LOGIC (DO NOT MODIFY)
         # Check if this line contains any education keyword
         contains_keyword = any(keyword in line_lower for keyword in education_keywords)
         
@@ -51,9 +79,30 @@ def isolate_education_text(resume_text: str) -> str:
             
             # Check if we've already extracted any of these lines (to avoid duplicates)
             range_indices = set(range(start_idx, end_idx))
+            
+            # DEBUG 3: Overlap skip
             if range_indices & extracted_indices:
+                logger.error(
+                    "EDU_EXTRACTION_SKIPPED_OVERLAP",
+                    extra={
+                        "line_number": line_idx + 1,
+                        "line_text": line.strip(),
+                        "overlap_indices": list(range_indices & extracted_indices)
+                    }
+                )
                 # Some lines already extracted, skip to avoid duplication
                 continue
+            
+            # DEBUG 4: Extraction triggered
+            logger.info(
+                "EDU_EXTRACTION_TRIGGERED",
+                extra={
+                    "line_number": line_idx + 1,
+                    "start_line": start_idx + 1,
+                    "end_line": end_idx,
+                    "extracted_preview": "\n".join(lines[start_idx:end_idx])[:200]
+                }
+            )
             
             # Extract the text chunk (1 before + current + 4 after = 6 lines total)
             chunk_lines = lines[start_idx:end_idx]
@@ -74,6 +123,16 @@ def isolate_education_text(resume_text: str) -> str:
                     "chunk_preview": chunk_text[:100]
                 }
             )
+    
+    # Final summary log
+    logger.critical(
+        "EDU_EXTRACTION_SUMMARY",
+        extra={
+            "total_lines_scanned": total_lines,
+            "sections_extracted": len(extracted_chunks),
+            "original_text_length": len(resume_text)
+        }
+    )
     
     # Concatenate all extracted chunks with double newline separator
     if extracted_chunks:

@@ -8,6 +8,8 @@ from httpx import Timeout
 from app.config import settings
 from app.utils.logging import get_logger
 from app.education.isolateeducationtxt import isolate_education_text
+# from app.education.education_scanner import education_resumetext_scanner
+
 
 logger = get_logger(__name__)
 
@@ -63,6 +65,74 @@ Example valid outputs:
 {"education": "Master's in Software Engineering, State University, 2020; Bachelor's in Computer Science, Tech College, 2018"}
 {"education": null}
 """
+
+
+def education_resumetext_scanner(
+    resume_text: str,
+    lines_before: int = 1,
+    lines_after: int = 4,
+) -> str:
+    """
+    Scan the entire resume text and extract education-related sections
+    based on education keywords (case-insensitive).
+
+    Returns a concatenated text block containing:
+    - `lines_before` lines before the keyword match
+    - The matching line
+    - `lines_after` lines after the keyword match
+    """
+
+    if not resume_text:
+        return ""
+
+    education_keywords = [
+        "education",
+        "educational background",
+        "academic background",
+        "academics",
+        "academic qualification",
+        "qualification",
+        "qualifications",
+        "degree",
+        "degrees",
+        "bachelor",
+        "bachelors",
+        "master",
+        "masters",
+        "phd",
+        "doctorate",
+        "diploma",
+        "certification",
+        "certifications",
+        "university",
+        "college",
+        "institute",
+        "school",
+    ]
+
+    # Compile regex for case-insensitive keyword matching
+    keyword_pattern = re.compile(
+        r"\b(" + "|".join(re.escape(k) for k in education_keywords) + r")\b",
+        re.IGNORECASE,
+    )
+
+    lines = resume_text.splitlines()
+    extracted_blocks: list[str] = []
+    used_line_indexes: set[int] = set()
+
+    for idx, line in enumerate(lines):
+        if keyword_pattern.search(line):
+            start = max(0, idx - lines_before)
+            end = min(len(lines), idx + lines_after + 1)
+
+            for i in range(start, end):
+                if i not in used_line_indexes:
+                    extracted_blocks.append(lines[i])
+                    used_line_indexes.add(i)
+
+            extracted_blocks.append("")  # separator between sections
+
+    return "\n".join(extracted_blocks).strip()
 
 
 class EducationExtractor:
@@ -166,17 +236,17 @@ class EducationExtractor:
         """
         try:
             # Isolate education-relevant text from resume to reduce LLM processing time
-            isolated_text = isolate_education_text(resume_text)
+            # isolated_text = isolate_education_text(resume_text)
             
-            # If no education text was isolated, use a limited portion of original text as fallback
-            if not isolated_text or not isolated_text.strip():
-                logger.warning(
-                    f"No education keywords found, using first 10000 characters as fallback",
-                    extra={"file_name": filename}
-                )
-                text_for_llm = resume_text[:10000]
-            else:
-                text_for_llm = isolated_text
+            # # If no education text was isolated, use a limited portion of original text as fallback
+            # if not isolated_text or not isolated_text.strip():
+            #     logger.warning(
+            #         f"No education keywords found, using first 10000 characters as fallback",
+            #         extra={"file_name": filename}
+            #     )
+            #     text_for_llm = resume_text[:10000]
+            # else:
+            #     text_for_llm = isolated_text
             
             is_connected, available_model = await self._check_ollama_connection()
             if not is_connected:
@@ -193,11 +263,12 @@ class EducationExtractor:
                 )
                 model_to_use = available_model
             
+            scanned_education_text = education_resumetext_scanner(resume_text)
+            
             prompt = f"""{EDUCATION_PROMPT}
 
 Input resume text:
-{text_for_llm}
-
+{scanned_education_text[:20000]}
 Output (JSON only, no other text, no explanations):"""
             
             logger.info(

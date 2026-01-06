@@ -25,27 +25,47 @@ This is a FRESH, ISOLATED, SINGLE-TASK extraction.
 Ignore ALL previous conversations, memory, instructions, or assumptions.
 
 ROLE:
-You are an ATS resume-parsing expert specializing in accurate professional
-work-experience extraction.
-
-CURRENT DATE CONTEXT (CRITICAL):
-• The current date will be provided below in "CURRENT DATE INFORMATION" section.
-• Use that exact date for all date validations and calculations.
-• The current year MUST be treated as valid for experience calculation.
-• Dates equal to the current year are NOT future dates.
-• Only dates AFTER the provided current date should be considered future dates.
+You are an ATS resume-parsing expert specializing in extracting structured experience data.
 
 TASK:
-Extract the candidate’s TOTAL PROFESSIONAL WORK EXPERIENCE in YEARS.
+Extract structured experience data from the resume. DO NOT calculate totals. Only extract raw data.
 
+--------------------------------------------------
+PRIORITY RULE (VERY IMPORTANT):
+
+1) FIRST, check the SUMMARY / PROFILE / ENTIRE RESUME for an EXPLICIT total experience statement
+   Examples:
+   • "12 years of experience"
+   • "8+ years total experience"
+   • "Over 15 years of professional experience"
+   • "10+ years in software development"
+
+   If found:
+   • Extract ONLY the numeric value
+   • Include the "+" if present (e.g., "8+" becomes 8)
+   • Return in summary_experience field
+   • DO NOT calculate from dates
+
+2) ONLY IF no explicit total experience is found:
+   • Extract all employment date ranges from work experience sections
+
+--------------------------------------------------
+CURRENT DATE CONTEXT (CRITICAL):
+• The current date will be provided below in "CURRENT DATE INFORMATION" section.
+• Use that exact date for all date validations.
+• Treat ALL of the following as TODAY'S DATE: Present, Current, Now, Till Date, Till Now, Ongoing, Working, Working till date
+• Dates equal to the current year are VALID.
+• Only dates AFTER the provided current date should be considered future dates.
+
+--------------------------------------------------
 DEFINITION:
-Professional experience includes ONLY:
-• Full-time paid employment
-• Part-time paid employment
+Extract dates ONLY from paid professional work:
+• Full-time employment
+• Part-time employment
 • Contract / freelance professional work
 • Internships ONLY if explicitly stated as employment
 
-DO NOT COUNT:
+DO NOT EXTRACT dates from:
 • Education or academic duration
 • Certifications, courses, or training timelines
 • Academic or personal projects
@@ -58,85 +78,26 @@ DATE FORMAT SUPPORT:
 Accept ALL common resume date formats, including but not limited to:
 
 TEXTUAL MONTH–YEAR:
-• Jan 2022
-• January 2022
-• Jan, 2022
-• January, 2022
-• Jan-2022
-• January-2022
+• Jan 2022, January 2022, Jan, 2022, Jan-2022, January-2022
 
 APOSTROPHE YEAR FORMATS:
-• Jan'22
-• Feb’21
-• Mar'19
-• Dec’05
+• Jan'22, Feb'21, Mar'19, Dec'05
 
 NUMERIC MONTH–YEAR:
-• 01/2022
-• 1/2022
-• 01-2022
-• 2022/01
-• 2022-01
+• 01/2022, 1/2022, 01-2022, 2022/01, 2022-01
 
 FULL DATE:
-• 01 Jan 2022
-• 01/01/2022
-• 2022-01-01
+• 01 Jan 2022, 01/01/2022, 2022-01-01
 
 YEAR-ONLY:
-• 2020
-• 2020 – 2022
-• 2019 to 2023
+• 2020, 2020 – 2022, 2019 to 2023
 (ONLY if employment context is present)
 
---------------------------------------------------
-DATE RANGES:
-• Jan 2020 – Mar 2022
-• January 2020 to February 2023
-• Jan'20 – Feb'23
-• 01/2020 – 03/2022
-• 2020-01 to 2022-03
-• 2018 – Feb 2023
-• [Previous Year] – Present (e.g., if current year is 2026, then "Jan 2025 – Present" is valid)
-• [Current Year] – Present (e.g., if current year is 2026, then "Jan 2026 – Present" is valid)
-• [Any Past Year] – Now
-• [Any Past Year] – Till Date
-
-SEPARATORS:
-• "-", "–", "—", "to", "until", "till"
-
---------------------------------------------------
-PRESENT / CURRENT INDICATORS (MANDATORY INTERPRETATION):
-The following MUST be treated as TODAY’S DATE:
-• Present
-• Current
-• Now
-• Till Date
-• Till Now
-• Ongoing
-• Working
-• Working till date
-
---------------------------------------------------
-TWO-DIGIT YEAR RULE:
-• The current year will be provided in "CURRENT DATE INFORMATION" section below.
-• If (year + 2000) ≤ current year (from provided date) → use 2000s
-• Otherwise → use 1900s
-• Example: If current year is 2026, then '25' → 2025, '26' → 2026, '27' → 2027
-
---------------------------------------------------
-DATE VALIDATION RULES (VERY IMPORTANT):
-
-• Start dates in the CURRENT YEAR are VALID
-• Start dates earlier than today are VALID
-• End date = Present / Now → VALID ongoing employment
-
-FUTURE DATE HANDLING:
-• Ignore ONLY date ranges where:
-  – Start date is AFTER today
-• DO NOT ignore ranges just because:
-  – The year equals the current year
-  – The end date is “Present / Now / Till Date”
+DATE RANGES & SEPARATORS:
+• Jan 2020 – Mar 2022, January 2020 to February 2023
+• Jan'20 – Feb'23, 01/2020 – 03/2022, 2020-01 to 2022-03
+• Separators: "-", "–", "—", "to", "until", "till"
+• [Previous Year] – Present, [Current Year] – Present, [Any Past Year] – Now/Till Date
 
 --------------------------------------------------
 DATE RANGE IDENTIFICATION:
@@ -146,69 +107,68 @@ A date is valid ONLY if it appears:
 • Inside a work / employment section
 
 Ignore dates near:
-• Education keywords
-• Certification keywords
+• Education keywords (education, academic, qualification, degree, university, college, graduation)
+• Certification keywords (certification, certificate, course, training)
 • Projects without employment context
 
 --------------------------------------------------
-CALCULATION RULES:
-
-1) EXPLICIT EXPERIENCE (HIGHEST PRIORITY)
-If resume clearly states total experience
-(e.g., “5 years experience”, “8+ years total experience”):
-• Use numeric value only
-• Remove any "+" sign
-
-If multiple explicit values exist:
-• Prefer summary/profile section
-• Otherwise choose most specific
-
-2) DATE-BASED EXPERIENCE
-If explicit experience NOT present:
-• Identify all valid employment date ranges
-• Convert each range to months
-• Merge overlapping periods
-• Exclude gaps
-• Sum total months
-• Convert to years (months ÷ 12)
-• Round DOWN to whole years
-
-If explicit value contradicts dates by >3 years:
-• Prefer date-based calculation
+TWO-DIGIT YEAR RULE:
+• The current year will be provided in "CURRENT DATE INFORMATION" section below.
+• If (year + 2000) ≤ current year (from provided date) → use 2000s
+• Otherwise → use 1900s
+• Example: If current year is 2026, then '25' → 2025, '26' → 2026, '27' → 2027
 
 --------------------------------------------------
-EDGE CASES:
-• Start + End OR Start + Present required
-• Single date without Present → return null
-• Start after end → return null
-• Less than 3 months total → return null
-• 3–11 months → return "1 year"
-• Experience > 50 years → return null
+DATE VALIDATION RULES:
+• Start dates in the CURRENT YEAR are VALID
+• Start dates earlier than today are VALID
+• End date = Present / Now / Till Date → VALID ongoing employment (use "Present" as end date)
+• Ignore ONLY date ranges where start date is AFTER the provided current date
+• DO NOT ignore ranges just because the year equals the current year or end date is "Present"
+
+--------------------------------------------------
+EXTRACTION RULES:
+• Extract date ranges in their original format
+• For "Present", "Now", "Till Date" → use "Present" as the end date string
+• Extract each employment period as a separate date range
+• Include company name or job title context if available
+• DO NOT merge overlapping periods (Python will handle this)
+• DO NOT calculate months or years (Python will handle this)
+• DO NOT sum or round (Python will handle this)
 
 --------------------------------------------------
 ANTI-HALLUCINATION RULES:
-• NEVER guess
-• NEVER infer
-• NEVER assume missing dates
-• Return null if confidence is low
+• NEVER guess dates
+• NEVER infer missing dates
+• NEVER assume dates
+• If date range is incomplete (missing start or end), exclude it
+• Return null for fields where data is not found
 
 --------------------------------------------------
 OUTPUT REQUIREMENTS:
 • Output ONLY valid JSON
-• Whole numbers only
-• Always include "years"
-• No explanations, no markdown
+• No explanations, no markdown, no comments
+• Extract dates in their original format (as strings)
 
 JSON SCHEMA:
 {
-  "experience": "string | null"
+  "summary_experience": number | null,
+  "date_ranges": [
+    {
+      "start": "string",
+      "end": "string",
+      "company": "string | null",
+      "title": "string | null"
+    }
+  ]
 }
 
 Example output format:
-{"experience": "<number> years"}
-{"experience": null}
+{"summary_experience": 12, "date_ranges": []}
+{"summary_experience": null, "date_ranges": [{"start": "Jan 2020", "end": "Mar 2022", "company": "ABC Corp", "title": "Software Engineer"}, {"start": "Apr 2022", "end": "Present", "company": "XYZ Inc", "title": null}]}
+{"summary_experience": null, "date_ranges": []}
 
-DO NOT use these exact values. Extract the actual experience from the resume.
+DO NOT use these exact values. Extract the actual data from the resume.
 
 """
 
@@ -220,6 +180,9 @@ class ExperienceExtractor:
     def __init__(self):
         self.ollama_host = settings.ollama_host
         self.model = "llama3.1"
+        # Simple in-memory cache: {text_hash: (experience, timestamp)}
+        self._cache = {}
+        self._cache_ttl = 86400  # 24 hours in seconds
     
     def _clean_resume_text(self, resume_text: str) -> str:
         """
@@ -982,9 +945,8 @@ class ExperienceExtractor:
             r'(\d+\+?\s*years?)\s+in\s+',
         ]
         
-        # Search in first 30000 characters (usually contains summary/profile sections)
-        max_chars_regex = 30000
-        search_text = cleaned_text[:min(len(cleaned_text), max_chars_regex)]
+        # Search in first 15000 characters (usually contains summary/profile sections)
+        search_text = cleaned_text[:15000]
         summary_text = cleaned_text[:5000]  # First 5000 chars typically contain summary
         logger.debug(f"Searching in first {len(search_text)} characters")
         logger.debug(f"Summary section (first 500 chars): {summary_text[:500]}")
@@ -1142,8 +1104,7 @@ class ExperienceExtractor:
         else:
             logger.debug("Date-based calculation also returned None - checking if dates were found")
             # Try to extract dates to see if any were found (for debugging)
-            max_chars_debug = 20000
-            all_dates = self._extract_dates_from_text(cleaned_text[:min(len(cleaned_text), max_chars_debug)])  # Check first 20k chars
+            all_dates = self._extract_dates_from_text(cleaned_text[:10000])  # Check first 10k chars
             if all_dates:
                 logger.debug(f"Found {len(all_dates)} dates in resume, but calculation returned None. This might indicate all dates were filtered as education dates.")
                 # Log a sample of dates found
@@ -1215,7 +1176,7 @@ class ExperienceExtractor:
                 "cleaned_preview": cleaned_text[:500]
             }
         )
-        return {"experience": None}
+        return {"summary_experience": None, "date_ranges": []}
     
     def _check_explicit_experience(self, resume_text: str) -> Optional[str]:
         """
@@ -1228,9 +1189,8 @@ class ExperienceExtractor:
         if not resume_text:
             return None
         
-        # Search in first 20000 characters (summary/profile sections)
-        max_chars_explicit = 20000
-        search_text = resume_text[:min(len(resume_text), max_chars_explicit)].lower()
+        # Search in first 10000 characters (summary/profile sections)
+        search_text = resume_text[:10000].lower()
         
         # Patterns for explicit experience statements
         explicit_patterns = [
@@ -1269,12 +1229,14 @@ class ExperienceExtractor:
         Extract years of experience from resume text using production-grade pipeline.
         
         Pipeline:
-        1. Clean resume text (remove education, certifications, projects)
-        2. Extract work sections only
-        3. Check for explicit total experience statement
-        4. If not found, calculate from date ranges
-        5. Send cleaned work text to LLM for validation
-        6. Return result
+        1. Check cache (fast path)
+        2. Clean resume text (remove education, certifications, projects)
+        3. Extract work sections only
+        4. Check for explicit total experience statement (fast path - skip LLM if found)
+        5. If not found, calculate from date ranges
+        6. Send cleaned work text to LLM for validation/refinement
+        7. Use LLM date ranges as fallback if Python regex found nothing
+        8. Return result with confidence score
         
         Args:
             resume_text: The text content of the resume
@@ -1289,6 +1251,18 @@ class ExperienceExtractor:
         
         logger.info(f"🔍 Starting experience extraction for {filename}")
         
+        # STEP 0: Check cache (fast path)
+        import hashlib
+        cache_key = hashlib.md5(resume_text[:5000].encode()).hexdigest()
+        if cache_key in self._cache:
+            cached_result, cached_time = self._cache[cache_key]
+            if (datetime.now().timestamp() - cached_time) < self._cache_ttl:
+                logger.info(f"✅ EXPERIENCE EXTRACTED from cache for {filename}: {cached_result}")
+                return cached_result
+            else:
+                # Expired cache entry
+                del self._cache[cache_key]
+        
         # STEP 1: Clean resume text
         cleaned_text = self._clean_resume_text(resume_text)
         
@@ -1297,14 +1271,15 @@ class ExperienceExtractor:
         
         # If no work sections found, use cleaned text
         if not work_text.strip():
-            max_chars_fallback = 30000
-            work_text = cleaned_text[:min(len(cleaned_text), max_chars_fallback)]  # Fallback to cleaned text
+            work_text = cleaned_text[:15000]  # Fallback to cleaned text
             logger.debug("No work sections found, using cleaned text")
         
-        # STEP 3: Check for explicit total experience statement
+        # STEP 3: Check for explicit total experience statement (FAST PATH)
         explicit_experience = self._check_explicit_experience(resume_text)
         if explicit_experience:
-            logger.info(f"✅ EXPERIENCE EXTRACTED (explicit) from {filename}: {explicit_experience}")
+            logger.info(f"✅ EXPERIENCE EXTRACTED (explicit, fast path) from {filename}: {explicit_experience}")
+            # Cache the result
+            self._cache[cache_key] = (explicit_experience, datetime.now().timestamp())
             return explicit_experience
         
         # STEP 4: Calculate experience from date ranges
@@ -1340,9 +1315,8 @@ class ExperienceExtractor:
                 )
                 model_to_use = available_model
             
-            # Send cleaned work text to LLM (dynamic limit up to 30000 chars)
-            max_chars_for_llm = 30000
-            text_to_send = work_text[:min(len(work_text), max_chars_for_llm)]
+            # Send only cleaned work text to LLM (limit to 20000 chars)
+            text_to_send = work_text[:20000]
             
             # Get current date information for prompt
             current_date = datetime.now()
@@ -1457,57 +1431,90 @@ Output (JSON only, no other text, no explanations):"""
                 raw_output = str(result)
             
             parsed_data = self._extract_json(raw_output)
-            llm_experience = parsed_data.get("experience")
             
-            if llm_experience:
-                llm_experience = str(llm_experience).strip()
-                if not llm_experience or llm_experience.lower() in ["null", "none", ""]:
-                    llm_experience = None
+            # STEP 6: Process structured LLM output
+            # New architecture: LLM extracts data, Python calculates
+            experience = None
+            summary_experience = None
+            date_ranges = []
+            source = "unknown"
+            llm_summary_years = None
+            llm_date_based_experience = None
             
-            # STEP 6: Validate LLM output against date-based calculation
-            # If LLM returned null or value differs significantly from date-based, use date-based
-            if llm_experience:
-                # Extract number from LLM result
-                llm_num_match = re.search(r'(\d+)', llm_experience)
-                if llm_num_match:
-                    llm_years = int(llm_num_match.group(1))
-                    
-                    # If we have date-based calculation, compare
-                    if date_based_experience:
-                        date_num_match = re.search(r'(\d+)', date_based_experience)
-                        if date_num_match:
-                            date_years = int(date_num_match.group(1))
-                            # If difference is more than 3 years, prefer date-based (more reliable)
-                            if abs(llm_years - date_years) > 3:
-                                logger.warning(
-                                    f"LLM result ({llm_years} years) differs significantly from date-based ({date_years} years). Using date-based.",
-                                    extra={"llm_experience": llm_experience, "date_experience": date_based_experience}
-                                )
-                                experience = date_based_experience
-                            else:
-                                # LLM result is reasonable, use it
-                                experience = llm_experience
-                        else:
-                            experience = llm_experience
+            # Check for explicit summary experience first
+            summary_experience = parsed_data.get("summary_experience")
+            if summary_experience is not None and summary_experience != "":
+                try:
+                    # Extract numeric value (handle "+" if present in original)
+                    if isinstance(summary_experience, (int, float)):
+                        years = int(summary_experience)
+                    elif isinstance(summary_experience, str):
+                        # Remove "+" and extract number
+                        summary_experience_clean = summary_experience.replace("+", "").strip()
+                        years = int(float(summary_experience_clean))
                     else:
-                        # No date-based to compare, use LLM result
-                        experience = llm_experience
+                        years = int(summary_experience)
+                    
+                    if 1 <= years <= 50:
+                        experience = f"{years} years"
+                        llm_summary_years = years
+                        source = "explicit_llm"
+                        logger.info(
+                            f"✅ LLM extracted explicit experience: {experience}",
+                            extra={"file_name": filename, "source": "llm_summary"}
+                        )
+                except (ValueError, TypeError) as e:
+                    logger.warning(f"Invalid summary_experience value: {summary_experience}, error: {e}")
+            
+            # If no explicit experience, use date ranges
+            if not experience:
+                date_ranges = parsed_data.get("date_ranges", [])
+                if date_ranges and isinstance(date_ranges, list) and len(date_ranges) > 0:
+                    # NEW: Use LLM date ranges if Python regex found nothing
+                    if not date_based_experience:
+                        # Python regex failed, try LLM dates as fallback
+                        logger.info(
+                            f"Python regex found no dates, trying LLM date ranges ({len(date_ranges)} ranges)",
+                            extra={"file_name": filename, "date_ranges_count": len(date_ranges)}
+                        )
+                        llm_date_based_experience = self._calculate_experience_from_llm_dates(date_ranges)
+                        if llm_date_based_experience:
+                            experience = llm_date_based_experience
+                            source = "date_based_llm"
+                            logger.info(
+                                f"✅ EXPERIENCE EXTRACTED from LLM date ranges: {experience}",
+                                extra={"file_name": filename, "source": "llm_dates"}
+                            )
+                    else:
+                        # Python found dates, prefer Python (more reliable)
+                        experience = date_based_experience
+                        source = "date_based_python"
+                        logger.info(
+                            f"Using Python date-based calculation (LLM found {len(date_ranges)} ranges as validation)",
+                            extra={"file_name": filename, "date_ranges_count": len(date_ranges)}
+                        )
                 else:
-                    # LLM returned invalid format, use date-based if available
-                    experience = date_based_experience
-            else:
-                # LLM returned null, use date-based if available
+                    # No date ranges from LLM, use Python's date-based calculation if available
+                    if date_based_experience:
+                        experience = date_based_experience
+                        source = "date_based_python"
+            
+            # Final fallback: if LLM didn't provide useful data, use Python calculation
+            if not experience:
                 logger.warning(
-                    f"LLM returned null experience for {filename}, using date-based calculation",
-                    extra={"file_name": filename}
+                    f"LLM did not provide usable experience data for {filename}, using Python date-based calculation",
+                    extra={"file_name": filename, "parsed_data": parsed_data}
                 )
                 experience = date_based_experience
+                if experience:
+                    source = "date_based_python"
             
             # Final fallback: try regex extraction
             if not experience:
                 logger.debug(f"Trying regex fallback for {filename}")
                 experience = self._extract_experience_fallback(work_text)
                 if experience:
+                    source = "fallback"
                     logger.info(
                         f"✅ EXPERIENCE EXTRACTED via fallback from {filename}",
                         extra={
@@ -1517,15 +1524,33 @@ Output (JSON only, no other text, no explanations):"""
                         }
                     )
             
+            # Calculate confidence score
+            confidence = self._calculate_confidence_score(
+                experience=experience,
+                source=source,
+                explicit_found=(llm_summary_years is not None),
+                date_ranges_count=len(date_ranges) if date_ranges else 0,
+                llm_summary=llm_summary_years,
+                python_dates=date_based_experience,
+                llm_dates=llm_date_based_experience
+            )
+            
+            # Log with confidence score
             logger.info(
                 f"✅ EXPERIENCE EXTRACTED from {filename}",
                 extra={
                     "file_name": filename,
                     "experience": experience,
                     "status": "success" if experience else "not_found",
-                    "method": "llm" if llm_experience else ("date_based" if date_based_experience else "fallback")
+                    "method": source,
+                    "confidence": confidence,
+                    "date_ranges_count": len(date_ranges) if date_ranges else 0
                 }
             )
+            
+            # Cache the result
+            if experience:
+                self._cache[cache_key] = (experience, datetime.now().timestamp())
             
             return experience
             
