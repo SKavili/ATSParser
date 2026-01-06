@@ -982,8 +982,9 @@ class ExperienceExtractor:
             r'(\d+\+?\s*years?)\s+in\s+',
         ]
         
-        # Search in first 15000 characters (usually contains summary/profile sections)
-        search_text = cleaned_text[:15000]
+        # Search in first 30000 characters (usually contains summary/profile sections)
+        max_chars_regex = 30000
+        search_text = cleaned_text[:min(len(cleaned_text), max_chars_regex)]
         summary_text = cleaned_text[:5000]  # First 5000 chars typically contain summary
         logger.debug(f"Searching in first {len(search_text)} characters")
         logger.debug(f"Summary section (first 500 chars): {summary_text[:500]}")
@@ -1141,7 +1142,8 @@ class ExperienceExtractor:
         else:
             logger.debug("Date-based calculation also returned None - checking if dates were found")
             # Try to extract dates to see if any were found (for debugging)
-            all_dates = self._extract_dates_from_text(cleaned_text[:10000])  # Check first 10k chars
+            max_chars_debug = 20000
+            all_dates = self._extract_dates_from_text(cleaned_text[:min(len(cleaned_text), max_chars_debug)])  # Check first 20k chars
             if all_dates:
                 logger.debug(f"Found {len(all_dates)} dates in resume, but calculation returned None. This might indicate all dates were filtered as education dates.")
                 # Log a sample of dates found
@@ -1226,8 +1228,9 @@ class ExperienceExtractor:
         if not resume_text:
             return None
         
-        # Search in first 10000 characters (summary/profile sections)
-        search_text = resume_text[:10000].lower()
+        # Search in first 20000 characters (summary/profile sections)
+        max_chars_explicit = 20000
+        search_text = resume_text[:min(len(resume_text), max_chars_explicit)].lower()
         
         # Patterns for explicit experience statements
         explicit_patterns = [
@@ -1294,7 +1297,8 @@ class ExperienceExtractor:
         
         # If no work sections found, use cleaned text
         if not work_text.strip():
-            work_text = cleaned_text[:15000]  # Fallback to cleaned text
+            max_chars_fallback = 30000
+            work_text = cleaned_text[:min(len(cleaned_text), max_chars_fallback)]  # Fallback to cleaned text
             logger.debug("No work sections found, using cleaned text")
         
         # STEP 3: Check for explicit total experience statement
@@ -1336,8 +1340,9 @@ class ExperienceExtractor:
                 )
                 model_to_use = available_model
             
-            # Send only cleaned work text to LLM (limit to 20000 chars)
-            text_to_send = work_text[:20000]
+            # Send cleaned work text to LLM (dynamic limit up to 30000 chars)
+            max_chars_for_llm = 30000
+            text_to_send = work_text[:min(len(work_text), max_chars_for_llm)]
             
             # Get current date information for prompt
             current_date = datetime.now()
