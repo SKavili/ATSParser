@@ -38,7 +38,8 @@ SELECTION RULES:
 3. Look for email addresses near phone numbers or addresses.
 4. Extract all valid email addresses found in the resume.
 5. The FIRST VALID PRIMARY email must be selected based on domain priority rules.
-
+6.If DOMAIN PRIORITY mails are present, then select the first one as primary email.
+7.If DOMAIN PRIORITY mail found then stop the extraction process and return the primary email.
 DOMAIN PRIORITY RULES:
 First Preference (Original / Personal Emails):
 gmail.com,
