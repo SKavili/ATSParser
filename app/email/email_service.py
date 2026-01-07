@@ -62,46 +62,103 @@ class EmailService:
                 }
             )
             
-            # First extraction attempt
-            email = await self.email_extractor.extract_email(resume_text, filename)
+            # Extract ALL emails from resume FIRST (this is the primary method now)
+            # This is the CRITICAL method - it finds ALL emails, not just one
+            all_emails_str = await self.email_extractor.extract_all_emails(resume_text, filename)
             
-            # If first attempt returned None and retry is enabled, try again with more aggressive extraction
-            if not email and retry_on_null and resume_text:
+            # Log what we found
+            if all_emails_str and all_emails_str.strip():
+                email_count = len(all_emails_str.split(','))
                 logger.info(
-                    f"🔄 First email extraction returned None, retrying with full text scan for resume ID {resume_id}",
-                    extra={"resume_id": resume_id, "file_name": filename}
+                    f"✅ extract_all_emails found {email_count} email(s) for resume ID {resume_id}",
+                    extra={
+                        "resume_id": resume_id,
+                        "file_name": filename,
+                        "email_count": email_count,
+                        "all_emails": all_emails_str
+                    }
                 )
-                # On retry, scan the FULL text (not just header) more aggressively
-                # The extractor already scans full text, but retry ensures we catch edge cases
-                # Try with aggressive mode if available
-                try:
-                    email = await self.email_extractor.extract_email(resume_text, filename, aggressive=True)
-                except TypeError:
-                    # If aggressive parameter not supported, use normal call
-                    email = await self.email_extractor.extract_email(resume_text, filename)
-                
-                if email:
+            
+            # If all_emails_str is empty, try again with retry logic
+            if (not all_emails_str or not all_emails_str.strip()) and retry_on_null and resume_text:
+                logger.warning(
+                    f"🔄 extract_all_emails returned empty for resume ID {resume_id}, retrying...",
+                    extra={"resume_id": resume_id, "file_name": filename, "text_length": len(resume_text)}
+                )
+                # Re-extract all emails on retry
+                all_emails_str = await self.email_extractor.extract_all_emails(resume_text, filename)
+                if all_emails_str and all_emails_str.strip():
+                    email_count = len(all_emails_str.split(','))
                     logger.info(
-                        f"✅ RETRY SUCCESS: Found email on retry for resume ID {resume_id}: {email}",
-                        extra={"resume_id": resume_id, "email": email, "file_name": filename}
+                        f"✅ RETRY SUCCESS: extract_all_emails found {email_count} email(s) for resume ID {resume_id}",
+                        extra={
+                            "resume_id": resume_id,
+                            "file_name": filename,
+                            "email_count": email_count,
+                            "all_emails": all_emails_str
+                        }
                     )
             
+            # Also get the best/primary email for backward compatibility and logging ONLY
+            # This is NOT used for storage - we ALWAYS use all_emails_str if available
+            email = None
+            if not all_emails_str or not all_emails_str.strip():
+                # Only call extract_email if extract_all_emails found nothing
+                email = await self.email_extractor.extract_email(resume_text, filename)
+                # If extract_email found something but extract_all_emails didn't, 
+                # use the single email found as a fallback
+                if email and (not all_emails_str or not all_emails_str.strip()):
+                    logger.warning(
+                        f"⚠️ extract_email found '{email}' but extract_all_emails found nothing for {filename}",
+                        extra={"resume_id": resume_id, "file_name": filename, "found_email": email}
+                    )
+                    # Use the single email found as a fallback
+                    all_emails_str = email
+            
+            # CRITICAL: ALWAYS use all_emails_str if available - this contains ALL emails found
+            # This is the PRIMARY source - we do NOT use the single email from extract_email()
+            # if all_emails_str has multiple emails
+            if all_emails_str and all_emails_str.strip():
+                email_to_store = all_emails_str.strip()
+                # Truncate if too long for VARCHAR(255) - but log a warning
+                if len(email_to_store) > 255:
+                    logger.warning(
+                        f"⚠️ Email string too long ({len(email_to_store)} chars), truncating to 255 for resume ID {resume_id}",
+                        extra={"resume_id": resume_id, "original_length": len(email_to_store), "truncated": email_to_store[:255]}
+                    )
+                    email_to_store = email_to_store[:255]
+            elif email:
+                # Fallback: Only use single email if all_emails_str is empty
+                email_to_store = email
+                logger.warning(
+                    f"⚠️ Using single email fallback for resume ID {resume_id} (extract_all_emails found nothing)",
+                    extra={"resume_id": resume_id, "email": email}
+                )
+            else:
+                email_to_store = None
+            
             logger.info(
-                f"📊 EMAIL EXTRACTION RESULT for resume ID {resume_id}: {email}",
-                extra={"resume_id": resume_id, "email": email, "file_name": filename}
+                f"📊 EMAIL EXTRACTION RESULT for resume ID {resume_id}",
+                extra={
+                    "resume_id": resume_id, 
+                    "primary_email": email,
+                    "all_emails": all_emails_str,
+                    "email_to_store": email_to_store,
+                    "file_name": filename
+                }
             )
             
-            if email:
+            if email_to_store:
                 logger.info(
-                    f"💾 UPDATING DATABASE: Resume ID {resume_id} with email: '{email}'",
-                    extra={"resume_id": resume_id, "email": email, "file_name": filename}
+                    f"💾 UPDATING DATABASE: Resume ID {resume_id} with all emails: '{email_to_store}'",
+                    extra={"resume_id": resume_id, "email": email_to_store, "file_name": filename}
                 )
                 
-                updated_resume = await self.resume_repo.update(resume_id, {"email": email})
+                updated_resume = await self.resume_repo.update(resume_id, {"email": email_to_store})
                 if updated_resume:
                     logger.info(
-                        f"✅ DATABASE UPDATED: Successfully saved email for resume ID {resume_id}",
-                        extra={"resume_id": resume_id, "email": email}
+                        f"✅ DATABASE UPDATED: Successfully saved all emails for resume ID {resume_id}",
+                        extra={"resume_id": resume_id, "email": email_to_store}
                     )
                 else:
                     logger.error(f"❌ DATABASE UPDATE FAILED: Resume ID {resume_id} - record not found")
