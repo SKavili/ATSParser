@@ -19,6 +19,7 @@ wheels/
 *.egg-info/
 .installed.cfg
 *.egg
+2upload_resume_test.sh
 
 # Virtual Environment
 venv/
