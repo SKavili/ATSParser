@@ -25,132 +25,96 @@ This is a FRESH, ISOLATED, SINGLE-TASK extraction.
 Ignore ALL previous conversations, memory, instructions, or assumptions.
 
 ROLE:
-You are an ATS resume-parsing expert specializing in extracting structured experience data.
+You are an ATS resume-parsing expert.
 
 TASK:
-Extract structured experience data from the resume. DO NOT calculate totals. Only extract raw data.
+Extract ONLY raw experience data from the resume.
+DO NOT calculate total experience.
+DO NOT infer missing data.
 
 --------------------------------------------------
-PRIORITY RULE (VERY IMPORTANT):
+STEP 1: EXPLICIT EXPERIENCE CHECK (HIGHEST PRIORITY)
 
-1) FIRST, check the SUMMARY / PROFILE / ENTIRE RESUME for an EXPLICIT total experience statement
-   Examples:
-   • "12 years of experience"
-   • "8+ years total experience"
-   • "Over 15 years of professional experience"
-   • "10+ years in software development"
+First, check the SUMMARY / PROFILE / ENTIRE RESUME
+for an explicit total experience statement.
 
-   If found:
-   • Extract ONLY the numeric value
-   • Include the "+" if present (e.g., "8+" becomes 8)
-   • Return in summary_experience field
-   • DO NOT calculate from dates
+Examples:
+• "5 years of experience"
+• "5+ years total experience"
+• "Over 17 years of professional experience"
+• "3 and half years of experience" → Treat as 3 years (integer only, no decimals)
 
-2) ONLY IF no explicit total experience is found:
-   • Extract all employment date ranges from work experience sections
-
---------------------------------------------------
-CURRENT DATE CONTEXT (CRITICAL):
-• The current date will be provided below in "CURRENT DATE INFORMATION" section.
-• Use that exact date for all date validations.
-• Treat ALL of the following as TODAY'S DATE: Present, Current, Now, Till Date, Till Now, Ongoing, Working, Working till date
-• Dates equal to the current year are VALID.
-• Only dates AFTER the provided current date should be considered future dates.
+If found:
+• Extract ONLY the NUMBER OF YEARS as an INTEGER (no decimals)
+• Remove "+", "years", or text
+• Example: "5+ years" → 5, "5.5 years" → 5, "5 and half years" → 5
+• Return it in "summary_experience"
+• DO NOT calculate from dates
 
 --------------------------------------------------
-DEFINITION:
-Extract dates ONLY from paid professional work:
-• Full-time employment
-• Part-time employment
-• Contract / freelance professional work
-• Internships ONLY if explicitly stated as employment
+STEP 2: DATE RANGE EXTRACTION (ONLY IF STEP 1 FAILS)
 
-DO NOT EXTRACT dates from:
-• Education or academic duration
-• Certifications, courses, or training timelines
-• Academic or personal projects
-• Tool or standard versions (e.g., ISO 9001:2015, Python 3.10)
+Extract employment date ranges ONLY from PAID WORK EXPERIENCE.
+
+Include:
+• Full-time
+• Part-time
+• Contract
+• Freelance
+• Internships ONLY if clearly employment
+
+Exclude:
+• Education
+• Courses
+• Certifications
+• Academic projects
+• Tool versions (e.g., Python 3.10)
 • Company founding years
-• Research or teaching unless explicitly stated as employment
 
 --------------------------------------------------
-DATE FORMAT SUPPORT:
-Accept ALL common resume date formats, including but not limited to:
+DATE HANDLING RULES:
 
-TEXTUAL MONTH–YEAR:
-• Jan 2022, January 2022, Jan, 2022, Jan-2022, January-2022
+Treat ALL of these as "Present":
+Present, Current, Now, Till Date, Till Now, Still Date, Still, Ongoing, Working,
+Working till Date, To Date, To Now, Until Present, Until Now, Until Date,
+Up to Present, Up to Now, Up to Date, As of Now, As of Present, As of Date,
+As of Today, Today, Continuing, Continue, Active, Currently, Currently Working,
+Still Working, Still Employed, Still Active, Currently Employed, Currently Active
 
-APOSTROPHE YEAR FORMATS:
-• Jan'22, Feb'21, Mar'19, Dec'05
-
-NUMERIC MONTH–YEAR:
-• 01/2022, 1/2022, 01-2022, 2022/01, 2022-01
-
-FULL DATE:
-• 01 Jan 2022, 01/01/2022, 2022-01-01
-
-YEAR-ONLY:
-• 2020, 2020 – 2022, 2019 to 2023
-(ONLY if employment context is present)
-
-DATE RANGES & SEPARATORS:
-• Jan 2020 – Mar 2022, January 2020 to February 2023
-• Jan'20 – Feb'23, 01/2020 – 03/2022, 2020-01 to 2022-03
-• Separators: "-", "–", "—", "to", "until", "till"
-• [Previous Year] – Present, [Current Year] – Present, [Any Past Year] – Now/Till Date
+Accept ALL formats:
+• Jan 2020 – Mar 2022
+• Jan'22 – Aug'23
+• 01/2020 – 08/2022
+• 2021 – Present
+• 2020 to 2023
 
 --------------------------------------------------
-DATE RANGE IDENTIFICATION:
-A date is valid ONLY if it appears:
-• Near a company name, OR
-• Near a job title, OR
-• Inside a work / employment section
+CURRENT DATE CONTEXT:
 
-Ignore dates near:
-• Education keywords (education, academic, qualification, degree, university, college, graduation)
-• Certification keywords (certification, certificate, course, training)
-• Projects without employment context
+• The current date will be provided below
+• Dates in the CURRENT YEAR are VALID
+• Only dates AFTER the provided current date are FUTURE dates
+• Use the provided current year for two-digit year validation
 
 --------------------------------------------------
 TWO-DIGIT YEAR RULE:
-• The current year will be provided in "CURRENT DATE INFORMATION" section below.
-• If (year + 2000) ≤ current year (from provided date) → use 2000s
+
+• If (2000 + YY) ≤ CURRENT YEAR → use 2000s
 • Otherwise → use 1900s
-• Example: If current year is 2026, then '25' → 2025, '26' → 2026, '27' → 2027
+• Example: If CURRENT YEAR = 2026, then '25' → 2025, '26' → 2026
 
 --------------------------------------------------
-DATE VALIDATION RULES:
-• Start dates in the CURRENT YEAR are VALID
-• Start dates earlier than today are VALID
-• End date = Present / Now / Till Date → VALID ongoing employment (use "Present" as end date)
-• Ignore ONLY date ranges where start date is AFTER the provided current date
-• DO NOT ignore ranges just because the year equals the current year or end date is "Present"
+ANTI-HALLUCINATION RULES (STRICT):
 
---------------------------------------------------
-EXTRACTION RULES:
-• Extract date ranges in their original format
-• For "Present", "Now", "Till Date" → use "Present" as the end date string
-• Extract each employment period as a separate date range
-• Include company name or job title context if available
-• DO NOT merge overlapping periods (Python will handle this)
-• DO NOT calculate months or years (Python will handle this)
-• DO NOT sum or round (Python will handle this)
-
---------------------------------------------------
-ANTI-HALLUCINATION RULES:
 • NEVER guess dates
-• NEVER infer missing dates
-• NEVER assume dates
-• If date range is incomplete (missing start or end), exclude it
-• Return null for fields where data is not found
+• NEVER calculate totals
+• NEVER infer experience
+• If start date is missing → exclude
+• If no valid data → return null
 
 --------------------------------------------------
-OUTPUT REQUIREMENTS:
-• Output ONLY valid JSON
-• No explanations, no markdown, no comments
-• Extract dates in their original format (as strings)
+OUTPUT FORMAT (JSON ONLY):
 
-JSON SCHEMA:
 {
   "summary_experience": number | null,
   "date_ranges": [
@@ -163,12 +127,10 @@ JSON SCHEMA:
   ]
 }
 
-Example output format:
-{"summary_experience": 12, "date_ranges": []}
-{"summary_experience": null, "date_ranges": [{"start": "Jan 2020", "end": "Mar 2022", "company": "ABC Corp", "title": "Software Engineer"}, {"start": "Apr 2022", "end": "Present", "company": "XYZ Inc", "title": null}]}
+--------------------------------------------------
+If no experience data exists:
+Return:
 {"summary_experience": null, "date_ranges": []}
-
-DO NOT use these exact values. Extract the actual data from the resume.
 
 """
 
@@ -433,7 +395,7 @@ class ExperienceExtractor:
                 start_date = datetime(start_year, month_names[start_month_str], 1)
                 
                 # Parse end year
-                if end_month_str in ['present', 'current']:
+                if self._is_ongoing_keyword(end_month_str):
                     end_date = current_date
                 elif end_month_str in month_names:
                     if not end_year_str:
@@ -453,6 +415,11 @@ class ExperienceExtractor:
                 context_start = max(0, match.start() - 150)
                 context_end = min(len(text), match.end() + 150)
                 context = text[context_start:context_end]
+                
+                # Filter out education dates first
+                if self._is_education_date(context):
+                    logger.debug(f"Skipping education date range: {start_date.strftime('%Y-%m')} to {end_date.strftime('%Y-%m')}")
+                    continue
                 
                 # Only include if context suggests work (expanded keywords)
                 work_keywords = [
@@ -482,7 +449,7 @@ class ExperienceExtractor:
                 try:
                     start_date = datetime(start_year, month_names[start_month_str], 1)
                     
-                    if end_month_str in ['present', 'current'] or not end_year_str:
+                    if self._is_ongoing_keyword(end_month_str) or not end_year_str:
                         end_date = current_date
                     elif end_month_str in month_names:
                         end_date = datetime(int(end_year_str), month_names[end_month_str], 1)
@@ -496,6 +463,11 @@ class ExperienceExtractor:
                     context_start = max(0, match.start() - 150)
                     context_end = min(len(text), match.end() + 150)
                     context = text[context_start:context_end]
+                    
+                    # Filter out education dates first
+                    if self._is_education_date(context):
+                        logger.debug(f"Skipping education date range: {start_date.strftime('%Y-%m')} to {end_date.strftime('%Y-%m')}")
+                        continue
                     
                     # Only include if context suggests work (expanded keywords)
                     work_keywords = [
@@ -519,7 +491,7 @@ class ExperienceExtractor:
             try:
                 start_date = datetime(start_year, 1, 1)
                 
-                if end_str in ['present', 'current']:
+                if self._is_ongoing_keyword(end_str):
                     end_date = current_date
                 else:
                     end_year = int(end_str)
@@ -531,6 +503,11 @@ class ExperienceExtractor:
                 context_start = max(0, match.start() - 150)
                 context_end = min(len(text), match.end() + 150)
                 context = text[context_start:context_end]
+                
+                # Filter out education dates first
+                if self._is_education_date(context):
+                    logger.debug(f"Skipping education date range: {start_date.strftime('%Y-%m')} to {end_date.strftime('%Y-%m')}")
+                    continue
                 
                 # Only include if context suggests work (expanded keywords)
                 work_keywords = [
@@ -559,7 +536,7 @@ class ExperienceExtractor:
             try:
                 start_date = datetime(start_year, start_month, 1)
                 
-                if end_str in ['present', 'current']:
+                if self._is_ongoing_keyword(end_str):
                     end_date = current_date
                 else:
                     end_year = int(end_str)
@@ -574,6 +551,11 @@ class ExperienceExtractor:
                 context_start = max(0, match.start() - 150)
                 context_end = min(len(text), match.end() + 150)
                 context = text[context_start:context_end]
+                
+                # Filter out education dates first
+                if self._is_education_date(context):
+                    logger.debug(f"Skipping education date range: {start_date.strftime('%Y-%m')} to {end_date.strftime('%Y-%m')}")
+                    continue
                 
                 # Only include if context suggests work (expanded keywords)
                 work_keywords = [
@@ -607,6 +589,8 @@ class ExperienceExtractor:
             List of tuples (datetime, context_string) where context_string is surrounding text
         """
         dates = []
+        # Use larger context window to capture section headers
+        context_window = 200  # Increased from 100 to capture section headers
         month_names = {
             'january': 1, 'jan': 1, 'february': 2, 'feb': 2, 'march': 3, 'mar': 3,
             'april': 4, 'apr': 4, 'may': 5, 'june': 6, 'jun': 6, 'july': 7, 'jul': 7,
@@ -622,8 +606,8 @@ class ExperienceExtractor:
             if month_str in month_names:
                 try:
                     date_obj = datetime(year, month_names[month_str], 1)
-                    context_start = max(0, match.start() - 100)
-                    context_end = min(len(text), match.end() + 100)
+                    context_start = max(0, match.start() - context_window)
+                    context_end = min(len(text), match.end() + context_window)
                     context = text[context_start:context_end]
                     dates.append((date_obj, context))
                 except ValueError:
@@ -647,8 +631,8 @@ class ExperienceExtractor:
                         date_obj = datetime(year, month, min(day, 28))
                     else:  # Could be MM/DD, but we'll try DD/MM first
                         date_obj = datetime(year, month, min(day, 28))
-                    context_start = max(0, match.start() - 100)
-                    context_end = min(len(text), match.end() + 100)
+                    context_start = max(0, match.start() - context_window)
+                    context_end = min(len(text), match.end() + context_window)
                     context = text[context_start:context_end]
                     dates.append((date_obj, context))
                 except ValueError:
@@ -669,8 +653,8 @@ class ExperienceExtractor:
             if first <= 12 and second > 12 and second <= 31:
                 try:
                     date_obj = datetime(year, first, min(second, 28))
-                    context_start = max(0, match.start() - 100)
-                    context_end = min(len(text), match.end() + 100)
+                    context_start = max(0, match.start() - context_window)
+                    context_end = min(len(text), match.end() + context_window)
                     context = text[context_start:context_end]
                     dates.append((date_obj, context))
                 except ValueError:
@@ -685,8 +669,8 @@ class ExperienceExtractor:
             if 1 <= month <= 12 and 1 <= day <= 31:
                 try:
                     date_obj = datetime(year, month, min(day, 28))
-                    context_start = max(0, match.start() - 100)
-                    context_end = min(len(text), match.end() + 100)
+                    context_start = max(0, match.start() - context_window)
+                    context_end = min(len(text), match.end() + context_window)
                     context = text[context_start:context_end]
                     dates.append((date_obj, context))
                 except ValueError:
@@ -699,8 +683,8 @@ class ExperienceExtractor:
             if 1950 <= year <= datetime.now().year:
                 try:
                     date_obj = datetime(year, 1, 1)
-                    context_start = max(0, match.start() - 100)
-                    context_end = min(len(text), match.end() + 100)
+                    context_start = max(0, match.start() - context_window)
+                    context_end = min(len(text), match.end() + context_window)
                     context = text[context_start:context_end]
                     dates.append((date_obj, context))
                 except ValueError:
@@ -726,7 +710,8 @@ class ExperienceExtractor:
             'graduation', 'graduated', 'graduate', 'university', 'college',
             'school', 'diploma', 'certificate', 'engineering', 'b.tech', 'm.tech',
             'b.e.', 'm.e.', 'b.sc', 'm.sc', 'b.a.', 'm.a.', 'passed', 'completed',
-            'academic', 'qualification', 'studied', 'course', 'program'
+            'academic', 'qualification', 'qualifications', 'studied', 'course', 'program',
+            'gpa', 'cgpa', 'grade', 'semester', 'semesters'
         ]
         
         # Work-related keywords (if present, likely not education)
@@ -739,22 +724,79 @@ class ExperienceExtractor:
             'remote', 'india', 'data analyst', 'quality assurance'
         ]
         
+        # Check for education section headers (case-insensitive, with or without colon/hash)
+        # Patterns: "EDUCATION", "education", "# EDUCATION", "EDUCATION:", "education:", etc.
+        education_section_patterns = [
+            r'^#?\s*education\s*:?\s*$',  # Standalone "EDUCATION" or "# EDUCATION" or "EDUCATION:"
+            r'^education\s*$',  # Just "education" as a line
+            r'education\s*:',  # "education:" with colon
+            r'#\s*education',  # "# education" with hash
+        ]
+        
+        # Check if context contains section headers
+        # First, check if EDUCATION section header exists
+        edu_section_found = False
+        for pattern in education_section_patterns:
+            if re.search(pattern, context, re.IGNORECASE | re.MULTILINE):
+                edu_section_found = True
+                break
+        
+        # Check if EXPERIENCE section header exists
+        exp_section_found = re.search(r'^#?\s*experience\s*:?\s*$|^experience\s*$|experience\s*:|#\s*experience', context, re.IGNORECASE | re.MULTILINE)
+        
+        # If EDUCATION section found, check proximity to education keywords
+        if edu_section_found:
+            # Strong education indicators that suggest the date is education-related
+            strong_edu_indicators = ['gpa', 'cgpa', 'bachelor', 'bachelors', 'degree', 'college', 'university', 
+                                    'engineering', 'b.tech', 'm.tech', 'b.e.', 'm.e.', 'b.sc', 'm.sc']
+            
+            # Check if strong education indicators are near the date (within 50 chars)
+            context_lower = context.lower()
+            for indicator in strong_edu_indicators:
+                if indicator in context_lower:
+                    # Check if EXPERIENCE section comes after this indicator
+                    edu_ind_pos = context_lower.find(indicator)
+                    if exp_section_found:
+                        exp_ind_pos = context_lower.find('experience')
+                        # If EXPERIENCE comes after education indicator, and date is before EXPERIENCE, it's education
+                        if exp_ind_pos > edu_ind_pos:
+                            # Date is likely in EDUCATION section
+                            return True
+                    else:
+                        # No EXPERIENCE section, so it's education
+                        return True
+        
+        # If EXPERIENCE section found but no EDUCATION section, it's work
+        if exp_section_found and not edu_section_found:
+            return False
+        
+        # If only EDUCATION section found (no EXPERIENCE), it's education
+        if edu_section_found and not exp_section_found:
+            return True
+        
         # Check for education keywords
         has_education_keyword = any(keyword in context_lower for keyword in education_keywords)
         
         # Check for work keywords
         has_work_keyword = any(keyword in context_lower for keyword in work_keywords)
         
-        # If it's in a section clearly marked as education (check this first)
-        if any(section in context_lower for section in ['# education', 'education:', 'academic:', 'qualification:']):
-            # But if it also has strong work indicators, it might be work-related
-            if has_work_keyword and any(strong_work in context_lower for strong_work in ['professional experience', 'work experience', 'employment', 'job']):
-                return False
-            return True
-        
         # If it has education keywords and no work keywords, it's likely education
         if has_education_keyword and not has_work_keyword:
             return True
+        
+        # Special case: If context has both "engineering" (from degree) and work keywords,
+        # check the position - if "engineering" is near "bachelor", "degree", "college", it's education
+        if 'engineering' in context_lower:
+            # Check if "engineering" is part of degree name (education) or job title (work)
+            edu_indicators = ['bachelor', 'degree', 'college', 'university', 'b.tech', 'b.e.', 'm.tech', 'm.e.']
+            work_indicators = ['engineer', 'developer', 'software engineer', 'mechanical engineer']
+            
+            has_edu_indicator = any(ind in context_lower for ind in edu_indicators)
+            has_work_indicator = any(ind in context_lower for ind in work_indicators)
+            
+            # If it has education indicators but not work indicators, it's education
+            if has_edu_indicator and not has_work_indicator:
+                return True
         
         # If it has work keywords, it's likely work (even if it has some education keywords)
         if has_work_keyword:
@@ -1121,9 +1163,11 @@ class ExperienceExtractor:
         """Extract JSON object from LLM response."""
         if not text:
             logger.warning("Empty response from LLM")
-            return {"experience": None}
+            return {"summary_experience": None, "date_ranges": []}
         
         cleaned_text = text.strip()
+        
+        # Remove markdown code blocks
         if cleaned_text.startswith("```json"):
             cleaned_text = cleaned_text[7:]
         elif cleaned_text.startswith("```"):
@@ -1132,50 +1176,95 @@ class ExperienceExtractor:
             cleaned_text = cleaned_text[:-3]
         cleaned_text = cleaned_text.strip()
         
+        # Try to find JSON object - look for first { and matching }
+        # This handles cases where LLM adds text before/after JSON
         start_idx = cleaned_text.find('{')
-        end_idx = cleaned_text.rfind('}')
+        if start_idx == -1:
+            # No JSON found, try to extract date ranges from text response
+            logger.warning("No JSON object found in LLM response, attempting to extract dates from text")
+            return self._extract_dates_from_text_response(cleaned_text)
         
-        if start_idx != -1 and end_idx != -1 and end_idx > start_idx:
-            cleaned_text = cleaned_text[start_idx:end_idx + 1]
-        
-        try:
-            parsed = json.loads(cleaned_text)
-            if isinstance(parsed, dict) and "experience" in parsed:
-                logger.debug(f"Successfully extracted JSON: {parsed}")
-                return parsed
-        except json.JSONDecodeError:
-            pass
-        
-        try:
-            start_idx = cleaned_text.find('{')
-            if start_idx != -1:
-                brace_count = 0
-                end_idx = start_idx
-                for i in range(start_idx, len(cleaned_text)):
-                    if cleaned_text[i] == '{':
-                        brace_count += 1
-                    elif cleaned_text[i] == '}':
-                        brace_count -= 1
-                        if brace_count == 0:
-                            end_idx = i + 1
-                            break
+        # Find matching closing brace
+        brace_count = 0
+        end_idx = start_idx
+        for i in range(start_idx, len(cleaned_text)):
+            if cleaned_text[i] == '{':
+                brace_count += 1
+            elif cleaned_text[i] == '}':
+                brace_count -= 1
                 if brace_count == 0:
-                    json_str = cleaned_text[start_idx:end_idx]
-                    parsed = json.loads(json_str)
-                    if isinstance(parsed, dict) and "experience" in parsed:
-                        logger.debug(f"Successfully extracted JSON with balanced braces: {parsed}")
-                        return parsed
-        except (json.JSONDecodeError, ValueError) as e:
-            logger.warning(f"Failed to parse JSON with balanced braces: {e}")
+                    end_idx = i + 1
+                    break
         
-        logger.error(
-            "ERROR: Failed to parse JSON from LLM response", 
-            extra={
-                "response_preview": text[:500],
-                "response_length": len(text),
-                "cleaned_preview": cleaned_text[:500]
-            }
-        )
+        if brace_count == 0:
+            json_str = cleaned_text[start_idx:end_idx]
+            try:
+                parsed = json.loads(json_str)
+                if isinstance(parsed, dict):
+                    result = {
+                        "summary_experience": parsed.get("summary_experience"),
+                        "date_ranges": parsed.get("date_ranges", [])
+                    }
+                    logger.debug(f"Successfully extracted JSON: {result}")
+                    return result
+            except json.JSONDecodeError as e:
+                logger.warning(f"Failed to parse JSON string: {e}")
+        
+        # If JSON parsing failed, try to extract dates from text response
+        logger.warning("JSON parsing failed, attempting to extract dates from text response")
+        return self._extract_dates_from_text_response(cleaned_text)
+    
+    def _extract_dates_from_text_response(self, text: str) -> Dict:
+        """
+        Extract date ranges from LLM text response when JSON parsing fails.
+        Looks for date patterns in the text and extracts them.
+        """
+        date_ranges = []
+        seen_ranges = set()  # Avoid duplicates
+        
+        # Look for date patterns in the text
+        # Pattern 1: "Jan 2020 – Mar 2022" or "Apr 2018 – Dec 2019"
+        month_pattern = r'\b(january|february|march|april|may|june|july|august|september|october|november|december|jan|feb|mar|apr|may|jun|jul|aug|sep|sept|oct|nov|dec)\.?\s+(\d{4})\s*[–\-]\s*(january|february|march|april|may|june|july|august|september|october|november|december|jan|feb|mar|apr|may|jun|jul|aug|sep|sept|oct|nov|dec|present|current)\.?\s*(\d{4})?'
+        
+        for match in re.finditer(month_pattern, text, re.IGNORECASE):
+            start_str = f"{match.group(1)} {match.group(2)}"
+            if match.group(3).lower() in ['present', 'current']:
+                end_str = "Present"
+            else:
+                end_str = f"{match.group(3)} {match.group(4)}" if match.group(4) else match.group(3)
+            
+            range_key = (start_str.lower(), end_str.lower())
+            if range_key not in seen_ranges:
+                seen_ranges.add(range_key)
+                date_ranges.append({
+                    "start": start_str,
+                    "end": end_str,
+                    "company": None,
+                    "title": None
+                })
+        
+        # Pattern 2: "2020 – 2022" or "2018 – 2019"
+        year_pattern = r'\b(19[5-9]\d|20[0-3]\d)\s*[–\-]\s*(19[5-9]\d|20[0-3]\d|present|current)\b'
+        
+        for match in re.finditer(year_pattern, text, re.IGNORECASE):
+            start_str = match.group(1)
+            end_str = match.group(2)
+            
+            range_key = (start_str.lower(), end_str.lower())
+            if range_key not in seen_ranges:
+                seen_ranges.add(range_key)
+                date_ranges.append({
+                    "start": start_str,
+                    "end": end_str,
+                    "company": None,
+                    "title": None
+                })
+        
+        if date_ranges:
+            logger.info(f"Extracted {len(date_ranges)} date ranges from text response")
+            return {"summary_experience": None, "date_ranges": date_ranges}
+        
+        logger.warning("Could not extract date ranges from text response")
         return {"summary_experience": None, "date_ranges": []}
     
     def _check_explicit_experience(self, resume_text: str) -> Optional[str]:
@@ -1192,7 +1281,27 @@ class ExperienceExtractor:
         # Search in first 10000 characters (summary/profile sections)
         search_text = resume_text[:10000].lower()
         
-        # Patterns for explicit experience statements
+        # 1) Handle common fractional phrases like "5 and half years" explicitly,
+        #    but normalize them to an INTEGER number of years (no decimals).
+        fractional_patterns = [
+            r'(\d+)\s+and\s+half\s+years?\s+of\s+experience',
+            r'(\d+)\s+and\s+half\s+years?\s+of\s+professional\s+experience',
+            r'(\d+)\s+and\s+half\s+years?\s+experience\b',
+            r'(\d+)\s+and\s+a\s+half\s+years?\s+of\s+experience',
+            r'(\d+)\s+and\s+a\s+half\s+years?\s+of\s+professional\s+experience',
+            r'(\d+)\s+and\s+a\s+half\s+years?\s+experience\b',
+        ]
+        
+        for pattern in fractional_patterns:
+            match = re.search(pattern, search_text, re.IGNORECASE)
+            if match:
+                years_num = int(match.group(1))
+                if 1 <= years_num <= 50:
+                    exp_str = f"{years_num} years"
+                    logger.info(f"✅ Found explicit fractional experience statement (normalized to integer): '{exp_str}'")
+                    return exp_str
+        
+        # 2) Standard explicit experience statements
         explicit_patterns = [
             r'(\d+\+?\s*years?)\s+of\s+experience',
             r'(\d+\+?\s*years?)\s+of\s+professional\s+experience',
@@ -1206,37 +1315,426 @@ class ExperienceExtractor:
             match = re.search(pattern, search_text, re.IGNORECASE)
             if match:
                 exp_str = match.group(1).strip()
-                # Ensure it has "years" or "year"
-                if 'year' not in exp_str.lower():
-                    num_match = re.search(r'(\d+\+?)', exp_str)
-                    if num_match:
-                        exp_str = f"{num_match.group(1)} years"
-                    else:
-                        exp_str = f"{exp_str} years"
+                
+                # Normalize to contain "years" / "year" and ONLY the integer part (no decimals)
+                num_match = re.search(r'(\d+)', exp_str)
+                if not num_match:
+                    continue
+                years_num = int(num_match.group(1))
                 
                 # Validate: should be between 1 and 50 years
-                num_match = re.search(r'(\d+)', exp_str)
-                if num_match:
-                    years_num = int(num_match.group(1))
-                    if 1 <= years_num <= 50:
-                        logger.info(f"✅ Found explicit experience statement: '{exp_str}'")
-                        return exp_str
+                if 1 <= years_num <= 50:
+                    normalized = f"{years_num} years"
+                    logger.info(f"✅ Found explicit experience statement: '{exp_str}' → normalized to '{normalized}'")
+                    return normalized
         
         return None
     
+    def _is_ongoing_keyword(self, text: str) -> bool:
+        """
+        Check if text represents ongoing employment (all variations).
+        Handles: Present, Still Date, Till Date, etc.
+        
+        Args:
+            text: String to check (e.g., "Present", "Still Date", "Till Date")
+        
+        Returns:
+            True if text represents ongoing employment, False otherwise
+        """
+        if not text:
+            return False
+        
+        # Normalize: lowercase, strip, remove punctuation
+        normalized = text.lower().strip()
+        normalized = re.sub(r'[.,;:!?]', '', normalized)
+        normalized = re.sub(r'[\s\-_]+', ' ', normalized).strip()
+        
+        # Comprehensive list of ongoing keywords
+        ongoing_keywords = {
+            # Standard
+            'present', 'current', 'now', 'today',
+            # Till variations
+            'till date', 'till now', 'till-date', 'till-now', 'tilldate', 'tillnow',
+            'til date', 'til now', 'til-date', 'til-now', 'tildate', 'tilnow',
+            # Still variations
+            'still date', 'still now', 'still-date', 'still-now', 'stilldate', 'stillnow',
+            'still', 'still working', 'still employed', 'still active',
+            # To variations
+            'to date', 'to now', 'to-date', 'to-now', 'todate', 'tonow',
+            # Until variations
+            'until present', 'until now', 'until date', 'until-present', 'until-now', 'until-date',
+            'untilpresent', 'untilnow', 'untildate',
+            # Up to variations
+            'up to present', 'up to now', 'up to date', 'up-to-present', 'up-to-now', 'up-to-date',
+            'uptopresent', 'uptonow', 'uptodate',
+            # As of variations
+            'as of now', 'as of present', 'as of date', 'as of today',
+            'as-of-now', 'as-of-present', 'as-of-date', 'as-of-today',
+            'asofnow', 'asofpresent', 'asofdate', 'asoftoday',
+            # Ongoing variations
+            'ongoing', 'on-going', 'on going',
+            # Working variations
+            'working', 'working till date', 'working till now', 'working still',
+            'working-till-date', 'working-till-now', 'working-still',
+            'workingtilldate', 'workingtillnow', 'workingstill',
+            # Currently variations
+            'currently', 'currently working', 'currently employed', 'currently active',
+            'currently-working', 'currently-employed', 'currently-active',
+            'currentlyworking', 'currentlyemployed', 'currentlyactive',
+            # Continuing variations
+            'continuing', 'continue', 'continues',
+            # Active variations
+            'active', 'still active',
+        }
+        
+        if normalized in ongoing_keywords:
+            return True
+        
+        # Pattern-based fallback for unknown variations
+        patterns = [
+            r'^still\s*(date|now|working|employed|active)?$',
+            r'^til?l?\s*(date|now)$',
+            r'^to\s*(date|now|present)$',
+            r'^until\s*(date|now|present)$',
+            r'^up\s*to\s*(date|now|present)$',
+            r'^as\s*of\s*(date|now|present|today)$',
+            r'^working\s*(till|til|still|date|now)?$',
+            r'^currently\s*(working|employed|active)?$',
+        ]
+        
+        for pattern in patterns:
+            if re.match(pattern, normalized):
+                return True
+        
+        return False
+    
+    def _parse_llm_date_string(self, date_str: str) -> Optional[datetime]:
+        """
+        Parse date string from LLM output to datetime object.
+        Handles formats: "Jan 2020", "January 2020", "01/2020", "2020", "Present", etc.
+        
+        Args:
+            date_str: Date string from LLM (e.g., "Jan 2020", "Present")
+            
+        Returns:
+            datetime object or None if parsing fails
+        """
+        if not date_str or not isinstance(date_str, str):
+            return None
+        
+        date_str = date_str.strip()
+        current_date = datetime.now()
+        current_year = current_date.year
+        
+        # Handle ongoing keywords (all variations)
+        if self._is_ongoing_keyword(date_str):
+            return current_date
+        
+        month_names = {
+            'january': 1, 'jan': 1, 'february': 2, 'feb': 2, 'march': 3, 'mar': 3,
+            'april': 4, 'apr': 4, 'may': 5, 'june': 6, 'jun': 6, 'july': 7, 'jul': 7,
+            'august': 8, 'aug': 8, 'september': 9, 'sep': 9, 'sept': 9,
+            'october': 10, 'oct': 10, 'november': 11, 'nov': 11, 'december': 12, 'dec': 12
+        }
+        
+        # Pattern 1: Month Year (e.g., "Jan 2020", "January 2020")
+        month_year_pattern = r'\b(january|february|march|april|may|june|july|august|september|october|november|december|jan|feb|mar|apr|may|jun|jul|aug|sep|sept|oct|nov|dec)\.?\s+(\d{4})\b'
+        match = re.search(month_year_pattern, date_str, re.IGNORECASE)
+        if match:
+            month_str = match.group(1).lower()
+            year = int(match.group(2))
+            if month_str in month_names:
+                try:
+                    return datetime(year, month_names[month_str], 1)
+                except ValueError:
+                    pass
+        
+        # Pattern 2: Apostrophe format (e.g., "Jan'22", "Jan'20")
+        apostrophe_pattern = r'\b(january|february|march|april|may|june|july|august|september|october|november|december|jan|feb|mar|apr|may|jun|jul|aug|sep|sept|oct|nov|dec)\.?\s*[\'\']?(\d{2,4})\b'
+        match = re.search(apostrophe_pattern, date_str, re.IGNORECASE)
+        if match:
+            month_str = match.group(1).lower()
+            year_str = match.group(2)
+            if month_str in month_names:
+                try:
+                    if len(year_str) == 2:
+                        # Two-digit year rule
+                        year = int(year_str)
+                        if (year + 2000) <= current_year:
+                            year = 2000 + year
+                        else:
+                            year = 1900 + year
+                    else:
+                        year = int(year_str)
+                    return datetime(year, month_names[month_str], 1)
+                except (ValueError, TypeError):
+                    pass
+        
+        # Pattern 3: MM/YYYY or YYYY/MM (e.g., "01/2020", "2020/01")
+        numeric_pattern = r'\b(\d{1,2})/(\d{4})\b'
+        match = re.search(numeric_pattern, date_str)
+        if match:
+            first = int(match.group(1))
+            year = int(match.group(2))
+            if 1 <= first <= 12:
+                try:
+                    return datetime(year, first, 1)
+                except ValueError:
+                    pass
+        
+        # Pattern 4: YYYY-MM (e.g., "2020-01")
+        iso_pattern = r'\b(\d{4})-(\d{1,2})\b'
+        match = re.search(iso_pattern, date_str)
+        if match:
+            year = int(match.group(1))
+            month = int(match.group(2))
+            if 1 <= month <= 12:
+                try:
+                    return datetime(year, month, 1)
+                except ValueError:
+                    pass
+        
+        # Pattern 5: Year only (e.g., "2020")
+        year_pattern = r'\b(19[5-9]\d|20[0-3]\d)\b'
+        match = re.search(year_pattern, date_str)
+        if match:
+            year = int(match.group(1))
+            if 1950 <= year <= current_year:
+                try:
+                    return datetime(year, 1, 1)  # Default to January
+                except ValueError:
+                    pass
+        
+        logger.debug(f"Failed to parse date string: {date_str}")
+        return None
+    
+    def _parse_llm_date_ranges(self, llm_date_ranges: List[Dict]) -> List[Tuple[datetime, datetime]]:
+        """
+        Parse LLM date ranges from string format to datetime objects.
+        
+        Args:
+            llm_date_ranges: List of dicts with "start", "end", "company", "title"
+            
+        Returns:
+            List of (start_date, end_date) tuples
+        """
+        parsed_ranges = []
+        current_date = datetime.now()
+        
+        for range_dict in llm_date_ranges:
+            if not isinstance(range_dict, dict):
+                continue
+            
+            start_str = range_dict.get("start")
+            end_str = range_dict.get("end")
+            
+            if not start_str:
+                continue
+            
+            start_date = self._parse_llm_date_string(start_str)
+            if not start_date:
+                logger.debug(f"Skipping invalid start date: {start_str}")
+                continue
+            
+            # Parse end date (default to current date if ongoing keyword)
+            if not end_str or self._is_ongoing_keyword(end_str):
+                end_date = current_date
+            else:
+                end_date = self._parse_llm_date_string(end_str)
+                if not end_date:
+                    logger.debug(f"Using current date for invalid end date: {end_str}")
+                    end_date = current_date
+            
+            # Validate: start should be before end
+            if start_date > end_date:
+                logger.debug(f"Skipping invalid range: {start_date} > {end_date}")
+                continue
+            
+            # Validate: start should not be in future
+            if start_date > current_date:
+                logger.debug(f"Skipping future start date: {start_date}")
+                continue
+            
+            parsed_ranges.append((start_date, end_date))
+            logger.debug(f"Parsed LLM date range: {start_date.strftime('%Y-%m')} to {end_date.strftime('%Y-%m')}")
+        
+        return parsed_ranges
+    
+    def _calculate_experience_from_llm_dates(self, llm_date_ranges: List[Dict]) -> Optional[str]:
+        """
+        Calculate experience from LLM-extracted date ranges.
+        
+        Args:
+            llm_date_ranges: List of date range dicts from LLM
+            
+        Returns:
+            Experience string in format "X years" or None
+        """
+        if not llm_date_ranges:
+            return None
+        
+        # Parse LLM date strings to datetime objects
+        parsed_ranges = self._parse_llm_date_ranges(llm_date_ranges)
+        if not parsed_ranges:
+            logger.warning("Failed to parse any LLM date ranges")
+            return None
+        
+        # Merge overlapping ranges
+        date_ranges_with_context = [(start, end, "") for start, end in parsed_ranges]
+        merged_ranges = self._merge_overlapping_ranges(date_ranges_with_context)
+        
+        if not merged_ranges:
+            return None
+        
+        # Calculate total months
+        total_months = 0
+        for start_date, end_date in merged_ranges:
+            months = (end_date.year - start_date.year) * 12 + (end_date.month - start_date.month)
+            if end_date.day < start_date.day:
+                months -= 1
+            total_months += max(0, months)
+        
+        # Convert to years (round down)
+        years_diff = total_months // 12
+        
+        # Validate
+        if years_diff < 0:
+            years_diff = 0
+        elif years_diff > 50:
+            years_diff = 50
+        
+        if years_diff == 0:
+            if total_months >= 3:
+                return "1 year"
+            return None
+        
+        return f"{years_diff} years"
+    
+    def is_fresher(self, resume_text: str, date_ranges: list) -> bool:
+        """
+        Detect if the candidate is a fresher (no work experience).
+        
+        Args:
+            resume_text: The resume text
+            date_ranges: List of date ranges found (can be empty)
+            
+        Returns:
+            True if fresher, False otherwise
+        """
+        if not resume_text:
+            return False
+        
+        text = resume_text.lower()
+        
+        # Fresher keywords (using regex patterns to handle variations)
+        fresher_patterns = [
+            r'\brecent\s+(?:college\s+)?graduate\b',  # "recent graduate" or "recent college graduate"
+            r'\bnew\s+graduate\b',
+            r'\bfresh\s+graduate\b',
+            r'\brecently\s+graduated\b',
+            r'\bfresher\b',
+            r'\bentry[\s-]?level\b',  # "entry level" or "entry-level"
+            r'\blooking\s+for\s+first\s+opportunity\b',
+            r'\bno\s+(?:work\s+)?experience\b',  # "no experience" or "no work experience"
+            r'\bseeking\s+first\s+job\b',
+            r'\bfirst\s+job\b',
+            r'\bgraduate\s+seeking\b',
+        ]
+        
+        # Check for fresher patterns
+        for pattern in fresher_patterns:
+            if re.search(pattern, text, re.IGNORECASE):
+                logger.info(f"Fresher detected: Found fresher keyword pattern: {pattern}")
+                return True
+        
+        # If no date ranges found, check for education-only profile
+        if not date_ranges:
+            education_keywords = ["education", "degree", "b.tech", "bachelor", "master", "phd", "diploma"]
+            work_keywords = ["experience", "worked", "employed", "job", "position", "role", "company"]
+            
+            has_education = any(keyword in text for keyword in education_keywords)
+            has_work = any(keyword in text for keyword in work_keywords)
+            
+            if has_education and not has_work:
+                logger.info("Fresher detected: Education found but no work experience")
+                return True
+        
+        return False
+    
+    def _calculate_confidence_score(self, experience: Optional[str], source: str,
+                                   explicit_found: bool, date_ranges_count: int,
+                                   llm_summary: Optional[int], python_dates: Optional[str],
+                                   llm_dates: Optional[str]) -> float:
+        """
+        Calculate confidence score (0.0 to 1.0) for extracted experience.
+        
+        Args:
+            experience: Final experience string
+            source: Extraction method used
+            explicit_found: Whether explicit experience was found
+            date_ranges_count: Number of date ranges found
+            llm_summary: LLM summary experience value
+            python_dates: Python date-based calculation
+            llm_dates: LLM date-based calculation
+            
+        Returns:
+            Confidence score between 0.0 and 1.0
+        """
+        if not experience:
+            return 0.0
+        
+        confidence = 0.5  # Base confidence
+        
+        # Source-based confidence
+        if source == "explicit_python":
+            confidence = 0.95  # Very high - explicit statements are most reliable
+        elif source == "explicit_llm":
+            confidence = 0.90  # High - LLM found explicit statement
+        elif source == "date_based_python":
+            confidence = 0.85  # High - Python regex is deterministic
+        elif source == "date_based_llm":
+            confidence = 0.75  # Medium-high - LLM dates need parsing
+        elif source == "fresher":
+            confidence = 0.80  # High - Fresher detection is reliable
+        elif source == "regex_fallback":
+            confidence = 0.60  # Medium - Fallback regex
+        
+        # Agreement bonus: If multiple sources agree, increase confidence
+        if explicit_found and llm_summary:
+            # Extract years from both
+            exp_match = re.search(r'(\d+)', experience)
+            if exp_match:
+                exp_years = int(exp_match.group(1))
+                if abs(exp_years - llm_summary) <= 1:  # Within 1 year
+                    confidence = min(1.0, confidence + 0.05)
+        
+        if python_dates and llm_dates:
+            # Compare Python and LLM date-based calculations
+            py_match = re.search(r'(\d+)', python_dates)
+            llm_match = re.search(r'(\d+)', llm_dates)
+            if py_match and llm_match:
+                py_years = int(py_match.group(1))
+                llm_years = int(llm_match.group(1))
+                if abs(py_years - llm_years) <= 1:  # Within 1 year
+                    confidence = min(1.0, confidence + 0.05)
+        
+        # Date range count bonus: More ranges = more reliable
+        if date_ranges_count >= 3:
+            confidence = min(1.0, confidence + 0.05)
+        elif date_ranges_count >= 2:
+            confidence = min(1.0, confidence + 0.03)
+        
+        return round(confidence, 2)
+    
     async def extract_experience(self, resume_text: str, filename: str = "resume") -> Optional[str]:
         """
-        Extract years of experience from resume text using production-grade pipeline.
+        Extract years of experience from resume text using recommended ATS pipeline.
         
         Pipeline:
-        1. Check cache (fast path)
-        2. Clean resume text (remove education, certifications, projects)
-        3. Extract work sections only
-        4. Check for explicit total experience statement (fast path - skip LLM if found)
-        5. If not found, calculate from date ranges
-        6. Send cleaned work text to LLM for validation/refinement
-        7. Use LLM date ranges as fallback if Python regex found nothing
-        8. Return result with confidence score
+        STEP 1: Explicit Experience (LLM + Python)
+        STEP 2: Date Range Extraction (LLM) → Calculate in Python
+        STEP 2B: Fresher Detection
+        STEP 3: Regex Fallback
         
         Args:
             resume_text: The text content of the resume
@@ -1248,402 +1746,206 @@ class ExperienceExtractor:
         if not resume_text:
             logger.warning(f"Empty resume text for {filename}")
             return None
-        
+
         logger.info(f"🔍 Starting experience extraction for {filename}")
-        
-        # STEP 0: Check cache (fast path)
+
+        # STEP 0: Cache check
         import hashlib
         cache_key = hashlib.md5(resume_text[:5000].encode()).hexdigest()
         if cache_key in self._cache:
             cached_result, cached_time = self._cache[cache_key]
             if (datetime.now().timestamp() - cached_time) < self._cache_ttl:
-                logger.info(f"✅ EXPERIENCE EXTRACTED from cache for {filename}: {cached_result}")
+                logger.info(f"✅ EXPERIENCE FROM CACHE for {filename}: {cached_result}")
                 return cached_result
-            else:
-                # Expired cache entry
-                del self._cache[cache_key]
-        
-        # STEP 1: Clean resume text
-        cleaned_text = self._clean_resume_text(resume_text)
-        
-        # STEP 2: Extract work sections only
-        work_text = self._extract_work_sections_only(cleaned_text)
-        
-        # If no work sections found, use cleaned text
-        if not work_text.strip():
-            work_text = cleaned_text[:15000]  # Fallback to cleaned text
-            logger.debug("No work sections found, using cleaned text")
-        
-        # STEP 3: Check for explicit total experience statement (FAST PATH)
-        explicit_experience = self._check_explicit_experience(resume_text)
-        if explicit_experience:
-            logger.info(f"✅ EXPERIENCE EXTRACTED (explicit, fast path) from {filename}: {explicit_experience}")
-            # Cache the result
-            self._cache[cache_key] = (explicit_experience, datetime.now().timestamp())
-            return explicit_experience
-        
-        # STEP 4: Calculate experience from date ranges
-        date_based_experience = self._calculate_experience_from_dates(work_text)
-        if date_based_experience:
-            logger.info(f"✅ EXPERIENCE EXTRACTED (date-based) from {filename}: {date_based_experience}")
-            # Continue to LLM validation, but we have a good baseline
-        
-        # STEP 5: Send cleaned work text to LLM for validation/refinement
-        model_to_use = self.model
-        try:
-            is_connected, available_model = await self._check_ollama_connection()
-            if not is_connected:
-                # Return date-based calculation if available
-                if date_based_experience:
-                    logger.warning(f"OLLAMA not connected, returning date-based calculation for {filename}")
-                    return date_based_experience
-                # Try fallback regex
-                experience = self._extract_experience_fallback(work_text)
-                if experience:
-                    logger.info(f"✅ EXPERIENCE EXTRACTED via fallback (OLLAMA not connected) from {filename}: {experience}")
-                    return experience
-                raise RuntimeError(
-                    f"OLLAMA is not accessible at {self.ollama_host}. "
-                    "Please ensure OLLAMA is running. Start it with: ollama serve"
-                )
-            
-            model_to_use = self.model
-            if available_model and "llama3.1" not in available_model.lower():
-                logger.warning(
-                    f"llama3.1 not found, using available model: {available_model}",
-                    extra={"available_model": available_model}
-                )
-                model_to_use = available_model
-            
-            # Send only cleaned work text to LLM (limit to 20000 chars)
-            text_to_send = work_text[:20000]
-            
-            # Get current date information for prompt
-            current_date = datetime.now()
-            current_date_str = current_date.strftime("%B %d, %Y")  # e.g., "January 15, 2026"
-            current_year = current_date.year  # e.g., 2026
-            current_month_year = current_date.strftime("%B %Y")  # e.g., "January 2026"
-            
-            # Create dynamic prompt with current date information
-            prompt = f"""{EXPERIENCE_PROMPT}
+            del self._cache[cache_key]
 
-CURRENT DATE INFORMATION (USE THIS FOR ALL DATE VALIDATIONS):
-• Today's date: {current_date_str}
-• Current year: {current_year}
-• Current month and year: {current_month_year}
-• Any date in {current_year} or earlier is VALID
-• Only dates AFTER {current_date_str} should be considered future dates
-• Dates in {current_year} with "Present", "Now", or "Till Date" are VALID ongoing employment
+        # STEP 1: Clean resume
+        cleaned_text = self._clean_resume_text(resume_text)
+
+        # STEP 2: Extract work sections
+        work_text = self._extract_work_sections_only(cleaned_text)
+        if not work_text.strip():
+            work_text = cleaned_text[:15000]
+        
+        # Ensure work_text is not empty - use original resume_text as last resort
+        if not work_text.strip():
+            logger.warning(f"work_text is empty, using original resume_text for fallback")
+            work_text = resume_text[:20000]
+
+        # STEP 1: EXPLICIT EXPERIENCE (LLM + Python)
+        # Initialize variables
+        experience = None
+        source = "unknown"
+        python_explicit = None
+        llm_experience = None
+        llm_date_ranges = []
+        llm_summary_years = None
+        python_date = None
+        
+        # Check Python first (fast path)
+        python_explicit = self._check_explicit_experience(resume_text)
+        if python_explicit:
+            logger.info(f"✅ Explicit experience found (Python fast path): {python_explicit}")
+            experience = python_explicit
+            source = "explicit_python"
+        else:
+            # Try LLM for explicit experience
+
+            try:
+                is_connected, available_model = await self._check_ollama_connection()
+                if not is_connected:
+                    logger.warning(f"OLLAMA not connected, skipping LLM for {filename}")
+                    llm_experience = None
+                else:
+                    model_to_use = available_model or self.model
+                    text_to_send = work_text[:20000]
+
+                    current_date = datetime.now()
+                    prompt = f"""{EXPERIENCE_PROMPT}
+
+CURRENT DATE INFORMATION:
+• Today's date: {current_date.strftime("%B %d, %Y")}
+• Current year: {current_date.year}
 
 Input resume text:
 {text_to_send}
 
-Output (JSON only, no other text, no explanations):"""
-            
-            logger.info(
-                f"📤 CALLING OLLAMA API for experience extraction",
-                extra={
-                    "file_name": filename,
-                    "model": model_to_use,
-                    "ollama_host": self.ollama_host,
-                }
-            )
-            
-            result = None
-            last_error = None
-            
-            async with httpx.AsyncClient(timeout=Timeout(1200.0)) as client:
-                try:
-                    response = await client.post(
-                        f"{self.ollama_host}/api/generate",
-                        json={
-                            "model": model_to_use,
-                            "prompt": prompt,
-                            "stream": False,
-                            "options": {
-                                "temperature": 0.1,
-                                "top_p": 0.9,
-                            }
-                        }
-                    )
-                    response.raise_for_status()
-                    result = response.json()
-                    response_text = result.get("response", "") or result.get("text", "")
-                    if not response_text and "message" in result:
-                        response_text = result.get("message", {}).get("content", "")
-                    result = {"response": response_text}
-                    logger.info("✅ Successfully used /api/generate endpoint for experience extraction")
-                except httpx.HTTPStatusError as e:
-                    if e.response.status_code != 404:
-                        raise
-                    last_error = e
-                    logger.warning("OLLAMA /api/generate returned 404, trying /api/chat endpoint")
-                
-                if result is None:
-                    try:
-                        # Use /api/chat with fresh conversation (no history)
-                        # System message ensures complete session isolation
+Output (JSON only):"""
+
+                    async with httpx.AsyncClient(timeout=Timeout(1200.0)) as client:
                         response = await client.post(
-                            f"{self.ollama_host}/api/chat",
+                            f"{self.ollama_host}/api/generate",
                             json={
                                 "model": model_to_use,
-                                "messages": [
-                                    {"role": "system", "content": "You are a fresh, isolated extraction agent. This is a new, independent task with no previous context. Ignore any previous conversations."},
-                                    {"role": "user", "content": prompt}
-                                ],
+                                "prompt": prompt,
                                 "stream": False,
                                 "options": {
                                     "temperature": 0.1,
-                                    "top_p": 0.9,
-                                    "num_predict": 500,  # Limit response length for isolation
+                                    "top_p": 0.9
                                 }
                             }
                         )
                         response.raise_for_status()
                         result = response.json()
-                        if "message" in result and "content" in result["message"]:
-                            result = {"response": result["message"]["content"]}
-                        else:
-                            raise ValueError("Unexpected response format from OLLAMA chat API")
-                        logger.info("Successfully used /api/chat endpoint for experience extraction")
-                    except Exception as e2:
-                        last_error = e2
-                        logger.error(f"OLLAMA /api/chat also failed: {e2}", extra={"error": str(e2)})
-                
-                if result is None:
-                    raise RuntimeError(
-                        f"All OLLAMA API endpoints failed. "
-                        f"OLLAMA is running at {self.ollama_host} but endpoints return errors. "
-                        f"Last error: {last_error}"
-                    )
-            
-            raw_output = ""
-            if isinstance(result, dict):
-                if "response" in result:
-                    raw_output = str(result["response"])
-                elif "text" in result:
-                    raw_output = str(result["text"])
-                elif "content" in result:
-                    raw_output = str(result["content"])
-                elif "message" in result and isinstance(result.get("message"), dict):
-                    raw_output = str(result["message"].get("content", ""))
-            else:
-                raw_output = str(result)
-            
-            parsed_data = self._extract_json(raw_output)
-            
-            # STEP 6: Process structured LLM output
-            # New architecture: LLM extracts data, Python calculates
-            experience = None
-            summary_experience = None
-            date_ranges = []
-            source = "unknown"
-            llm_summary_years = None
-            llm_date_based_experience = None
-            
-            # Check for explicit summary experience first
-            summary_experience = parsed_data.get("summary_experience")
-            if summary_experience is not None and summary_experience != "":
-                try:
-                    # Extract numeric value (handle "+" if present in original)
-                    if isinstance(summary_experience, (int, float)):
-                        years = int(summary_experience)
-                    elif isinstance(summary_experience, str):
-                        # Remove "+" and extract number
-                        summary_experience_clean = summary_experience.replace("+", "").strip()
-                        years = int(float(summary_experience_clean))
-                    else:
-                        years = int(summary_experience)
-                    
-                    if 1 <= years <= 50:
-                        experience = f"{years} years"
-                        llm_summary_years = years
-                        source = "explicit_llm"
-                        logger.info(
-                            f"✅ LLM extracted explicit experience: {experience}",
-                            extra={"file_name": filename, "source": "llm_summary"}
-                        )
-                except (ValueError, TypeError) as e:
-                    logger.warning(f"Invalid summary_experience value: {summary_experience}, error: {e}")
-            
-            # If no explicit experience, use date ranges
-            if not experience:
-                date_ranges = parsed_data.get("date_ranges", [])
-                if date_ranges and isinstance(date_ranges, list) and len(date_ranges) > 0:
-                    # NEW: Use LLM date ranges if Python regex found nothing
-                    if not date_based_experience:
-                        # Python regex failed, try LLM dates as fallback
-                        logger.info(
-                            f"Python regex found no dates, trying LLM date ranges ({len(date_ranges)} ranges)",
-                            extra={"file_name": filename, "date_ranges_count": len(date_ranges)}
-                        )
-                        llm_date_based_experience = self._calculate_experience_from_llm_dates(date_ranges)
-                        if llm_date_based_experience:
-                            experience = llm_date_based_experience
-                            source = "date_based_llm"
-                            logger.info(
-                                f"✅ EXPERIENCE EXTRACTED from LLM date ranges: {experience}",
-                                extra={"file_name": filename, "source": "llm_dates"}
-                            )
-                    else:
-                        # Python found dates, prefer Python (more reliable)
-                        experience = date_based_experience
-                        source = "date_based_python"
-                        logger.info(
-                            f"Using Python date-based calculation (LLM found {len(date_ranges)} ranges as validation)",
-                            extra={"file_name": filename, "date_ranges_count": len(date_ranges)}
-                        )
-                else:
-                    # No date ranges from LLM, use Python's date-based calculation if available
-                    if date_based_experience:
-                        experience = date_based_experience
-                        source = "date_based_python"
-            
-            # Final fallback: if LLM didn't provide useful data, use Python calculation
-            if not experience:
-                logger.warning(
-                    f"LLM did not provide usable experience data for {filename}, using Python date-based calculation",
-                    extra={"file_name": filename, "parsed_data": parsed_data}
-                )
-                experience = date_based_experience
-                if experience:
-                    source = "date_based_python"
-            
-            # Final fallback: try regex extraction
-            if not experience:
-                logger.debug(f"Trying regex fallback for {filename}")
-                experience = self._extract_experience_fallback(work_text)
-                if experience:
-                    source = "fallback"
-                    logger.info(
-                        f"✅ EXPERIENCE EXTRACTED via fallback from {filename}",
-                        extra={
-                            "file_name": filename,
-                            "experience": experience,
-                            "method": "regex_fallback"
-                        }
-                    )
-            
-            # Calculate confidence score
-            confidence = self._calculate_confidence_score(
-                experience=experience,
-                source=source,
-                explicit_found=(llm_summary_years is not None),
-                date_ranges_count=len(date_ranges) if date_ranges else 0,
-                llm_summary=llm_summary_years,
-                python_dates=date_based_experience,
-                llm_dates=llm_date_based_experience
-            )
-            
-            # Log with confidence score
-            logger.info(
-                f"✅ EXPERIENCE EXTRACTED from {filename}",
-                extra={
-                    "file_name": filename,
-                    "experience": experience,
-                    "status": "success" if experience else "not_found",
-                    "method": source,
-                    "confidence": confidence,
-                    "date_ranges_count": len(date_ranges) if date_ranges else 0
-                }
-            )
-            
-            # Cache the result
-            if experience:
-                self._cache[cache_key] = (experience, datetime.now().timestamp())
-            
-            return experience
-            
-        except httpx.HTTPError as e:
-            error_details = {
-                "error": str(e),
-                "error_type": type(e).__name__,
-                "ollama_host": self.ollama_host,
-                "model": model_to_use,
-            }
-            logger.warning(
-                f"HTTP error calling OLLAMA for experience extraction: {e}. Trying fallback regex extraction.",
-                extra=error_details
-            )
-            # Try fallback extraction even when LLM fails
-            experience = self._extract_experience_fallback(resume_text)
-            if not experience:
-                # Try date-based calculation as last resort
-                experience = self._calculate_experience_from_dates(resume_text)
-                if experience:
-                    logger.info(
-                        f"✅ EXPERIENCE EXTRACTED via date-based calculation after LLM failure from {filename}",
-                        extra={
-                            "file_name": filename,
-                            "experience": experience,
-                            "method": "date_based_after_llm_error"
-                        }
-                    )
-                    return experience
-            
-            if experience:
-                logger.info(
-                    f"✅ EXPERIENCE EXTRACTED via fallback after LLM failure from {filename}",
-                    extra={
-                        "file_name": filename,
-                        "experience": experience,
-                        "method": "regex_fallback_after_llm_error"
-                    }
-                )
-                return experience
-            # If fallback also fails, raise the error
-            logger.error(
-                f"Both LLM and fallback extraction failed for {filename}",
-                extra=error_details,
-                exc_info=True
-            )
-            raise RuntimeError(f"Failed to extract experience with LLM and fallback: {e}")
-        except Exception as e:
-            logger.warning(
-                f"Error extracting experience with LLM: {e}. Trying fallback regex extraction.",
-                extra={
-                    "error": str(e),
-                    "error_type": type(e).__name__,
-                    "ollama_host": self.ollama_host,
-                    "model": model_to_use,
-                }
-            )
-            # Try fallback extraction even when other errors occur
-            experience = self._extract_experience_fallback(resume_text)
-            if not experience:
-                # Try date-based calculation as last resort
-                experience = self._calculate_experience_from_dates(resume_text)
-                if experience:
-                    logger.info(
-                        f"✅ EXPERIENCE EXTRACTED via date-based calculation after error from {filename}",
-                        extra={
-                            "file_name": filename,
-                            "experience": experience,
-                            "method": "date_based_after_error"
-                        }
-                    )
-                    return experience
-            
-            if experience:
-                logger.info(
-                    f"✅ EXPERIENCE EXTRACTED via fallback after error from {filename}",
-                    extra={
-                        "file_name": filename,
-                        "experience": experience,
-                        "method": "regex_fallback_after_error"
-                    }
-                )
-                return experience
-            # If fallback also fails, raise the original error
-            logger.error(
-                f"Both LLM and fallback extraction failed for {filename}",
-                extra={
-                    "error": str(e),
-                    "error_type": type(e).__name__,
-                    "ollama_host": self.ollama_host,
-                    "model": model_to_use,
-                },
-                exc_info=True
-            )
-            raise
 
+                    # Extract raw output
+                    raw_output = ""
+                    if isinstance(result, dict):
+                        if "response" in result:
+                            raw_output = str(result["response"])
+                        elif "text" in result:
+                            raw_output = str(result["text"])
+                        elif "content" in result:
+                            raw_output = str(result["content"])
+                        elif "message" in result and isinstance(result.get("message"), dict):
+                            raw_output = str(result["message"].get("content", ""))
+                    else:
+                        raw_output = str(result)
+
+                    # Parse JSON
+                    parsed_data = self._extract_json(raw_output)
+
+                    # STEP 1A: Check explicit summary experience from LLM
+                    summary_experience = parsed_data.get("summary_experience")
+                    if summary_experience is not None:
+                        try:
+                            # Accept int/float directly, or extract the first integer from a string.
+                            years: Optional[int] = None
+                            
+                            if isinstance(summary_experience, (int, float)):
+                                years = int(summary_experience)
+                            else:
+                                # Extract leading integer from strings like "5", "5.5", "5 and half"
+                                num_match = re.search(r'(\d+)', str(summary_experience))
+                                if num_match:
+                                    years = int(num_match.group(1))
+                            
+                            if years is not None and 1 <= years <= 50:
+                                llm_experience = f"{years} years"
+                                llm_summary_years = years
+                                logger.info(f"✅ LLM explicit experience: {llm_experience}")
+                            else:
+                                logger.warning(f"Invalid or out-of-range summary_experience: {summary_experience}")
+                        except Exception:
+                            logger.warning(f"Failed to parse summary_experience: {summary_experience}", exc_info=True)
+
+                    # STEP 2: Date ranges (only if no explicit experience)
+                    if not llm_experience:
+                        llm_date_ranges = parsed_data.get("date_ranges", [])
+                        if isinstance(llm_date_ranges, list) and llm_date_ranges:
+                            logger.info(f"LLM extracted {len(llm_date_ranges)} date ranges")
+                            llm_experience = self._calculate_experience_from_llm_dates(llm_date_ranges)
+                            if llm_experience:
+                                logger.info(f"✅ LLM date-based experience: {llm_experience}")
+
+            except Exception as e:
+                logger.error(f"LLM extraction failed for {filename}: {e}", exc_info=True)
+                llm_experience = None
+                llm_date_ranges = []
+
+            # STEP 1B: Use LLM explicit if found
+            if llm_experience and llm_summary_years:
+                experience = llm_experience
+                source = "explicit_llm"
+                confidence = 0.90
+            # STEP 2: Use LLM date-based if found
+            elif llm_experience:
+                experience = llm_experience
+                source = "date_based_llm"
+                confidence = 0.75
+            # STEP 2B: Fresher detection
+            elif self.is_fresher(resume_text, llm_date_ranges):
+                logger.info(f"✅ Fresher detected for {filename}")
+                experience = "0 years"
+                source = "fresher"
+                confidence = 0.80
+            # STEP 3: Python fallback
+            else:
+                # Ensure we have text to work with
+                fallback_text = work_text if work_text and work_text.strip() else resume_text
+                
+                # Try Python date-based calculation
+                python_date = self._calculate_experience_from_dates(fallback_text)
+                if python_date:
+                    experience = python_date
+                    source = "date_based_python"
+                    confidence = 0.85
+                else:
+                    # Final regex fallback
+                    experience = self._extract_experience_fallback(fallback_text)
+                    if experience:
+                        source = "regex_fallback"
+                        confidence = 0.60
+                    else:
+                        # Check fresher again (in case LLM didn't run)
+                        if self.is_fresher(resume_text, []):
+                            logger.info(f"✅ Fresher detected (fallback) for {filename}")
+                            experience = "0 years"
+                            source = "fresher"
+                            confidence = 0.80
+
+        # Calculate final confidence score
+        final_confidence = self._calculate_confidence_score(
+            experience=experience,
+            source=source,
+            explicit_found=(python_explicit is not None) or (llm_summary_years is not None),
+            date_ranges_count=len(llm_date_ranges),
+            llm_summary=llm_summary_years,
+            python_dates=python_date,
+            llm_dates=llm_experience if source == "date_based_llm" else None
+        )
+
+        logger.info(
+            f"✅ EXPERIENCE RESULT for {filename}",
+            extra={
+                "file": filename,
+                "experience": experience,
+                "source": source,
+                "confidence": final_confidence
+            }
+        )
+
+        if experience:
+            self._cache[cache_key] = (experience, datetime.now().timestamp())
+
+        return experience

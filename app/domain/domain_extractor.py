@@ -1,7 +1,7 @@
 """Service for extracting industry domain from resumes using OLLAMA LLM."""
 import json
 import re
-from typing import Dict, Optional
+from typing import Dict, Optional, List
 import httpx
 from httpx import Timeout
 
@@ -233,9 +233,272 @@ VALID OUTPUT EXAMPLES:
 class DomainExtractor:
     """Service for extracting industry domain from resume text using OLLAMA LLM."""
     
+    # Domain precedence map: Higher priority domains come first
+    # Used to resolve conflicts when multiple domains are detected
+    DOMAIN_PRIORITY = [
+        "Banking, Financial Services & Insurance (BFSI)",
+        "Banking",
+        "Insurance",
+        "Capital Markets",
+        "FinTech",
+        "Finance",
+        "Finance & Accounting",
+        "Healthcare & Life Sciences",
+        "Healthcare",
+        "Pharmaceuticals & Clinical Research",
+        "Retail & E-Commerce",
+        "Retail",
+        "E-Commerce",
+        "Manufacturing & Production",
+        "Manufacturing",
+        "Supply Chain",
+        "Operations & Supply Chain Management",
+        "Logistics",
+        "Logistics & Transportation",
+        "Education, Training & Learning",
+        "Education",
+        "Government",
+        "Public Sector",
+        "Public Sector & Government Services",
+        "Defense",
+        "Energy, Utilities & Sustainability",
+        "Energy",
+        "Utilities",
+        "Telecommunications",
+        "Media & Entertainment",
+        "Media, Advertising & Communications",
+        "Gaming",
+        "Real Estate & Facilities Management",
+        "Real Estate",
+        "Construction & Infrastructure",
+        "Construction",
+        "Hospitality",
+        "Travel & Tourism",
+        "Agriculture",
+        "Agri-Business",
+        "Legal, Risk & Corporate Governance",
+        "Quality, Compliance & Audit",
+        "Human Resources",
+        "Sales & Marketing",
+        "Customer Service & Customer Experience",
+        "Administration & Office Management",
+        "Non-Profit",
+        "NGOs, Social Impact & CSR",
+        "Transportation",
+        "Automotive",
+        "Aerospace",
+        # IT domains at bottom - business domain must override IT
+        "Information Technology",
+        "Software & SaaS",
+        "Cloud & Infrastructure",
+        "Cybersecurity",
+        "Data & Analytics",
+        "Artificial Intelligence",
+    ]
+    
     def __init__(self):
         self.ollama_host = settings.ollama_host
         self.model = "llama3.1"
+    
+    def _extract_latest_experience(self, resume_text: str) -> str:
+        """
+        Extract and prioritize the most recent work experience section.
+        This ensures domain extraction focuses on the latest domain.
+        
+        Args:
+            resume_text: The full resume text
+            
+        Returns:
+            Latest experience section text (up to 3000 chars), or original text if not found
+        """
+        if not resume_text:
+            return ""
+        
+        lines = resume_text.split('\n')
+        experience_blocks = []
+        current_block = []
+        in_experience_section = False
+        
+        # Section headers that indicate experience/work
+        experience_keywords = [
+            r'^#?\s*(experience|work\s+experience|employment|professional\s+experience)',
+            r'^#?\s*(career|career\s+history|work\s+history|employment\s+history)',
+            r'^#?\s*(work|employment|professional)',
+        ]
+        
+        # Date patterns to identify experience entries
+        date_patterns = [
+            r'\b(january|february|march|april|may|june|july|august|september|october|november|december|jan|feb|mar|apr|may|jun|jul|aug|sep|sept|oct|nov|dec)\.?\s+(\d{4})\b',
+            r'\b(\d{1,2})/(\d{4})\b',  # MM/YYYY
+            r'\b(\d{4})-(\d{1,2})\b',  # YYYY-MM
+            r'\b(19[5-9]\d|20[0-3]\d)\b',  # Year only
+            # Comprehensive ongoing employment keywords
+            r'\b(present|current|now|today|till\s+date|till\s+now|till-date|till-now|tilldate|tillnow|til\s+date|til\s+now|til-date|til-now|tildate|tilnow|still\s+date|still\s+now|still-date|still-now|stilldate|stillnow|still|still\s+working|still\s+employed|still\s+active|to\s+date|to\s+now|to-date|to-now|todate|tonow|until\s+present|until\s+now|until\s+date|until-present|until-now|until-date|untilpresent|untilnow|untildate|up\s+to\s+present|up\s+to\s+now|up\s+to\s+date|up-to-present|up-to-now|up-to-date|uptopresent|uptonow|uptodate|as\s+of\s+now|as\s+of\s+present|as\s+of\s+date|as\s+of\s+today|as-of-now|as-of-present|as-of-date|as-of-today|asofnow|asofpresent|asofdate|asoftoday|ongoing|on-going|on\s+going|working|continuing|continue|active|currently|currently\s+working|currently\s+employed|currently\s+active)\b',
+        ]
+        
+        for i, line in enumerate(lines):
+            line_stripped = line.strip()
+            line_lower = line_stripped.lower()
+            
+            # Check if this line starts an experience section
+            is_experience_header = False
+            for pattern in experience_keywords:
+                if re.match(pattern, line_lower, re.IGNORECASE):
+                    is_experience_header = True
+                    in_experience_section = True
+                    # Save previous block if exists
+                    if current_block:
+                        experience_blocks.append('\n'.join(current_block))
+                    current_block = [line]
+                    break
+            
+            # If in experience section, collect lines
+            if in_experience_section:
+                current_block.append(line)
+                
+                # Check if line contains date (likely an experience entry)
+                has_date = any(re.search(pattern, line_lower, re.IGNORECASE) for pattern in date_patterns)
+                
+                # If we hit a new major section (not experience), save current block
+                if i < len(lines) - 1:
+                    next_line = lines[i + 1].strip() if i + 1 < len(lines) else ""
+                    # Check if next line is a new section header
+                    is_new_section = any(
+                        re.match(r'^#?\s*(education|academic|qualification|certification|skill|project)', 
+                                next_line.lower(), re.IGNORECASE)
+                    )
+                    if is_new_section and current_block:
+                        experience_blocks.append('\n'.join(current_block))
+                        current_block = []
+                        in_experience_section = False
+            else:
+                # Look for experience entries even without explicit section header
+                has_date = any(re.search(pattern, line_lower, re.IGNORECASE) for pattern in date_patterns)
+                has_job_indicators = any(keyword in line_lower for keyword in [
+                    'company', 'corporation', 'inc', 'ltd', 'worked at', 'employed at',
+                    'senior', 'junior', 'manager', 'developer', 'analyst', 'engineer'
+                ])
+                
+                if has_date and has_job_indicators:
+                    if not current_block:
+                        current_block = []
+                    current_block.append(line)
+        
+        # Add final block if exists
+        if current_block:
+            experience_blocks.append('\n'.join(current_block))
+        
+        # Rank experience blocks by date (most recent first)
+        # Extract date score for each block
+        from datetime import datetime
+        current_year = datetime.now().year
+        current_month = datetime.now().month
+        
+        def get_date_score(block_text: str) -> int:
+            """Get date score: higher = more recent. Present/Current = highest score."""
+            text_lower = block_text.lower()
+            
+            # Check for present/current keywords (highest priority)
+            # Comprehensive list matching experience extractor for consistency
+            present_keywords = [
+                # Standard
+                "present", "current", "now", "today",
+                # Till variations
+                "till date", "till now", "till-date", "till-now", "tilldate", "tillnow",
+                "til date", "til now", "til-date", "til-now", "tildate", "tilnow",
+                # Still variations
+                "still date", "still now", "still-date", "still-now", "stilldate", "stillnow",
+                "still", "still working", "still employed", "still active",
+                # To variations
+                "to date", "to now", "to-date", "to-now", "todate", "tonow",
+                # Until variations
+                "until present", "until now", "until date", "until-present", "until-now", "until-date",
+                "untilpresent", "untilnow", "untildate",
+                # Up to variations
+                "up to present", "up to now", "up to date", "up-to-present", "up-to-now", "up-to-date",
+                "uptopresent", "uptonow", "uptodate",
+                # As of variations
+                "as of now", "as of present", "as of date", "as of today",
+                "as-of-now", "as-of-present", "as-of-date", "as-of-today",
+                "asofnow", "asofpresent", "asofdate", "asoftoday",
+                # Ongoing variations
+                "ongoing", "on-going", "on going",
+                # Working variations
+                "working", "working till date", "working till now",
+                # Continuing variations
+                "continuing", "continue",
+                # Active variations
+                "active", "currently", "currently working", "currently employed", "currently active"
+            ]
+            if any(keyword in text_lower for keyword in present_keywords):
+                return 999999  # Highest score for present
+            
+            # Extract year from block
+            year_pattern = r'\b(20[0-3]\d|19[5-9]\d)\b'
+            years = re.findall(year_pattern, block_text)
+            if years:
+                # Use the highest year found (most recent)
+                max_year = max(int(y) for y in years)
+                # Score = year * 100 + month (if found)
+                month_score = 0
+                month_pattern = r'\b(january|february|march|april|may|june|july|august|september|october|november|december|jan|feb|mar|apr|may|jun|jul|aug|sep|sept|oct|nov|dec)\.?\s+(\d{4})\b'
+                month_matches = re.findall(month_pattern, text_lower, re.IGNORECASE)
+                if month_matches:
+                    month_names = {
+                        'january': 1, 'jan': 1, 'february': 2, 'feb': 2,
+                        'march': 3, 'mar': 3, 'april': 4, 'apr': 4,
+                        'may': 5, 'june': 6, 'jun': 6,
+                        'july': 7, 'jul': 7, 'august': 8, 'aug': 8,
+                        'september': 9, 'sep': 9, 'sept': 9,
+                        'october': 10, 'oct': 10, 'november': 11, 'nov': 11,
+                        'december': 12, 'dec': 12
+                    }
+                    for month_str, year_str in month_matches:
+                        if month_str.lower() in month_names and int(year_str) == max_year:
+                            month_score = month_names[month_str.lower()]
+                            break
+                return max_year * 100 + month_score
+            
+            # If no date found, return 0 (lowest priority)
+            return 0
+        
+        # Sort blocks by date score (descending - most recent first)
+        if experience_blocks:
+            experience_blocks_with_scores = [
+                (block, get_date_score(block)) for block in experience_blocks
+            ]
+            experience_blocks_with_scores.sort(key=lambda x: x[1], reverse=True)
+            latest_experience = experience_blocks_with_scores[0][0]
+            
+            # Fix #1: Split multi-role blocks - prefer last role paragraph within same company
+            # This prevents old domain language from contaminating latest domain
+            # Split on double newlines (paragraph breaks) and take first paragraph
+            # This typically contains the most recent role
+            if '\n\n' in latest_experience:
+                paragraphs = latest_experience.split('\n\n')
+                # Take first paragraph (usually most recent role)
+                latest_experience = paragraphs[0]
+                logger.debug(
+                    f"Multi-role block detected, using first paragraph (most recent role)",
+                    extra={"original_paragraphs": len(paragraphs)}
+                )
+            
+            # Limit to 3000 characters for LLM context
+            if len(latest_experience) > 3000:
+                latest_experience = latest_experience[:3000]
+                logger.debug(
+                    f"Latest experience truncated to 3000 characters",
+                    extra={"original_length": len(experience_blocks_with_scores[0][0])}
+                )
+            logger.info(
+                f"✅ Extracted latest experience section by date ({len(latest_experience)} chars)",
+                extra={"experience_length": len(latest_experience), "date_score": experience_blocks_with_scores[0][1]}
+            )
+            return latest_experience
+        
+        # Fallback: return first 3000 chars of resume if no experience section found
+        logger.debug("No explicit experience section found, using first 3000 chars of resume")
+        return resume_text[:3000]
     
     def _filter_education_sections(self, resume_text: str) -> str:
         """
@@ -369,6 +632,40 @@ class DomainExtractor:
         
         return False
     
+    def _resolve_domain_precedence(self, domains: List[str]) -> str:
+        """
+        Resolve domain conflicts using precedence hierarchy.
+        Returns the domain with highest priority.
+        
+        Args:
+            domains: List of candidate domain strings
+            
+        Returns:
+            Domain with highest priority
+        """
+        if not domains:
+            return None
+        
+        if len(domains) == 1:
+            return domains[0]
+        
+        # Find domain with highest priority (lowest index in DOMAIN_PRIORITY)
+        best_domain = None
+        best_priority = float('inf')
+        
+        for domain in domains:
+            try:
+                priority = self.DOMAIN_PRIORITY.index(domain)
+                if priority < best_priority:
+                    best_priority = priority
+                    best_domain = domain
+            except ValueError:
+                # Domain not in priority list - assign lowest priority
+                if best_priority == float('inf'):
+                    best_domain = domain
+        
+        return best_domain if best_domain else domains[0]
+    
     async def _check_ollama_connection(self) -> tuple[bool, Optional[str]]:
         """Check if OLLAMA is accessible and running. Returns (is_connected, available_model)."""
         try:
@@ -430,7 +727,8 @@ class DomainExtractor:
                     "healthcare", "health care", "hospital", "clinic", "medical center", "health system",
                     "clinical", "clinical data", "clinical analytics", "patient care", "patient data",
                     "medicare", "medicaid", "hipaa", "hl7", "fhir", "health information",
-                    "life sciences", "pharmaceutical", "pharma", "biotech", "biotechnology",
+                    "life sciences", "biotech", "biotechnology",
+                    # Removed "pharmaceutical", "pharma" - exclusive to "Pharmaceuticals & Clinical Research"
                     "health insurance", "health plan", "payer", "provider", "physician", "nurse"
                 ],
                 "low": [
@@ -447,23 +745,32 @@ class DomainExtractor:
                     "bank", "banking", "financial institution", "credit union", "mortgage", "lending",
                     "loan", "deposit", "teller", "branch banking", "corporate banking"
                 ],
-                "low": [
-                    "financial", "finance", "money", "revenue", "budget"
-                ]
+                "low": []  # Removed abstract keywords: financial, finance, money, revenue, budget
             },
             "Finance": {
                 "high": [
                     "capital markets", "investment management", "wealth management", "asset management",
                     "private equity", "venture capital", "hedge fund", "financial planning",
-                    "financial services", "fintech", "financial technology", "financial consulting"
+                    "financial services", "financial technology", "financial consulting"
+                    # Removed "fintech" - exclusive to "FinTech" domain
                 ],
                 "medium": [
                     "finance", "financial", "accounting", "cpa", "audit", "tax", "treasury",
                     "financial analyst", "financial advisor", "financial reporting", "fp&a"
                 ],
-                "low": [
-                    "accounting", "budget", "revenue"
-                ]
+                "low": []  # Removed abstract keywords: accounting, budget, revenue
+            },
+            "FinTech": {
+                "high": [
+                    "fintech", "fintech company", "fintech platform", "fintech startup",
+                    "digital banking", "mobile banking", "payment platform", "lending platform",
+                    "cryptocurrency", "blockchain", "digital wallet", "payment gateway"
+                ],
+                "medium": [
+                    "fintech", "financial technology", "digital finance", "payment solutions",
+                    "lending technology", "banking technology", "payment processing"
+                ],
+                "low": []
             },
             "Insurance": {
                 "high": [
@@ -488,9 +795,7 @@ class DomainExtractor:
                     "online shopping", "digital retail", "e-commerce platform", "online sales",
                     "marketplace", "online business", "digital marketplace"
                 ],
-                "low": [
-                    "online", "digital", "web", "internet", "ecommerce"
-                ]
+                "low": []  # Removed abstract keywords: online, digital, web, internet, ecommerce
             },
             "Retail": {
                 "high": [
@@ -501,9 +806,7 @@ class DomainExtractor:
                     "retail", "retailer", "store", "point of sale", "pos", "inventory management",
                     "brick and mortar", "retail sales", "store operations"
                 ],
-                "low": [
-                    "sales", "customer"
-                ]
+                "low": []  # Removed abstract keywords: sales, customer
             },
             "Manufacturing": {
                 "high": [
@@ -626,6 +929,18 @@ class DomainExtractor:
                 ],
                 "low": []
             },
+            "Pharmaceuticals & Clinical Research": {
+                "high": [
+                    "pharmaceutical company", "pharma company", "pharmaceutical industry",
+                    "clinical research", "clinical trials", "drug development", "pharmaceutical manufacturing",
+                    "biopharmaceutical", "pharmaceutical research", "pharmaceutical sales"
+                ],
+                "medium": [
+                    "pharmaceutical", "pharma", "pharmaceuticals", "clinical research",
+                    "drug discovery", "pharmaceutical development"
+                ],
+                "low": []
+            },
             "Banking, Financial Services & Insurance (BFSI)": {
                 "high": [
                     "bfsi", "banking financial services insurance", "financial services and insurance",
@@ -676,9 +991,7 @@ class DomainExtractor:
                     "telecommunications", "telecom", "wireless", "mobile network", "network",
                     "telecom infrastructure", "network services"
                 ],
-                "low": [
-                    "network", "communication"
-                ]
+                "low": []  # Removed abstract keywords: network, communication
             },
             "Energy": {
                 "high": [
@@ -690,9 +1003,7 @@ class DomainExtractor:
                     "energy", "power", "utilities", "electric", "renewable", "solar",
                     "wind", "oil", "gas", "petroleum", "energy"
                 ],
-                "low": [
-                    "power", "energy"
-                ]
+                "low": []  # Removed abstract keywords: power, energy
             },
             "Logistics": {
                 "high": [
@@ -732,9 +1043,7 @@ class DomainExtractor:
                     "media", "entertainment", "broadcasting", "television", "film",
                     "publishing", "advertising", "marketing", "digital media"
                 ],
-                "low": [
-                    "media", "content", "marketing"
-                ]
+                "low": []  # Removed abstract keywords: media, content, marketing
             },
             "Automotive": {
                 "high": [
@@ -823,7 +1132,9 @@ class DomainExtractor:
                 if keyword in text_lower:
                     score += 1  # Low weight
             
-            if score > 0:
+            # Fix #5: Only register domain if medium/high matches exist
+            # This prevents single low-weight keyword from surviving until threshold check
+            if score > 0 and (high_matches > 0 or medium_matches > 0):
                 domain_scores[domain] = {
                     "score": score,
                     "high_matches": high_matches,
@@ -854,16 +1165,32 @@ class DomainExtractor:
                     else:
                         return None
             
-            # Very lenient threshold: Accept if we have any matches (to avoid null results)
-            # Priority: high matches > medium matches > any matches
+            # STRICT threshold: Require strong indicators (ATS-grade)
+            # Require: score >= 10 AND at least 1 high-weight match OR 2+ medium-weight matches
             has_high_match = best_data["high_matches"] > 0
-            has_medium_match = best_data["medium_matches"] > 0
-            has_any_match = best_score > 0
+            has_medium_match = best_data["medium_matches"] >= 2
+            has_strong_score = best_score >= 10
             
-            # Very lenient: Accept if we have ANY matches at all (score > 0)
-            # This ensures we catch domains even with minimal keyword matches
-            # Priority: high > medium > low, but accept any if found
-            if best_score > 0:
+            # Accept only if we have strong indicators
+            if has_strong_score and (has_high_match or has_medium_match):
+                # Apply domain precedence: if multiple domains detected, choose highest priority
+                candidate_domains = [
+                    domain for domain, data in domain_scores.items()
+                    if data["score"] >= 10 and (data["high_matches"] > 0 or data["medium_matches"] >= 2)
+                ]
+                
+                if len(candidate_domains) > 1:
+                    # Resolve conflict using domain precedence
+                    best_domain = self._resolve_domain_precedence(candidate_domains)
+                    logger.info(
+                        f"✅ Domain precedence resolved: {best_domain} from {len(candidate_domains)} candidates",
+                        extra={
+                            "file_name": filename,
+                            "candidates": candidate_domains,
+                            "resolved": best_domain
+                        }
+                    )
+                
                 logger.info(
                     f"✅ Keyword-based domain detection: {best_domain} (score: {best_score}, "
                     f"high: {best_data['high_matches']}, medium: {best_data['medium_matches']})",
@@ -878,194 +1205,16 @@ class DomainExtractor:
                 return best_domain
             else:
                 logger.debug(
-                    f"Keyword detection found {best_domain} but score/confidence too low (score: {best_score})",
-                    extra={"file_name": filename, "domain": best_domain, "score": best_score}
-                )
-        
-        # Note: We do NOT infer from job titles alone per new prompt rules
-        # Domain must be inferred from company names, client names, project descriptions, or business context
-        
-        # Final attempt: Even if no strong matches, return the domain with highest score if any score > 0
-        # This ensures we extract domain for ALL resumes, even with weak indicators
-        if domain_scores:
-            best_domain = max(domain_scores, key=lambda x: domain_scores[x]["score"])
-            best_data = domain_scores[best_domain]
-            best_score = best_data["score"]
-            
-            # If we have ANY score, return it (ultra lenient to avoid null)
-            if best_score > 0:
-                logger.info(
-                    f"✅ Ultra lenient domain detection: {best_domain} (score: {best_score}) - accepting minimal match to avoid null",
+                    f"Keyword detection found {best_domain} but threshold not met (score: {best_score}, "
+                    f"high: {best_data['high_matches']}, medium: {best_data['medium_matches']})",
                     extra={
-                        "file_name": filename,
-                        "domain": best_domain,
+                        "file_name": filename, 
+                        "domain": best_domain, 
                         "score": best_score,
                         "high_matches": best_data["high_matches"],
-                        "medium_matches": best_data["medium_matches"],
-                        "method": "ultra_lenient_fallback"
+                        "medium_matches": best_data["medium_matches"]
                     }
                 )
-                return best_domain
-        
-        # EXTRA SAFETY: If we have ANY domain with score > 0, return it (even if already checked above)
-        # This is a double-check to ensure we never miss a domain
-        if domain_scores:
-            for domain_name, domain_info in domain_scores.items():
-                if domain_info["score"] > 0:
-                    logger.info(
-                        f"✅ Safety net: Returning {domain_name} (score: {domain_info['score']}) to avoid null",
-                        extra={"file_name": filename, "domain": domain_name, "score": domain_info["score"]}
-                    )
-                    return domain_name
-        
-        return None
-    
-    def _detect_domain_with_minimal_threshold(self, resume_text: str, filename: str = "resume") -> Optional[str]:
-        """
-        Ultimate fallback with minimal threshold - accepts domain with just 1 keyword match.
-        This is the last resort to avoid null results.
-        Filters out education sections to prevent false Education domain detection.
-        
-        Args:
-            resume_text: The resume text to analyze
-            filename: Name of the file (for logging)
-        
-        Returns:
-            Detected domain string or None if not found
-        """
-        if not resume_text:
-            return None
-        
-        # Filter out education sections to prevent false positives
-        filtered_text = self._filter_education_sections(resume_text)
-        if not filtered_text or len(filtered_text.strip()) < 50:
-            filtered_text = resume_text
-        
-        text_lower = filtered_text.lower()
-        
-        # Comprehensive keyword list - check for any domain indicator with more keywords
-        # Education keywords are more specific to work context
-        domain_indicators = {
-            "Healthcare": [
-                "healthcare", "health care", "hospital", "clinic", "medical", "epic", "cerner", "ehr", "emr", 
-                "clinical", "patient", "physician", "nurse", "healthcare data", "healthcare analytics",
-                "population health", "value-based care", "revenue cycle", "health insurance", "medicare", "medicaid"
-            ],
-            "Information Technology": [
-                "software company", "it company", "tech company", "saas company", "software as a service company",
-                "enterprise software", "software product", "it services company", "it consulting firm",
-                "information technology company", "software development company", "technology company"
-            ],
-            "Finance": [
-                "finance", "financial", "accounting", "cpa", "audit", "tax", "investment", "wealth",
-                "financial services", "capital markets", "asset management", "financial planning", "fintech"
-            ],
-            "Banking": [
-                "bank", "banking", "loan", "mortgage", "credit", "financial institution", "commercial bank",
-                "retail banking", "investment bank", "banking services"
-            ],
-            "Education": [
-                "school district", "educational institution", "edtech company", "education consulting",
-                "educational technology company", "lms platform", "e-learning platform", "education services",
-                "worked at university", "worked at college", "education sector", "education industry"
-            ],
-            "Government": [
-                "government", "federal", "state", "public sector", "government agency", "public administration",
-                "civil service", "municipal"
-            ],
-            "Retail": [
-                "retail", "store", "merchandising", "retailer", "retail operations", "retail management",
-                "point of sale", "inventory management"
-            ],
-            "Manufacturing": [
-                "manufacturing", "production", "factory", "industrial", "manufacturing operations",
-                "production planning", "quality control", "assembly line"
-            ],
-            "Insurance": [
-                "insurance", "actuary", "underwriting", "claims", "insurance company", "insurance carrier",
-                "life insurance", "health insurance", "property insurance"
-            ],
-            "E-Commerce": [
-                "e-commerce", "ecommerce", "online retail", "online marketplace", "digital commerce",
-                "online shopping", "e-commerce platform"
-            ],
-            "Telecommunications": [
-                "telecom", "telecommunications", "wireless", "mobile network", "telecom services",
-                "network infrastructure", "5g", "4g"
-            ],
-            "Energy": [
-                "energy", "power", "utilities", "renewable", "renewable energy", "solar", "wind",
-                "energy sector", "power generation", "utility company"
-            ],
-            "Logistics": [
-                "logistics", "supply chain", "warehouse", "shipping", "transportation", "freight",
-                "logistics management", "distribution", "supply chain management"
-            ],
-            "Real Estate": [
-                "real estate", "property", "realty", "real estate development", "commercial real estate",
-                "residential real estate", "property management"
-            ],
-            "Media & Entertainment": [
-                "media", "entertainment", "broadcasting", "television", "film", "publishing",
-                "advertising", "marketing", "digital media", "content creation"
-            ],
-            "Automotive": [
-                "automotive", "automobile", "vehicle", "car manufacturer", "auto industry",
-                "automotive manufacturing", "automotive engineering"
-            ],
-            "Aerospace": [
-                "aerospace", "aviation", "aircraft", "aerospace manufacturing", "aerospace engineering",
-                "defense contractor", "space", "satellite"
-            ],
-            "Construction": [
-                "construction", "contractor", "building", "construction company", "construction management",
-                "general contractor", "construction project"
-            ],
-            "Hospitality": [
-                "hospitality", "hotel", "resort", "hospitality management", "hotel management",
-                "restaurant", "hospitality industry"
-            ],
-            "Transportation": [
-                "transportation", "transit", "transport", "transportation services", "transportation management",
-                "fleet management", "public transportation"
-            ]
-        }
-        
-        # Count matches for each domain (even single match counts)
-        domain_matches = {}
-        for domain, keywords in domain_indicators.items():
-            matches = sum(1 for keyword in keywords if keyword in text_lower)
-            if matches > 0:
-                domain_matches[domain] = matches
-        
-        # Return domain with most matches (even if just 1)
-        # Special handling: Skip Education if no clear work context
-        if domain_matches:
-            best_domain = max(domain_matches, key=domain_matches.get)
-            best_count = domain_matches[best_domain]
-            
-            # For Education domain, ensure it's work-related (not from education section)
-            if best_domain == "Education" and best_count < 2:
-                # Education with only 1 match might be from education section - skip it
-                logger.debug(
-                    f"Education domain with low match count ({best_count}) - skipping to avoid false positive",
-                    extra={"file_name": filename}
-                )
-                domain_matches.pop("Education", None)
-                if domain_matches:
-                    best_domain = max(domain_matches, key=domain_matches.get)
-                    best_count = domain_matches[best_domain]
-                else:
-                    return None
-            
-            logger.info(
-                f"✅ Minimal threshold detection: {best_domain} (matches: {best_count})",
-                extra={"file_name": filename, "domain": best_domain, "match_count": best_count}
-            )
-            return best_domain
-        
-        # Do NOT default to IT from "developer" role alone - per new prompt rules
-        # IT domain should only be used if candidate worked at IT companies/products
         
         return None
     
@@ -1086,12 +1235,9 @@ class DomainExtractor:
         if not resume_text:
             return None
         
-        # Filter out education sections to prevent false positives
-        filtered_text = self._filter_education_sections(resume_text)
-        if not filtered_text or len(filtered_text.strip()) < 50:
-            filtered_text = resume_text
-        
-        text_lower = filtered_text.lower()
+        # Fix #2: Remove education filtering from fallback - rely on LLM prompt rules
+        # Education filtering can remove valid EdTech experience
+        text_lower = resume_text.lower()
         
         # Only use clearly industry-specific job titles that indicate business domain
         # NOT generic tech roles - those could be in any industry
@@ -1149,265 +1295,6 @@ class DomainExtractor:
             return best_domain
         
         # Do NOT default to IT from generic tech keywords - per new prompt rules
-        # IT domain should only be used if candidate worked at IT companies/products
-        
-        return None
-    
-    def _infer_domain_from_general_patterns(self, resume_text: str, filename: str = "resume") -> Optional[str]:
-        """
-        Final fallback: Infer domain from general patterns, skills, and common industry indicators.
-        This is the last resort to avoid returning null.
-        Filters out education sections to prevent false Education domain detection.
-        
-        Args:
-            resume_text: The resume text to analyze
-            filename: Name of the file (for logging)
-        
-        Returns:
-            Inferred domain string or None if not found
-        """
-        if not resume_text:
-            return None
-        
-        # Filter out education sections to prevent false positives
-        filtered_text = self._filter_education_sections(resume_text)
-        if not filtered_text or len(filtered_text.strip()) < 50:
-            filtered_text = resume_text
-        
-        text_lower = filtered_text.lower()
-        
-        # Check for very common domain indicators (even if not in main keywords)
-        # These are patterns that strongly suggest a domain
-        
-        # Healthcare indicators (more lenient - accept with 1+ indicator)
-        healthcare_indicators = sum(1 for indicator in [
-            "patient", "clinical", "medical", "health", "hospital", "clinic",
-            "epic", "cerner", "ehr", "emr", "hipaa", "medicare", "medicaid",
-            "healthcare", "health care", "physician", "nurse", "healthcare data",
-            "healthcare analytics", "population health", "value-based care"
-        ] if indicator in text_lower)
-        
-        if healthcare_indicators >= 1:  # More lenient: accept with just 1 indicator
-            logger.info(
-                f"✅ Domain inferred as Healthcare from general patterns (indicators: {healthcare_indicators})",
-                extra={"file_name": filename, "domain": "Healthcare", "indicator_count": healthcare_indicators}
-            )
-            return "Healthcare"
-        
-        # IT/Tech indicators - ONLY if IT company/product context found (per new prompt rules)
-        # Do NOT infer IT domain from skills alone - must be IT company/product indicators
-        it_company_indicators = sum(1 for indicator in [
-            "software company", "it company", "tech company", "saas company", "software as a service company",
-            "enterprise software", "software product", "it services company", "it consulting firm",
-            "cloud services company", "cybersecurity company", "data center company", "it infrastructure company",
-            "information technology company", "software development company", "technology company"
-        ] if indicator in text_lower)
-        
-        if it_company_indicators >= 1:  # Only if IT company/product context found
-            logger.info(
-                f"✅ Domain inferred as Information Technology from IT company indicators (indicators: {it_company_indicators})",
-                extra={"file_name": filename, "domain": "Information Technology", "indicator_count": it_company_indicators}
-            )
-            return "Information Technology"
-        
-        # Finance indicators (more lenient - accept with 1+ indicator)
-        finance_indicators = sum(1 for indicator in [
-            "financial", "finance", "accounting", "cpa", "audit", "tax", "treasury",
-            "investment", "wealth", "asset management", "capital markets", "financial analyst"
-        ] if indicator in text_lower)
-        
-        if finance_indicators >= 1:  # More lenient: accept with just 1 indicator
-            logger.info(
-                f"✅ Domain inferred as Finance from general patterns (indicators: {finance_indicators})",
-                extra={"file_name": filename, "domain": "Finance", "indicator_count": finance_indicators}
-            )
-            return "Finance"
-        
-        # Banking indicators
-        if any(indicator in text_lower for indicator in [
-            "bank", "banking", "loan", "mortgage", "credit", "deposit", "teller"
-        ]):
-            logger.info(
-                f"✅ Domain inferred as Banking from general patterns",
-                extra={"file_name": filename, "domain": "Banking"}
-            )
-            return "Banking"
-        
-        # Education indicators - only if clearly work-related (not from education section)
-        # Use more specific work-related education terms
-        education_work_indicators = [
-            "school district", "educational institution", "edtech company", "education consulting",
-            "educational technology", "lms platform", "e-learning platform", "education services",
-            "worked at university", "worked at college", "education sector", "education industry"
-        ]
-        if any(indicator in text_lower for indicator in education_work_indicators):
-            logger.info(
-                f"✅ Domain inferred as Education from work-related patterns",
-                extra={"file_name": filename, "domain": "Education"}
-            )
-            return "Education"
-        
-        # Final comprehensive check - try all domains one more time with minimal threshold
-        # This ensures we catch domains even with very weak indicators
-        # Education keywords are work-specific to avoid false positives
-        all_domain_keywords = {
-            "Healthcare": ["healthcare", "health care", "hospital", "clinic", "medical", "clinical", "patient", "epic", "cerner"],
-            "Information Technology": ["software company", "it company", "tech company", "saas company", "software as a service company", "enterprise software", "software product", "it services company"],
-            "Finance": ["finance", "financial", "accounting", "cpa", "audit", "tax", "investment"],
-            "Banking": ["bank", "banking", "loan", "mortgage", "credit"],
-            "Education": ["school district", "educational institution", "edtech company", "education consulting", "lms platform", "education services"],
-            "Government": ["government", "federal", "state", "public sector"],
-            "Retail": ["retail", "store", "merchandising"],
-            "Manufacturing": ["manufacturing", "production", "factory"],
-            "Insurance": ["insurance", "actuary", "underwriting"],
-            "E-Commerce": ["e-commerce", "ecommerce", "online retail"],
-            "Telecommunications": ["telecom", "telecommunications", "wireless"],
-            "Energy": ["energy", "power", "utilities"],
-            "Logistics": ["logistics", "supply chain", "warehouse"],
-            "Real Estate": ["real estate", "property", "realty"],
-            "Media & Entertainment": ["media", "entertainment", "broadcasting"],
-            "Automotive": ["automotive", "automobile", "vehicle"],
-            "Aerospace": ["aerospace", "aviation", "aircraft"],
-            "Construction": ["construction", "contractor", "building"],
-            "Hospitality": ["hospitality", "hotel", "resort"],
-            "Transportation": ["transportation", "transit", "transport"]
-        }
-        
-        # Check each domain - return first match
-        for domain, keywords in all_domain_keywords.items():
-            if any(keyword in text_lower for keyword in keywords):
-                logger.info(
-                    f"✅ Domain inferred from comprehensive check: {domain}",
-                    extra={"file_name": filename, "domain": domain}
-                )
-                return domain
-        
-        # Do NOT default to IT from tech keywords alone - per new prompt rules
-        # IT domain should only be used if candidate worked at IT companies/products
-        
-        return None
-    
-    def _comprehensive_domain_detection(self, resume_text: str, filename: str = "resume") -> Optional[str]:
-        """
-        Comprehensive domain detection - absolute last resort to avoid null.
-        Checks for ANY domain indicator with minimal threshold.
-        Filters out education sections to prevent false Education domain detection.
-        
-        Args:
-            resume_text: The resume text to analyze
-            filename: Name of the file (for logging)
-        
-        Returns:
-            Detected domain string or None if not found
-        """
-        if not resume_text or len(resume_text.strip()) < 50:
-            return None
-        
-        # Filter out education sections to prevent false positives
-        filtered_text = self._filter_education_sections(resume_text)
-        if not filtered_text or len(filtered_text.strip()) < 30:
-            filtered_text = resume_text
-        
-        text_lower = filtered_text.lower()
-        
-        # Comprehensive domain keyword list - single keyword match is enough
-        # Education keywords are work-specific
-        domain_checks = {
-            "Healthcare": ["healthcare", "health care", "hospital", "clinic", "medical", "clinical", "patient", "epic", "cerner", "ehr", "emr", "physician", "nurse", "healthcare data", "healthcare analytics"],
-            "Information Technology": ["software company", "it company", "tech company", "saas company", "software as a service company", "enterprise software", "software product", "it services company", "information technology company"],
-            "Finance": ["finance", "financial", "accounting", "cpa", "audit", "tax", "investment", "wealth", "asset management", "capital markets"],
-            "Banking": ["bank", "banking", "loan", "mortgage", "credit", "teller", "deposit"],
-            "Education": ["school district", "educational institution", "edtech company", "education consulting", "lms platform", "education services", "worked at university", "worked at college"],
-            "Government": ["government", "federal", "state", "municipal", "public sector", "civil service"],
-            "Retail": ["retail", "store", "merchandising", "retailer"],
-            "Manufacturing": ["manufacturing", "production", "factory", "industrial"],
-            "Insurance": ["insurance", "actuary", "underwriting", "claims"],
-            "E-Commerce": ["e-commerce", "ecommerce", "online retail", "marketplace"],
-            "Telecommunications": ["telecom", "telecommunications", "wireless", "mobile network"],
-            "Energy": ["energy", "power", "utilities", "renewable"],
-            "Logistics": ["logistics", "supply chain", "warehouse", "shipping"],
-            "Real Estate": ["real estate", "property", "realty"],
-            "Media & Entertainment": ["media", "entertainment", "broadcasting", "television"],
-            "Automotive": ["automotive", "automobile", "vehicle"],
-            "Aerospace": ["aerospace", "aviation", "aircraft"],
-            "Construction": ["construction", "contractor", "building"],
-            "Hospitality": ["hospitality", "hotel", "resort"],
-            "Transportation": ["transportation", "transit", "transport"]
-        }
-        
-        # Check each domain - return first match found
-        for domain, keywords in domain_checks.items():
-            if any(keyword in text_lower for keyword in keywords):
-                logger.info(
-                    f"✅ Comprehensive detection: {domain}",
-                    extra={"file_name": filename, "domain": domain, "method": "comprehensive"}
-                )
-                return domain
-        
-        # Do NOT default to IT from tech keywords alone - per new prompt rules
-        # IT domain should only be used if candidate worked at IT companies/products
-        
-        return None
-    
-    def _aggressive_domain_detection(self, resume_text: str, filename: str = "resume") -> Optional[str]:
-        """
-        Most aggressive domain detection - scans for ANY domain indicator.
-        This is the final safety net to avoid null results.
-        Filters out education sections to prevent false Education domain detection.
-        
-        Args:
-            resume_text: The resume text to analyze
-            filename: Name of the file (for logging)
-        
-        Returns:
-            Detected domain string or None if not found
-        """
-        if not resume_text or len(resume_text.strip()) < 30:
-            return None
-        
-        # Filter out education sections to prevent false positives
-        filtered_text = self._filter_education_sections(resume_text)
-        if not filtered_text or len(filtered_text.strip()) < 20:
-            filtered_text = resume_text
-        
-        text_lower = filtered_text.lower()
-        
-        # Ultra-aggressive keyword list - single keyword match is enough
-        # Education keywords are work-specific to avoid false positives
-        aggressive_keywords = {
-            "Healthcare": ["health", "medical", "hospital", "clinic", "patient", "clinical", "epic", "cerner", "ehr", "emr", "physician", "nurse", "medicare", "medicaid"],
-            "Information Technology": ["software company", "it company", "tech company", "saas company", "software as a service company", "enterprise software", "software product", "it services company", "information technology company"],
-            "Finance": ["finance", "financial", "accounting", "cpa", "audit", "tax", "investment", "wealth", "asset", "capital"],
-            "Banking": ["bank", "banking", "loan", "mortgage", "credit", "teller", "deposit"],
-            "Education": ["school district", "educational institution", "edtech company", "education consulting", "lms platform", "education services"],
-            "Government": ["government", "federal", "state", "municipal", "public sector"],
-            "Retail": ["retail", "store", "merchandising", "retailer"],
-            "Manufacturing": ["manufacturing", "production", "factory", "industrial"],
-            "Insurance": ["insurance", "actuary", "underwriting", "claims", "policy"],
-            "E-Commerce": ["e-commerce", "ecommerce", "online retail", "marketplace"],
-            "Telecommunications": ["telecom", "telecommunications", "wireless", "mobile network"],
-            "Energy": ["energy", "power", "utilities", "renewable"],
-            "Logistics": ["logistics", "supply chain", "warehouse", "shipping"],
-            "Real Estate": ["real estate", "property", "realty"],
-            "Media & Entertainment": ["media", "entertainment", "broadcasting", "television"],
-            "Automotive": ["automotive", "automobile", "vehicle"],
-            "Aerospace": ["aerospace", "aviation", "aircraft"],
-            "Construction": ["construction", "contractor", "building"],
-            "Hospitality": ["hospitality", "hotel", "resort"],
-            "Transportation": ["transportation", "transit", "transport"]
-        }
-        
-        # Check each domain - return FIRST match found (most aggressive)
-        for domain, keywords in aggressive_keywords.items():
-            for keyword in keywords:
-                if keyword in text_lower:
-                    logger.info(
-                        f"✅ Aggressive detection: {domain} (keyword: {keyword})",
-                        extra={"file_name": filename, "domain": domain, "keyword": keyword}
-                    )
-                    return domain
-        
-        # Do NOT default to IT from tech keywords alone - per new prompt rules
         # IT domain should only be used if candidate worked at IT companies/products
         
         return None
@@ -1481,9 +1368,9 @@ class DomainExtractor:
         logger.error(
             "ERROR: Failed to parse JSON from LLM response", 
             extra={
-                "response_preview": text[:500],
+                "response_hash": hash(text[:1000]),
                 "response_length": len(text),
-                "cleaned_preview": cleaned_text[:500]
+                "cleaned_hash": hash(cleaned_text[:1000])
             }
         )
         return {"domain": None}
@@ -1523,17 +1410,26 @@ class DomainExtractor:
                 )
                 model_to_use = available_model
             
-            # Use up to 10000 characters, but log if truncated
-            text_to_send = resume_text[:10000]
-            if len(resume_text) > 10000:
+            # Extract latest experience section (experience-first approach)
+            latest_experience = self._extract_latest_experience(resume_text)
+            
+            # Use latest experience (up to 3000 characters) for LLM context
+            # This ensures we prioritize the most recent domain
+            text_to_send = latest_experience[:3000]
+            if len(latest_experience) > 3000:
                 logger.debug(
-                    f"Resume text truncated from {len(resume_text)} to 10000 characters for domain extraction",
-                    extra={"file_name": filename, "original_length": len(resume_text)}
+                    f"Latest experience truncated from {len(latest_experience)} to 3000 characters for domain extraction",
+                    extra={"file_name": filename, "original_length": len(latest_experience)}
                 )
             
             prompt = f"""{DOMAIN_PROMPT}
 
-Input resume text:
+IMPORTANT CONTEXT:
+- The text below contains the MOST RECENT work experience section
+- Prioritize the domain from this latest experience
+- If domain is unclear, return null (acceptable)
+
+Input resume text (latest experience):
 {text_to_send}
 
 Output (JSON only, no other text, no explanations):"""
@@ -1552,32 +1448,47 @@ Output (JSON only, no other text, no explanations):"""
             result = None
             last_error = None
             
-            async with httpx.AsyncClient(timeout=Timeout(600.0)) as client:
-                try:
-                    response = await client.post(
-                        f"{self.ollama_host}/api/generate",
-                        json={
-                            "model": model_to_use,
-                            "prompt": prompt,
-                            "stream": False,
-                            "options": {
-                                "temperature": 0.1,
-                                "top_p": 0.9,
+            # Fix #6: Reduce timeout to 120s (was 600s) to prevent thread starvation
+            # Add retry logic for transient failures
+            async with httpx.AsyncClient(timeout=Timeout(120.0)) as client:
+                max_retries = 1
+                for attempt in range(max_retries + 1):
+                    try:
+                        response = await client.post(
+                            f"{self.ollama_host}/api/generate",
+                            json={
+                                "model": model_to_use,
+                                "prompt": prompt,
+                                "stream": False,
+                                "options": {
+                                    "temperature": 0.0,
+                                    "top_p": 0.9,
+                                }
                             }
-                        }
-                    )
-                    response.raise_for_status()
-                    result = response.json()
-                    response_text = result.get("response", "") or result.get("text", "")
-                    if not response_text and "message" in result:
-                        response_text = result.get("message", {}).get("content", "")
-                    result = {"response": response_text}
-                    logger.info("✅ Successfully used /api/generate endpoint for domain extraction")
-                except httpx.HTTPStatusError as e:
-                    if e.response.status_code != 404:
-                        raise
-                    last_error = e
-                    logger.warning("OLLAMA /api/generate returned 404, trying /api/chat endpoint")
+                        )
+                        response.raise_for_status()
+                        result = response.json()
+                        response_text = result.get("response", "") or result.get("text", "")
+                        if not response_text and "message" in result:
+                            response_text = result.get("message", {}).get("content", "")
+                        result = {"response": response_text}
+                        logger.info("✅ Successfully used /api/generate endpoint for domain extraction")
+                        break  # Success, exit retry loop
+                    except (httpx.TimeoutException, httpx.NetworkError) as e:
+                        if attempt < max_retries:
+                            logger.warning(f"OLLAMA request timeout/network error (attempt {attempt + 1}/{max_retries + 1}), retrying...")
+                            last_error = e
+                            continue
+                        else:
+                            last_error = e
+                            logger.error(f"OLLAMA request failed after {max_retries + 1} attempts: {e}")
+                            raise
+                    except httpx.HTTPStatusError as e:
+                        if e.response.status_code != 404:
+                            raise
+                        last_error = e
+                        logger.warning("OLLAMA /api/generate returned 404, trying /api/chat endpoint")
+                        break  # Try /api/chat instead
                 
                 if result is None:
                     try:
@@ -1593,7 +1504,7 @@ Output (JSON only, no other text, no explanations):"""
                                 ],
                                 "stream": False,
                                 "options": {
-                                    "temperature": 0.1,
+                                    "temperature": 0.0,
                                     "top_p": 0.9,
                                     "num_predict": 500,  # Limit response length for isolation
                                 }
@@ -1641,59 +1552,24 @@ Output (JSON only, no other text, no explanations):"""
             else:
                 domain = None
             
-            # FALLBACK LAYER 1: If LLM returned null, try keyword-based domain detection
-            if not domain and resume_text:
-                domain = self._detect_domain_from_keywords(resume_text, filename)
+            # FALLBACK LAYER 1: Strict keyword-based domain detection (ATS-grade)
+            # Only use latest experience for fallback to maintain "latest domain" priority
+            if not domain and latest_experience:
+                domain = self._detect_domain_from_keywords(latest_experience, filename)
                 if domain:
                     logger.info(
-                        f"✅ FALLBACK LAYER 1: Domain detected from keywords: {domain} for {filename}",
-                        extra={"file_name": filename, "detected_domain": domain, "method": "keyword_fallback"}
+                        f"✅ FALLBACK LAYER 1: Domain detected from keywords (latest experience): {domain} for {filename}",
+                        extra={"file_name": filename, "detected_domain": domain, "method": "strict_keyword_fallback"}
                     )
             
-            # FALLBACK LAYER 2: If still null, try inferring from job titles
-            if not domain and resume_text:
-                domain = self._infer_domain_from_job_titles(resume_text, filename)
+            # FALLBACK LAYER 2: Conservative job title inference (only if Layer 1 fails)
+            # Only use latest experience to maintain "latest domain" priority
+            if not domain and latest_experience:
+                domain = self._infer_domain_from_job_titles(latest_experience, filename)
                 if domain:
                     logger.info(
-                        f"✅ FALLBACK LAYER 2: Domain inferred from job titles: {domain} for {filename}",
+                        f"✅ FALLBACK LAYER 2: Domain inferred from job titles (latest experience): {domain} for {filename}",
                         extra={"file_name": filename, "detected_domain": domain, "method": "job_title_inference"}
-                    )
-            
-            # FALLBACK LAYER 3: Final attempt - try to infer from general patterns and skills
-            if not domain and resume_text:
-                domain = self._infer_domain_from_general_patterns(resume_text, filename)
-                if domain:
-                    logger.info(
-                        f"✅ FALLBACK LAYER 3: Domain inferred from general patterns: {domain} for {filename}",
-                        extra={"file_name": filename, "detected_domain": domain, "method": "general_pattern_inference"}
-                    )
-            
-            # FALLBACK LAYER 4: Ultimate fallback - if still null and resume has content, try one more time with even more lenient rules
-            if not domain and resume_text and len(resume_text.strip()) > 100:
-                # Try keyword detection one more time with minimal threshold
-                domain = self._detect_domain_with_minimal_threshold(resume_text, filename)
-                if domain:
-                    logger.info(
-                        f"✅ FALLBACK LAYER 4: Domain detected with minimal threshold: {domain} for {filename}",
-                        extra={"file_name": filename, "detected_domain": domain, "method": "minimal_threshold_fallback"}
-                    )
-            
-            # FALLBACK LAYER 5: Absolute last resort - comprehensive pattern matching for ALL domains
-            if not domain and resume_text and len(resume_text.strip()) > 50:
-                domain = self._comprehensive_domain_detection(resume_text, filename)
-                if domain:
-                    logger.info(
-                        f"✅ FALLBACK LAYER 5: Domain detected via comprehensive detection: {domain} for {filename}",
-                        extra={"file_name": filename, "detected_domain": domain, "method": "comprehensive_detection"}
-                    )
-            
-            # FALLBACK LAYER 6: Final safety net - if resume has ANY content, try one more aggressive keyword scan
-            if not domain and resume_text and len(resume_text.strip()) > 30:
-                domain = self._aggressive_domain_detection(resume_text, filename)
-                if domain:
-                    logger.info(
-                        f"✅ FALLBACK LAYER 6: Domain detected via aggressive detection: {domain} for {filename}",
-                        extra={"file_name": filename, "detected_domain": domain, "method": "aggressive_detection"}
                     )
             
             # Log the raw response for debugging (enhanced for troubleshooting)
@@ -1701,29 +1577,29 @@ Output (JSON only, no other text, no explanations):"""
                 f"🔍 DOMAIN EXTRACTION DEBUG for {filename}",
                 extra={
                     "file_name": filename,
-                    "raw_output_preview": raw_output[:1000] if raw_output else "",
+                    "raw_output_hash": hash(raw_output[:1000]) if raw_output else None,
                     "raw_output_length": len(raw_output) if raw_output else 0,
                     "parsed_data": parsed_data,
                     "extracted_domain": domain,
                     "resume_text_length": len(resume_text),
                     "text_sent_length": len(text_to_send),
-                    "resume_text_preview": resume_text[:500] if resume_text else ""
+                    "resume_text_hash": hash(resume_text[:1000]) if resume_text else None
                 }
             )
             
-            # If domain is null, log more details for debugging
+            # If domain is null, log details (null is acceptable for ATS-grade systems)
             if not domain:
-                logger.warning(
-                    f"⚠️ DOMAIN EXTRACTION RETURNED NULL for {filename}",
+                logger.info(
+                    f"ℹ️ DOMAIN EXTRACTION RETURNED NULL for {filename} (acceptable - unclear domain)",
                     extra={
                         "file_name": filename,
                         "resume_text_length": len(resume_text),
+                        "latest_experience_length": len(latest_experience),
                         "text_sent_length": len(text_to_send),
-                        "raw_output": raw_output[:2000] if raw_output else "",
+                        "raw_output_hash": hash(raw_output[:2000]) if raw_output else None,
                         "parsed_data": parsed_data,
-                        "resume_text_preview": resume_text[:1000] if resume_text else "",
-                        "resume_text_contains_company": "company" in resume_text.lower() or "corporation" in resume_text.lower() or "inc" in resume_text.lower() if resume_text else False,
-                        "resume_text_contains_experience": "experience" in resume_text.lower() or "worked" in resume_text.lower() or "project" in resume_text.lower() if resume_text else False
+                        "latest_experience_hash": hash(latest_experience[:1000]) if latest_experience else None,
+                        "note": "Null is acceptable when domain is unclear (ATS-grade behavior)"
                     }
                 )
             
