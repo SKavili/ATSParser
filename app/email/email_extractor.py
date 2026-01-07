@@ -11,6 +11,20 @@ from app.utils.cleaning import normalize_email, remove_symbols_and_emojis
 
 logger = get_logger(__name__)
 
+# Domains that are usually proxy / job-portal emails (lower priority)
+PROXY_EMAIL_DOMAINS = [
+    "mail.dice.com",
+    "dice.com",
+    "linkedin.com",
+    "indeedmail.com",
+    "ziprecruiter.com",
+    "glassdoor.com",
+    "monster.com",
+    "workday.com",
+    "greenhouse.io",
+    "lever.co",
+]
+
 # Try to import OLLAMA Python client
 try:
     import ollama
@@ -32,14 +46,21 @@ Email refers to the candidate's contact email address.
 TASK:
 Extract ALL email addresses found in the profile text and identify the candidate's PRIMARY email address.
 
+CRITICAL EXTRACTION REQUIREMENT:
+- If the resume contains MULTIPLE email addresses, you MUST extract ALL of them and return them in the "all_emails" field as a comma-separated string.
+- If the resume contains ONLY ONE email address, extract that single email and return it in both "primary_email" and "all_emails" fields.
+- DO NOT skip any email addresses you find in the resume text.
+- Scan the ENTIRE resume text thoroughly - emails can appear in headers, contact sections, footers, or anywhere in the document.
+
 SELECTION RULES:
 1. Look for email addresses in contact information sections.
 2. Look for email addresses in header/footer sections.
 3. Look for email addresses near phone numbers or addresses.
-4. Extract all valid email addresses found in the resume.
-5. The FIRST VALID PRIMARY email must be selected based on domain priority rules.
-6.If DOMAIN PRIORITY mails are present, then select the first one as primary email.
-7.If DOMAIN PRIORITY mail found then stop the extraction process and return the primary email.
+4. Look for email addresses anywhere in the resume text (not just in specific sections).
+5. Extract ALL valid email addresses found in the resume - do not stop after finding one.
+6. If multiple emails are found, include ALL of them in the "all_emails" field.
+7. The FIRST VALID PRIMARY email must be selected based on domain priority rules.
+
 DOMAIN PRIORITY RULES:
 First Preference (Original / Personal Emails):
 gmail.com,
@@ -76,11 +97,14 @@ IMPORTANT DOMAIN HANDLING:
   mark the primary email as "masked_email".
 
 CONSTRAINTS:
-- Extract ALL valid email addresses.
+- Extract ALL valid email addresses found anywhere in the resume text.
+- If you find 2 emails, return both. If you find 3 emails, return all 3. If you find only 1 email, return that 1 email.
+- DO NOT return only one email if multiple emails are present in the text.
 - Preserve emails exactly as written (normalization to lowercase is allowed).
 - Email must be in valid format (user@domain.com).
-- Return all extracted emails as a comma-separated string.
-- Select ONE primary email based on domain priority rules.
+- Return ALL extracted emails as a comma-separated string in the "all_emails" field.
+- Select ONE primary email based on domain priority rules for the "primary_email" field.
+- The "all_emails" field should contain ALL emails found, separated by commas (e.g., "email1@gmail.com,email2@mail.dice.com").
 
 ANTI-HALLUCINATION RULES:
 - Never guess or infer an email address.
@@ -97,9 +121,11 @@ JSON SCHEMA:
 }
 
 Example valid outputs:
-{"primary_email": "john.doe@gmail.com", "all_emails": "john.doe@gmail.com,john.doe@linkedin.com"}
-{"primary_email": "masked_email", "all_emails": "john.doe@mail.dice.com"}
-{"primary_email": null, "all_emails": null}
+{"primary_email": "john.doe@gmail.com", "all_emails": "john.doe@gmail.com,john.doe@linkedin.com"}  # Multiple emails found
+{"primary_email": "greg.harriett@gmail.com", "all_emails": "greg.harriett@gmail.com,60m-v6d-xhl@mail.dice.com"}  # Multiple emails found
+{"primary_email": "jane.smith@gmail.com", "all_emails": "jane.smith@gmail.com"}  # Single email found
+{"primary_email": "masked_email", "all_emails": "john.doe@mail.dice.com"}  # Only proxy email found
+{"primary_email": null, "all_emails": null}  # No emails found
 """
 
 FALLBACK_EMAIL_MOBILE_PROMPT = """
@@ -140,11 +166,13 @@ greenhouse.io,
 lever.co
 
 IMPORTANT EMAIL HANDLING:
-- Extract ALL valid email addresses found in the resume.
+- Extract ALL valid email addresses found in the resume - if multiple emails exist, extract ALL of them.
+- If the resume has 2 emails, return both. If it has 3 emails, return all 3. If it has only 1 email, return that 1 email.
+- DO NOT stop after finding the first email - continue scanning the entire resume text for ALL emails.
 - Normalize emails (lowercase, remove spaces).
-- Return ALL extracted emails as a comma-separated string.
-- Select ONE primary email based on domain priority rules.
-- If only proxy / job portal emails exist, set primary email as "masked_email".
+- Return ALL extracted emails as a comma-separated string in the "all_emails" field.
+- Select ONE primary email based on domain priority rules for the "primary_email" field.
+- If only proxy / job portal emails exist, set primary email as "masked_email" but still return all emails in "all_emails".
 
 PHONE EXTRACTION RULES:
 1. Look for phone patterns: 10-15 digits, may include +, -, spaces, or parentheses.
@@ -174,6 +202,91 @@ class EmailExtractor:
     def __init__(self):
         self.ollama_host = settings.ollama_host
         self.model = "llama3.1"
+
+    def _select_best_email_from_list(self, candidates: list[str]) -> Optional[str]:
+        """
+        Given a list of raw email strings, normalize them and select the BEST one.
+        
+        Selection rules (in order):
+        1. Prefer NON‑proxy / NON‑job‑portal domains over proxy domains
+           (e.g. prefer gmail.com over mail.dice.com).
+        2. Within the same domain priority, prefer longer username part
+           (more complete / less likely truncated).
+        3. As a final tie‑breaker, prefer longer full email string.
+        """
+        if not candidates:
+            return None
+
+        cleaned_unique: dict[str, str] = {}
+        rejected_reasons = []
+
+        for raw in candidates:
+            if not raw:
+                continue
+            email_str = str(raw).strip()
+
+            # First try to clean and fix email (handles extra text appended)
+            cleaned_email = self._clean_and_fix_email(email_str)
+            if cleaned_email:
+                normalized = normalize_email(cleaned_email)
+            else:
+                normalized = normalize_email(email_str)
+
+            if not normalized:
+                rejected_reasons.append(f"{email_str[:50]}: normalization failed")
+                continue
+
+            # Ensure basic validity and minimum username length
+            if "@" not in normalized:
+                rejected_reasons.append(f"{normalized[:50]}: no @ symbol")
+                continue
+            username, domain = normalized.split("@", 1)
+            if len(username) < 2:
+                rejected_reasons.append(f"{normalized[:50]}: username too short ({len(username)} chars)")
+                continue
+            if len(domain) < 4:
+                rejected_reasons.append(f"{normalized[:50]}: domain too short ({len(domain)} chars)")
+                continue
+
+            cleaned_unique[normalized] = normalized
+
+        if not cleaned_unique:
+            logger.debug(
+                f"_select_best_email_from_list: All {len(candidates)} candidates rejected",
+                extra={"rejected_reasons": rejected_reasons[:5]}  # Log first 5 rejection reasons
+            )
+            return None
+
+        def score(email: str) -> tuple[int, int, int]:
+            """Return sorting score for an email (higher is better)."""
+            username, domain = email.split("@", 1)
+            domain_lower = domain.lower()
+
+            # Check if domain is a known proxy / job‑portal domain (lower priority)
+            is_proxy = any(domain_lower.endswith(proxy) for proxy in PROXY_EMAIL_DOMAINS)
+
+            # Non‑proxy (personal / corporate) emails get higher priority
+            domain_priority = 0 if is_proxy else 1
+
+            username_len = len(username)
+            total_len = len(email)
+            return (domain_priority, username_len, total_len)
+
+        # Pick email with maximum score
+        best_email = max(cleaned_unique.values(), key=score)
+        
+        # Log selection details for debugging
+        all_scores = [(email, score(email)) for email in cleaned_unique.values()]
+        all_scores.sort(key=lambda x: x[1], reverse=True)
+        logger.debug(
+            f"_select_best_email_from_list: Selected '{best_email}' from {len(cleaned_unique)} valid emails",
+            extra={
+                "selected": best_email,
+                "top_3_scores": all_scores[:3],  # Log top 3 for debugging
+                "total_candidates": len(candidates)
+            }
+        )
+        return best_email
     
     async def _check_ollama_connection(self) -> tuple[bool, Optional[str]]:
         """Check if OLLAMA is accessible and running. Returns (is_connected, available_model)."""
@@ -1047,11 +1160,20 @@ Output (JSON only, no other text, no explanations):"""
                     mobile = parsed.get("mobile")
                     
                     # Use primary_email if available, otherwise fall back to all_emails (first one)
+                    # If primary_email is "masked_email", still extract from all_emails
                     email = None
                     if primary_email and primary_email != "masked_email" and primary_email.lower() != "null":
                         email = primary_email
                     elif all_emails:
                         # Extract first email from comma-separated list
+                        email_list = [e.strip() for e in str(all_emails).split(',') if e.strip()]
+                        if email_list:
+                            # Use first email from the list
+                            email = email_list[0]
+                    
+                    # If primary_email is "masked_email" but we have all_emails, use first email anyway
+                    # This ensures we still extract emails even if they're from job portals
+                    if not email and primary_email == "masked_email" and all_emails:
                         email_list = [e.strip() for e in str(all_emails).split(',') if e.strip()]
                         if email_list:
                             email = email_list[0]
@@ -1089,6 +1211,555 @@ Output (JSON only, no other text, no explanations):"""
             logger.debug(f"Fallback extraction failed: {e}", extra={"file_name": filename, "error": str(e)})
             return {"email": None, "mobile": None}
     
+    def _extract_all_emails_regex(self, text: str) -> set:
+        """
+        Extract ALL email addresses from text using comprehensive regex patterns.
+        This is similar to _extract_email_regex_fallback() but collects ALL unique emails.
+        
+        Args:
+            text: The text to extract emails from
+        
+        Returns:
+            Set of all unique normalized email addresses found
+        """
+        if not text:
+            return set()
+        
+        # Try cleaning text first to remove symbols that might interfere
+        cleaned_text = remove_symbols_and_emojis(text)
+        if cleaned_text:
+            text = cleaned_text
+        
+        all_emails_found = set()  # Use set to avoid duplicates
+        
+        # Use the same comprehensive patterns as _extract_email_regex_fallback
+        email_patterns = [
+            # Email with label and mailto: Email: mailto:email@domain.com (HTML format)
+            re.compile(r'(?:email|e-mail)\s*:\s*mailto\s*:?\s*([a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}(?:email|com|net|org|edu|gov|io|co|uk|us|ca|au|in|de|fr|jp|cn)*)\b', re.IGNORECASE),
+            # Email with mailto: prefix (standalone)
+            re.compile(r'mailto\s*:?\s*([a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}(?:email|com|net|org|edu|gov|io|co|uk|us|ca|au|in|de|fr|jp|cn)*)\b', re.IGNORECASE),
+            # Email with label and colon (most common in headers): Email:email@domain.com
+            re.compile(r'(?:email|e-mail)\s*:?\s*([a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}(?:email|com|net|org|edu|gov|io|co|uk|us|ca|au|in|de|fr|jp|cn)*)\b', re.IGNORECASE),
+            # Email in mixed text with pipes: |Email:email@domain.com| or |email@domain.com|
+            re.compile(r'[|:]\s*([a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}(?:email|com|net|org|edu|gov|io|co|uk|us|ca|au|in|de|fr|jp|cn)*)\s*[|]?', re.IGNORECASE),
+            # Email with brackets: <email@domain.com>
+            re.compile(r'<([a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}(?:email|com|net|org|edu|gov|io|co|uk|us|ca|au|in|de|fr|jp|cn)*)>'),
+            # Email in parentheses: (email@domain.com)
+            re.compile(r'\(([a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}(?:email|com|net|org|edu|gov|io|co|uk|us|ca|au|in|de|fr|jp|cn)*)\)'),
+            # Standard email pattern with potential extra text (word boundary)
+            re.compile(r'\b[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}(?:email|com|net|org|edu|gov|io|co|uk|us|ca|au|in|de|fr|jp|cn)*\b'),
+            # Email with spaces (OCR errors): "email @ domain.com"
+            re.compile(r'\b[a-zA-Z0-9._%+-]+\s*@\s*[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}(?:email|com|net|org|edu|gov|io|co|uk|us|ca|au|in|de|fr|jp|cn)*\b'),
+            # Email at start of line (common in headers)
+            re.compile(r'^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}(?:email|com|net|org|edu|gov|io|co|uk|us|ca|au|in|de|fr|jp|cn)*\b', re.MULTILINE),
+            # Email on its own line or after whitespace (common in contact sections)
+            re.compile(r'(?:^|\s)([a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}(?:email|com|net|org|edu|gov|io|co|uk|us|ca|au|in|de|fr|jp|cn)*)(?:\s|$)', re.MULTILINE),
+            # Standard email pattern (word boundary) - fallback without extra text
+            re.compile(r'\b[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}\b'),
+        ]
+        
+        # Try each pattern and collect ALL matches
+        for pattern in email_patterns:
+            try:
+                matches = pattern.findall(text)
+                if matches:
+                    for match in matches:
+                        # Handle tuple results (from groups)
+                        if isinstance(match, tuple):
+                            email_str = next((m for m in match if m and len(str(m).strip()) > 0), match[0] if match else '')
+                            if not email_str:
+                                continue
+                        else:
+                            email_str = match
+                        
+                        if not email_str or len(email_str.strip()) == 0:
+                            continue
+                        
+                        # Clean up any spaces or special characters
+                        email_str = email_str.replace(' ', '').replace('<', '').replace('>', '').strip()
+                        
+                        # Skip if too short to be valid
+                        if len(email_str) < 5:  # Minimum like "a@b.c"
+                            continue
+                        
+                        # REJECT emails with very short numeric-only usernames (like "08")
+                        # But ALLOW usernames with numbers if they contain letters (like "cherylbailey508" or "user123")
+                        if '@' in email_str:
+                            username_part = email_str.split('@')[0]
+                            if len(username_part) < 2:
+                                continue  # Too short
+                            elif len(username_part) == 2 and username_part.isdigit():
+                                # Only reject if it's EXACTLY 2 digits with no letters
+                                # This catches "08" from "508" but allows "a1" or "1a"
+                                continue  # Likely incomplete (e.g., "08" from "508")
+                            # Allow usernames like "cherylbailey508", "greg.harriett", "user123" etc.
+                        
+                        # Try to clean and fix email (handles extra text appended)
+                        cleaned_email = self._clean_and_fix_email(email_str)
+                        if cleaned_email:
+                            email = normalize_email(cleaned_email)
+                            if email and '@' in email:
+                                username, domain = email.split('@', 1)
+                                if len(username) >= 2 and len(domain) >= 4:
+                                    all_emails_found.add(email)
+                        
+                        # If cleaning didn't work, try normal normalization
+                        if not cleaned_email:
+                            email = normalize_email(email_str)
+                            if email and '@' in email:
+                                username, domain = email.split('@', 1)
+                                if len(username) >= 2 and len(domain) >= 4:
+                                    all_emails_found.add(email)
+                        
+                        # FINAL FALLBACK: If normalization failed but email looks valid, add it anyway
+                        if not cleaned_email and not normalize_email(email_str):
+                            # Check if email_str itself looks valid
+                            if '@' in email_str and '.' in email_str:
+                                username_check, domain_check = email_str.split('@', 1)
+                                if len(username_check) >= 2 and len(domain_check) >= 4 and '.' in domain_check:
+                                    # Add directly if it looks like a valid email
+                                    all_emails_found.add(email_str.lower().strip())
+            except Exception as e:
+                logger.debug(f"Error processing pattern in _extract_all_emails_regex: {e}")
+                continue
+        
+        # Also check @ positions for emails that might be split by spaces
+        at_positions = [i for i, char in enumerate(text) if char == '@']
+        for pos in at_positions[:20]:  # Check first 20 @ symbols
+            try:
+                # Get context around @
+                start = max(0, pos - 150)
+                end = min(len(text), pos + 100)
+                snippet = text[start:end]
+                
+                # Try multiple patterns in the snippet
+                snippet_patterns = [
+                    r'mailto\s*:?\s*([a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}(?:email|com|net|org|edu|gov|io|co|uk|us|ca|au|in|de|fr|jp|cn)*)',
+                    r'[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}(?:email|com|net|org|edu|gov|io|co|uk|us|ca|au|in|de|fr|jp|cn)*',
+                    r'[a-zA-Z0-9._%+-]+\s*@\s*[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}(?:email|com|net|org|edu|gov|io|co|uk|us|ca|au|in|de|fr|jp|cn)*',
+                    r'[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}',
+                ]
+                
+                for pattern_str in snippet_patterns:
+                    email_match = re.search(pattern_str, snippet, re.IGNORECASE)
+                    if email_match:
+                        if email_match.groups():
+                            email_str = email_match.group(1)
+                        else:
+                            email_str = email_match.group(0)
+                        
+                        email_str = email_str.replace(' ', '').replace('\n', '').replace('\r', '').replace('\t', '').strip()
+                        email_str = re.sub(r'[.,;:!?|]+$', '', email_str)
+                        
+                        if '@' in email_str:
+                            username_part = email_str.split('@')[0]
+                            # More lenient: only reject if username is too short OR is exactly 2 digits with no letters
+                            # Allow usernames with numbers if they contain letters (like "cherylbailey508")
+                            if len(username_part) < 2:
+                                continue  # Too short
+                            elif len(username_part) == 2 and username_part.isdigit():
+                                # Only reject if it's EXACTLY 2 digits with no letters
+                                continue
+                            # Allow all other usernames (including those with numbers like "cherylbailey508")
+                            
+                            cleaned_email = self._clean_and_fix_email(email_str)
+                            if cleaned_email:
+                                email = normalize_email(cleaned_email)
+                                if email and '@' in email:
+                                    username, domain = email.split('@', 1)
+                                    if len(username) >= 2 and len(domain) >= 4:
+                                        all_emails_found.add(email)
+                            
+                            if not cleaned_email:
+                                email = normalize_email(email_str)
+                                if email and '@' in email:
+                                    username, domain = email.split('@', 1)
+                                    if len(username) >= 2 and len(domain) >= 4:
+                                        all_emails_found.add(email)
+                        break  # Found email at this position, move to next @
+            except Exception as e:
+                logger.debug(f"Error processing @ position in _extract_all_emails_regex: {e}")
+                continue
+        
+        return all_emails_found
+    
+    async def extract_all_emails(self, resume_text: str, filename: str = "resume") -> str:
+        """
+        Extract ALL email addresses from resume text and return as comma-separated string.
+        Uses comprehensive extraction logic to find ALL emails in the resume.
+        This is the PRIMARY method for email extraction - it finds ALL emails.
+        
+        Args:
+            resume_text: The text content of the resume
+            filename: Name of the resume file (for logging)
+        
+        Returns:
+            Comma-separated string of all emails found, or empty string if none found
+        """
+        if not resume_text or len(resume_text.strip()) < 5:
+            logger.warning(f"Resume text too short for email extraction: {filename}")
+            return ""
+        
+        all_emails_found = set()
+        
+        try:
+            # PRE-STEP: SIMPLEST POSSIBLE SCAN - Just find @ and extract
+            # This catches emails like "greg.harriett@gmail.com" immediately
+            simple_at_scan = re.findall(r'[a-zA-Z0-9._-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}', resume_text, re.IGNORECASE)
+            for email in simple_at_scan:
+                email = email.strip().lower()
+                # Remove any spaces or newlines
+                email = email.replace(' ', '').replace('\n', '').replace('\r', '').replace('\t', '')
+                # Remove trailing punctuation
+                email = re.sub(r'[.,;:!?|)\]]+$', '', email)
+                if '@' in email and '.' in email.split('@')[1]:
+                    username, domain = email.split('@', 1)
+                    # Very lenient - just check it has username and domain with TLD
+                    if len(username) >= 1 and len(domain) >= 3 and '.' in domain:
+                        # Only reject if username is exactly 2 digits
+                        if not (len(username) == 2 and username.isdigit()):
+                            all_emails_found.add(email)
+                            logger.info(f"PRE-STEP: Found email via simplest scan: {email}")
+            
+            if all_emails_found:
+                logger.info(f"PRE-STEP: Found {len(all_emails_found)} email(s) immediately: {list(all_emails_found)}")
+            
+            # STEP 0: ULTRA-AGGRESSIVE DIRECT SCAN - Run FIRST to catch obvious emails
+            # This is the most direct method - just find @ and extract email around it
+            logger.debug(f"Step 0: Running ultra-aggressive direct email scan for {filename}")
+            at_positions = [i for i, char in enumerate(resume_text) if char == '@']
+            for pos in at_positions[:50]:  # Check first 50 @ symbols
+                try:
+                    # Extract context around @ symbol (wider context to catch full email)
+                    start = max(0, pos - 200)  # 200 chars before @
+                    end = min(len(resume_text), pos + 100)  # 100 chars after @
+                    context = resume_text[start:end]
+                    
+                    # Find the @ position in the context
+                    at_in_context = pos - start
+                    
+                    # Extract username part (before @)
+                    before_at = context[:at_in_context]
+                    # Extract domain part (after @)
+                    after_at = context[at_in_context + 1:]
+                    
+                    # Find username: look backwards from @ for alphanumeric chars, dots, underscores, hyphens, plus signs
+                    username_match = re.search(r'([a-zA-Z0-9._%+-]+)$', before_at)
+                    if not username_match:
+                        continue
+                    username = username_match.group(1).strip()
+                    
+                    # Find domain: look forwards from @ for domain pattern (more permissive)
+                    domain_match = re.search(r'^([a-zA-Z0-9.-]+\.[a-zA-Z]{2,})', after_at)
+                    if not domain_match:
+                        continue
+                    domain = domain_match.group(1).strip()
+                    
+                    # Remove any trailing punctuation, spaces, newlines from domain
+                    domain = re.sub(r'[.,;:!?|)\]\s\n\r]+$', '', domain)
+                    
+                    # Construct email
+                    email_candidate = f"{username}@{domain}".lower().strip()
+                    
+                    # Basic validation - be more lenient
+                    if len(username) >= 1 and len(domain) >= 3 and '.' in domain:
+                        # Only reject if username is exactly 2 digits (like "08")
+                        if not (len(username) == 2 and username.isdigit()):
+                            # Validate email format - use simpler check
+                            if '@' in email_candidate and '.' in domain and len(domain.split('.')[-1]) >= 2:
+                                # Add directly - don't rely on normalization which might fail
+                                all_emails_found.add(email_candidate)
+                                logger.info(f"Step 0: Found email via direct scan: {email_candidate}")
+                except Exception as e:
+                    logger.debug(f"Error in Step 0 direct scan at position {pos}: {e}")
+                    continue
+            
+            logger.debug(f"Step 0: Found {len(all_emails_found)} email(s) via ultra-aggressive direct scan")
+            
+            # Step 1: Use comprehensive regex extraction on full text (PRIMARY METHOD)
+            regex_emails = self._extract_all_emails_regex(resume_text)
+            all_emails_found.update(regex_emails)
+            logger.debug(
+                f"Step 1: Found {len(regex_emails)} emails in full text for {filename}",
+                extra={"emails": list(regex_emails)[:5]}
+            )
+            
+            # Step 2: Also try header section (first 3000 chars) - emails are often in header
+            # Increased from 2000 to 3000 to catch more emails
+            if len(resume_text) > 3000:
+                header_text = resume_text[:3000]
+                header_emails = self._extract_all_emails_regex(header_text)
+                all_emails_found.update(header_emails)
+                logger.debug(
+                    f"Step 2: Found {len(header_emails)} emails in header for {filename}",
+                    extra={"emails": list(header_emails)[:5]}
+                )
+            else:
+                # If text is shorter, header is the same as full text, so skip
+                pass
+            
+            # Step 3: Also try footer section (last 1500 chars) - sometimes emails are at bottom
+            # Increased from 1000 to 1500
+            if len(resume_text) > 1500:
+                footer_text = resume_text[-1500:]
+                footer_emails = self._extract_all_emails_regex(footer_text)
+                all_emails_found.update(footer_emails)
+                logger.debug(
+                    f"Step 3: Found {len(footer_emails)} emails in footer for {filename}",
+                    extra={"emails": list(footer_emails)[:5]}
+                )
+            
+            # Step 4: Also try simple pattern matching as fallback (very permissive)
+            # This catches emails that might have been missed by other patterns
+            # Use multiple simple patterns to catch different formats
+            simple_patterns = [
+                re.compile(r'\b[a-zA-Z0-9][a-zA-Z0-9._%+-]*@[a-zA-Z0-9][a-zA-Z0-9.-]*\.[a-zA-Z]{2,}\b', re.IGNORECASE),  # Word boundaries
+                re.compile(r'^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$', re.MULTILINE | re.IGNORECASE),  # On own line
+                re.compile(r'[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}', re.IGNORECASE),  # No boundaries (most permissive)
+            ]
+            for simple_pattern in simple_patterns:
+                simple_matches = simple_pattern.findall(resume_text)
+                for email_candidate in simple_matches:
+                    if email_candidate and '@' in email_candidate:
+                        email_candidate = email_candidate.strip().lower()
+                        # Remove spaces and newlines
+                        email_candidate = email_candidate.replace(' ', '').replace('\n', '').replace('\r', '').replace('\t', '')
+                        # Remove trailing punctuation
+                        email_candidate = re.sub(r'[.,;:!?|)\]]+$', '', email_candidate)
+                        
+                        if '@' in email_candidate:
+                            username, domain = email_candidate.split('@', 1)
+                            # Allow usernames with numbers (like "cherylbailey508", "greg.harriett")
+                            # Only reject if username is too short or is ONLY 2 digits
+                            if len(username) >= 2 and len(domain) >= 4:
+                                if not (len(username) == 2 and username.isdigit()):
+                                    # Try to clean and normalize
+                                    cleaned = self._clean_and_fix_email(email_candidate)
+                                    if cleaned:
+                                        normalized = normalize_email(cleaned)
+                                    else:
+                                        normalized = normalize_email(email_candidate)
+                                    
+                                    if normalized and '@' in normalized:
+                                        username_final, domain_final = normalized.split('@', 1)
+                                        if len(username_final) >= 2 and len(domain_final) >= 4:
+                                            all_emails_found.add(normalized)
+                                    elif email_candidate and '@' in email_candidate:
+                                        # If normalization failed but email looks valid, use it anyway
+                                        username_check, domain_check = email_candidate.split('@', 1)
+                                        if len(username_check) >= 2 and len(domain_check) >= 4 and re.match(r'^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$', email_candidate):
+                                            all_emails_found.add(email_candidate)
+            
+            # Step 5: Try LLM extraction as additional source (non-blocking, optional)
+            # The enhanced prompt explicitly instructs LLM to extract ALL emails
+            try:
+                # Use a shorter text for LLM (first 5000 chars) to avoid token limits
+                llm_text = resume_text[:5000] if len(resume_text) > 5000 else resume_text
+                prompt = f"{EMAIL_PROMPT}\n\nRESUME TEXT:\n{llm_text}\n\nExtract ALL email addresses found in the resume text above."
+                
+                # Try LLM extraction (but don't fail if it errors)
+                async with httpx.AsyncClient(timeout=30.0) as client:
+                    try:
+                        response = await client.post(
+                            f"{self.ollama_base_url}/api/generate",
+                            json={
+                                "model": self.model_name,
+                                "prompt": prompt,
+                                "stream": False,
+                                "options": {
+                                    "temperature": 0.1,
+                                    "top_p": 0.9,
+                                    "num_predict": 500,
+                                }
+                            }
+                        )
+                        response.raise_for_status()
+                        result = response.json()
+                        raw_output = result.get("response", "")
+                        
+                        # Extract JSON from LLM response
+                        if raw_output:
+                            cleaned_text = raw_output.strip()
+                            if cleaned_text.startswith("```json"):
+                                cleaned_text = cleaned_text[7:]
+                            elif cleaned_text.startswith("```"):
+                                cleaned_text = cleaned_text[3:]
+                            if cleaned_text.endswith("```"):
+                                cleaned_text = cleaned_text[:-3]
+                            cleaned_text = cleaned_text.strip()
+                            
+                            start_idx = cleaned_text.find('{')
+                            end_idx = cleaned_text.rfind('}')
+                            
+                            if start_idx != -1 and end_idx != -1 and end_idx > start_idx:
+                                cleaned_text = cleaned_text[start_idx:end_idx + 1]
+                            
+                            try:
+                                parsed = json.loads(cleaned_text)
+                                if isinstance(parsed, dict):
+                                    llm_all_emails = parsed.get("all_emails")
+                                    if llm_all_emails:
+                                        # Parse comma-separated emails from LLM
+                                        llm_email_list = [e.strip() for e in str(llm_all_emails).split(',') if e.strip()]
+                                        for llm_email in llm_email_list:
+                                            # Normalize and validate
+                                            normalized = normalize_email(llm_email)
+                                            if normalized and '@' in normalized:
+                                                username, domain = normalized.split('@', 1)
+                                                if len(username) >= 2 and len(domain) >= 4:
+                                                    all_emails_found.add(normalized)
+                                        logger.debug(
+                                            f"Step 5 (LLM): Found {len(llm_email_list)} emails from LLM for {filename}",
+                                            extra={"emails": llm_email_list[:5]}
+                                        )
+                            except json.JSONDecodeError:
+                                logger.debug(f"LLM response not valid JSON for {filename}")
+                    except Exception as llm_error:
+                        # Don't fail if LLM extraction fails - regex is primary method
+                        logger.debug(f"LLM extraction failed (non-critical) for {filename}: {llm_error}")
+            except Exception as e:
+                logger.debug(f"LLM extraction step failed (non-critical) for {filename}: {e}")
+            
+            # Step 6: FINAL FALLBACK - Very simple, direct regex scan of entire text
+            # This is the most permissive pattern - catches ANY email-like pattern
+            # ALWAYS run this step to catch any emails that might have been missed
+            logger.debug(f"Step 6: Running final simple regex scan for {filename} to catch any missed emails")
+            # Use multiple patterns to catch emails that might be split or formatted differently
+            final_patterns = [
+                re.compile(r'[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}', re.IGNORECASE),  # Standard
+                re.compile(r'[a-zA-Z0-9._%+-]+\s*@\s*[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}', re.IGNORECASE),  # With spaces around @
+                re.compile(r'\b[a-zA-Z0-9][a-zA-Z0-9._%+-]*@[a-zA-Z0-9][a-zA-Z0-9.-]*\.[a-zA-Z]{2,}\b', re.IGNORECASE),  # Word boundaries
+            ]
+            emails_before_final = len(all_emails_found)
+            for final_pattern in final_patterns:
+                final_matches = final_pattern.findall(resume_text)
+                for email_candidate in final_matches:
+                    if email_candidate and '@' in email_candidate:
+                        # Remove spaces around @ and normalize
+                        email_candidate = email_candidate.replace(' ', '').replace('\n', '').replace('\r', '').replace('\t', '').strip().lower()
+                        # Remove any trailing punctuation
+                        email_candidate = re.sub(r'[.,;:!?|)\]]+$', '', email_candidate)
+                        
+                        if '@' in email_candidate:
+                            username, domain = email_candidate.split('@', 1)
+                            # More lenient validation - allow usernames with numbers (like "cherylbailey508")
+                            # Only reject if username is too short (< 2 chars) or is ONLY 2 digits (like "08")
+                            if len(username) >= 2 and len(domain) >= 4:
+                                # Allow usernames that contain letters (like "cherylbailey508" or "greg.harriett")
+                                # Only reject if username is ONLY 2 digits
+                                if not (len(username) == 2 and username.isdigit()):
+                                    # Try normalization - but preserve the original if normalization fails
+                                    normalized = normalize_email(email_candidate)
+                                    if normalized and '@' in normalized:
+                                        username_final, domain_final = normalized.split('@', 1)
+                                        if len(username_final) >= 2 and len(domain_final) >= 4:
+                                            all_emails_found.add(normalized)
+                                            logger.debug(f"Final fallback found email: {normalized}")
+                                    elif email_candidate and '@' in email_candidate:
+                                        # If normalization failed but email looks valid, use it anyway
+                                        username_check, domain_check = email_candidate.split('@', 1)
+                                        if len(username_check) >= 2 and len(domain_check) >= 4 and re.match(r'^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$', email_candidate):
+                                            all_emails_found.add(email_candidate)
+                                            logger.debug(f"Final fallback found email (without normalization): {email_candidate}")
+            
+            emails_after_final = len(all_emails_found)
+            if emails_after_final > emails_before_final:
+                logger.debug(
+                    f"Step 6: Found {emails_after_final - emails_before_final} additional email(s) via final fallback for {filename}"
+                )
+            
+            # STEP 7: ABSOLUTE FINAL SAFETY CHECK - If still no emails, do one more ultra-simple scan
+            if not all_emails_found:
+                logger.warning(f"⚠️ No emails found after all steps for {filename}, running absolute final safety check")
+                # Ultra-simple pattern - just find anything that looks like an email
+                ultra_simple = re.findall(r'[a-zA-Z0-9._-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}', resume_text, re.IGNORECASE)
+                for email_candidate in ultra_simple:
+                    email_candidate = email_candidate.strip().lower()
+                    # Remove spaces
+                    email_candidate = email_candidate.replace(' ', '').replace('\n', '').replace('\r', '').replace('\t', '')
+                    # Remove trailing punctuation
+                    email_candidate = re.sub(r'[.,;:!?|)\]]+$', '', email_candidate)
+                    
+                    if '@' in email_candidate:
+                        username, domain = email_candidate.split('@', 1)
+                        # Very lenient - just check basic structure
+                        if len(username) >= 1 and len(domain) >= 3 and '.' in domain:
+                            # Validate basic format - be very permissive
+                            if '@' in email_candidate and '.' in domain:
+                                all_emails_found.add(email_candidate)
+                                logger.warning(f"⚠️ ABSOLUTE FINAL CHECK found email: {email_candidate}")
+            
+            # Convert to sorted list (for consistent ordering) then join
+            emails_list = sorted(list(all_emails_found))
+            all_emails_str = ','.join(emails_list) if emails_list else ""
+            
+            # CRITICAL: If we found emails in pre-step but lost them, restore them
+            if not all_emails_str:
+                # Do one final ultra-simple scan
+                final_simple = re.findall(r'[a-zA-Z0-9._-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}', resume_text, re.IGNORECASE)
+                for email in final_simple:
+                    email = email.strip().lower()
+                    if '@' in email:
+                        username, domain = email.split('@', 1)
+                        if len(username) >= 2 and len(domain) >= 4 and '.' in domain:
+                            emails_list.append(email)
+                if emails_list:
+                    emails_list = sorted(list(set(emails_list)))  # Remove duplicates
+                    all_emails_str = ','.join(emails_list)
+                    logger.warning(f"⚠️ Final simple scan recovered {len(emails_list)} email(s) for {filename}")
+            
+            if all_emails_str:
+                logger.info(
+                    f"📧 EXTRACTED ALL EMAILS from {filename}: {len(emails_list)} email(s)",
+                    extra={
+                        "file_name": filename,
+                        "email_count": len(emails_list),
+                        "emails": emails_list  # Log all emails for debugging
+                    }
+                )
+            else:
+                # Enhanced debugging: Check if @ symbols exist in text
+                at_count = resume_text.count('@')
+                logger.warning(
+                    f"⚠️ NO EMAILS FOUND in {filename}",
+                    extra={
+                        "file_name": filename,
+                        "text_length": len(resume_text),
+                        "at_symbol_count": at_count,
+                        "text_preview": resume_text[:1000],  # Log first 1000 chars for debugging
+                        "text_contains_gmail": "gmail" in resume_text.lower(),
+                        "text_contains_at": "@" in resume_text,
+                    }
+                )
+                # If @ symbols exist but no emails found, log context around each @
+                if at_count > 0:
+                    at_positions = [i for i, char in enumerate(resume_text) if char == '@']
+                    for i, pos in enumerate(at_positions[:5]):  # Check first 5 @ symbols
+                        start = max(0, pos - 50)
+                        end = min(len(resume_text), pos + 50)
+                        context = resume_text[start:end]
+                        logger.warning(
+                            f"⚠️ Found @ symbol #{i+1} at position {pos} in {filename}",
+                            extra={
+                                "file_name": filename,
+                                "position": pos,
+                                "context": context,
+                                "context_before": resume_text[max(0, pos-100):pos],
+                                "context_after": resume_text[pos:min(len(resume_text), pos+100)]
+                            }
+                        )
+            
+            return all_emails_str
+            
+        except Exception as e:
+            logger.error(
+                f"ERROR in extract_all_emails for {filename}: {e}",
+                extra={"file_name": filename, "error": str(e)},
+                exc_info=True
+            )
+            # Return empty string on error, but log it
+            return ""
+    
     async def extract_email(self, resume_text: str, filename: str = "resume") -> Optional[str]:
         """
         Extract email address from resume text using regex fallback first, then OLLAMA LLM.
@@ -1104,6 +1775,87 @@ Output (JSON only, no other text, no explanations):"""
         if not resume_text or len(resume_text.strip()) < 5:
             logger.warning(f"Resume text too short for email extraction: {filename}")
             return None
+
+        # ------------------------------------------------------------------
+        # STEP 0: Simple deterministic extraction on FULL TEXT
+        # ------------------------------------------------------------------
+        # Many resumes (including your problematic examples) already contain
+        # clean email addresses like "greg.harriett@gmail.com" or
+        # "cherylbailey508@gmail.com". Before running any complex logic,
+        # scan the whole text once, collect ALL such emails, and pick the
+        # best one using domain + username-length priority.
+        try:
+            # Use multiple regex patterns to catch all email formats
+            email_patterns = [
+                r'\b[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}\b',  # Standard with word boundaries
+                r'[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}',  # Standard without boundaries (for edge cases)
+            ]
+            
+            simple_candidates = []
+            for pattern in email_patterns:
+                matches = re.findall(pattern, resume_text, re.IGNORECASE)
+                simple_candidates.extend(matches)
+            
+            # Remove duplicates while preserving order
+            seen = set()
+            unique_candidates = []
+            for email in simple_candidates:
+                email_lower = email.lower().strip()
+                if email_lower and email_lower not in seen:
+                    seen.add(email_lower)
+                    unique_candidates.append(email)
+            
+            logger.debug(
+                f"Step 0: Found {len(unique_candidates)} unique email candidates in full text",
+                extra={"file_name": filename, "candidates": unique_candidates[:5]}  # Log first 5
+            )
+            
+            if unique_candidates:
+                best_simple_email = self._select_best_email_from_list(unique_candidates)
+                if best_simple_email:
+                    logger.info(
+                        f"✅ EMAIL EXTRACTED via simple full-text scan from {filename}",
+                        extra={
+                            "file_name": filename, 
+                            "email": best_simple_email, 
+                            "method": "simple_full_text",
+                            "total_candidates": len(unique_candidates),
+                            "selected_from": unique_candidates[:3]  # Log first 3 for debugging
+                        },
+                    )
+                    return best_simple_email
+                else:
+                    # Fallback: If selection failed, try to find first non-proxy email manually
+                    logger.warning(
+                        f"Step 0: Found {len(unique_candidates)} emails but _select_best_email_from_list returned None, trying fallback selection",
+                        extra={"file_name": filename, "candidates": unique_candidates[:5]}
+                    )
+                    # Try to manually find a non-proxy email
+                    for candidate in unique_candidates:
+                        try:
+                            email_str = str(candidate).strip().lower()
+                            if '@' in email_str:
+                                domain = email_str.split('@')[1]
+                                # Check if it's NOT a proxy domain
+                                is_proxy = any(domain.endswith(proxy) for proxy in PROXY_EMAIL_DOMAINS)
+                                if not is_proxy:
+                                    # Try to normalize it
+                                    normalized = normalize_email(candidate)
+                                    if normalized and len(normalized.split('@')[0]) >= 2:
+                                        logger.info(
+                                            f"✅ EMAIL EXTRACTED via Step 0 fallback from {filename}",
+                                            extra={"file_name": filename, "email": normalized, "method": "simple_full_text_fallback"}
+                                        )
+                                        return normalized
+                        except Exception as e:
+                            logger.debug(f"Error processing candidate {candidate}: {e}")
+                            continue
+        except Exception as e:
+            logger.warning(
+                f"Simple full-text email scan failed: {e}", 
+                extra={"file_name": filename, "error": str(e)},
+                exc_info=True
+            )
         
         # Step 1: Try header-specific extraction first (email is usually in header)
         # Focus on first 2000 characters where contact info typically appears
@@ -1134,7 +1886,21 @@ Output (JSON only, no other text, no explanations):"""
                     filtered_lines.append(line)
                 
                 header_text = '\n'.join(filtered_lines)
-            
+
+            # NEW: simple deterministic extraction of ALL emails from header,
+            # then select the best one based on domain priority rules.
+            header_candidates = re.findall(
+                r'[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}', header_text
+            )
+            best_header_email = self._select_best_email_from_list(header_candidates)
+            if best_header_email:
+                logger.info(
+                    f"✅ EMAIL EXTRACTED from header of {filename} via priority selection",
+                    extra={"file_name": filename, "email": best_header_email, "method": "header_priority"}
+                )
+                return best_header_email
+
+            # Fallback to existing regex-based header extraction if priority selection fails
             regex_email = self._extract_email_regex_fallback(header_text)
             if regex_email:
                 # For HTML files, validate that email is not a forwarding email
@@ -1156,7 +1922,7 @@ Output (JSON only, no other text, no explanations):"""
                     )
                     return regex_email
         except Exception as e:
-            logger.debug(f"Header regex email extraction failed: {e}")
+            logger.debug(f"Header email extraction failed: {e}")
         
         # Step 2: Try fast regex extraction on full text
         # For HTML files, prioritize emails in "Personal Profile" or "Name:" sections
@@ -1369,6 +2135,7 @@ Output (JSON only, no other text, no explanations):"""
             email = parsed_data.get("email")
             
             # Use primary_email if available, otherwise fall back to all_emails or old email format
+            # If primary_email is "masked_email", still extract from all_emails
             if not email:
                 if primary_email and primary_email != "masked_email" and primary_email.lower() != "null":
                     email = primary_email
@@ -1377,6 +2144,13 @@ Output (JSON only, no other text, no explanations):"""
                     email_list = [e.strip() for e in str(all_emails).split(',') if e.strip()]
                     if email_list:
                         email = email_list[0]
+            
+            # If primary_email is "masked_email" but we have all_emails, use first email anyway
+            # This ensures we still extract emails even if they're from job portals
+            if not email and primary_email == "masked_email" and all_emails:
+                email_list = [e.strip() for e in str(all_emails).split(',') if e.strip()]
+                if email_list:
+                    email = email_list[0]
             
             # Clean, fix, and normalize email
             if email:
@@ -1396,12 +2170,37 @@ Output (JSON only, no other text, no explanations):"""
                     extra={
                         "file_name": filename,
                         "email": email,
+                        "primary_email": primary_email,
+                        "all_emails": all_emails,
                         "status": "success"
                     }
                 )
                 return email
             
-            # If regular extraction returned null, try fallback prompt
+            # If regular extraction returned null, try to extract from all_emails if available
+            # This handles cases where primary_email is null but all_emails has emails
+            if not email and all_emails:
+                email_list = [e.strip() for e in str(all_emails).split(',') if e.strip()]
+                if email_list:
+                    # Try each email in the list until we find a valid one
+                    for email_candidate in email_list:
+                        email_str = str(email_candidate).strip()
+                        cleaned_email = self._clean_and_fix_email(email_str)
+                        if cleaned_email:
+                            email = normalize_email(cleaned_email)
+                            if email:
+                                logger.info(
+                                    f"✅ EMAIL EXTRACTED from all_emails list for {filename}",
+                                    extra={
+                                        "file_name": filename,
+                                        "email": email,
+                                        "all_emails": all_emails,
+                                        "status": "success"
+                                    }
+                                )
+                                return email
+            
+            # If still no email, try fallback prompt
             logger.info(
                 f"⚠️ Regular email extraction returned null for {filename}, trying fallback prompt",
                 extra={"file_name": filename, "status": "trying_fallback"}
@@ -1409,6 +2208,23 @@ Output (JSON only, no other text, no explanations):"""
             try:
                 fallback_result = await self._extract_with_fallback_prompt(resume_text, filename)
                 email = fallback_result.get("email")
+                
+                # If fallback also returned null, try one more aggressive regex search on full text
+                if not email:
+                    logger.info(
+                        f"⚠️ Fallback prompt also returned null for {filename}, trying aggressive regex search",
+                        extra={"file_name": filename, "status": "trying_aggressive_regex"}
+                    )
+                    # Try one more time with very aggressive regex on full text
+                    aggressive_email = self._extract_email_regex_fallback(resume_text)
+                    if aggressive_email:
+                        email = aggressive_email
+                        logger.info(
+                            f"✅ EMAIL EXTRACTED via aggressive regex search from {filename}",
+                            extra={"file_name": filename, "email": email, "method": "aggressive_regex"}
+                        )
+                        return email
+                
                 if email:
                     logger.info(
                         f"✅ EMAIL EXTRACTED via fallback prompt from {filename}",
@@ -1417,6 +2233,17 @@ Output (JSON only, no other text, no explanations):"""
                     return email
             except Exception as fallback_error:
                 logger.debug(f"Fallback prompt extraction failed: {fallback_error}")
+                # Even if fallback fails, try aggressive regex as last resort
+                try:
+                    aggressive_email = self._extract_email_regex_fallback(resume_text)
+                    if aggressive_email:
+                        logger.info(
+                            f"✅ EMAIL EXTRACTED via aggressive regex (after fallback error) from {filename}",
+                            extra={"file_name": filename, "email": aggressive_email, "method": "aggressive_regex_fallback"}
+                        )
+                        return aggressive_email
+                except Exception as regex_error:
+                    logger.debug(f"Aggressive regex also failed: {regex_error}")
             
             logger.info(
                 f"❌ EMAIL NOT FOUND in {filename}",
@@ -1478,4 +2305,3 @@ Output (JSON only, no other text, no explanations):"""
         
         # All extraction methods have been tried, return None
         return None
-
