@@ -2,6 +2,8 @@
 import json
 import re
 from typing import Dict, Optional, List
+from dataclasses import dataclass
+from datetime import datetime
 import httpx
 from httpx import Timeout
 
@@ -24,208 +26,82 @@ This is a FRESH, ISOLATED, SINGLE-TASK extraction.
 Ignore ALL previous conversations, memory, instructions, or assumptions.
 You are responsible for accurate resume domain classification.
 
+CRITICAL RECENCY RULE:
+You MUST extract the domain ONLY from the MOST RECENT job role.
+IGNORE all older roles, projects, internships, or academic work.
+
 ROLE:
-You are an ATS resume-parsing expert specializing in industry and business domain identification.
-You MUST behave conservatively, responsibly, and professionally.
+You are an ATS resume-parsing expert specializing in conservative,
+evidence-based industry domain identification.
 
 DEFINITION:
-"Domain" means the PRIMARY BUSINESS / INDUSTRY DOMAIN in which the candidate has worked.
-It is NOT the candidate's skills, technologies, tools, job role, or academic background.
+"Domain" means the PRIMARY BUSINESS / INDUSTRY in which the candidate
+has professionally WORKED.
+It is NOT skills, tools, technologies, education, or academic projects.
 
 TASK:
-Analyze the resume text and extract ONE primary industry domain.
+Analyze the provided text (represents ONE most recent job role).
+Return EXACTLY ONE industry domain OR null.
 
-WHERE TO LOOK (IN PRIORITY ORDER):
-1. Company names
-2. Client names
-3. Project descriptions
-4. Business context of work
-5. Industry-specific terminology tied to business operations
+EVIDENCE HIERARCHY (MUST FOLLOW):
+1. Employer organization or company
+2. Paying client or customer
+3. Commercial product or service
+4. Business operations described
+5. Industry-regulated terminology
 
-DO NOT USE:
-- Skills alone
-- Programming languages
-- Tools or platforms alone
-- Job titles alone (unless clearly industry-specific)
-- Academic qualifications or education history
+If none of the above clearly indicate an industry → return null.
 
-CRITICAL EDUCATION DOMAIN DISAMBIGUATION (MANDATORY):
-The "Education" domain MUST be extracted ONLY if the candidate has WORKED in the education industry.
+STRICT EXCLUSIONS:
+DO NOT infer domain from:
+- Skills, programming languages, or tools
+- Academic projects or coursework
+- Education or degree specialization
+- Certifications or training
+- Internships without industry business context
+- Generic job titles
 
-HARD EXCLUSION RULE:
-- NEVER infer "Education" as a domain from:
-  - Degree names (e.g., B.Ed, M.Ed, MA Education, Instructional Technology)
-  - University, college, or school names
-  - Teaching credentials or certifications
-  - Academic programs, majors, minors, or coursework
-  - Sections titled "Education", "Academic Background", "Qualifications", or similar
-  - Continuous degree listings with institutions and years
+JOB TITLE RULE:
+Use job title ONLY if it is explicitly industry-bound.
+If ambiguous → ignore it.
 
-If "Education" appears ONLY in academic qualifications, then the domain is not Education, might be something else.
+EDUCATION DOMAIN RULE (MANDATORY):
+Return "Education" ONLY if the candidate worked professionally
+for education institutions or education products.
+Academic background alone is NEVER sufficient.
 
-VALID INCLUSION RULE (ALL CONDITIONS REQUIRED):
-Extract "Education" ONLY IF:
-1. Education-related terms appear in WORK EXPERIENCE, PROJECTS, or CLIENT CONTEXT
-2. The resume explicitly indicates professional work such as:
-   - Education domain projects
-   - EdTech products or platforms
-   - eLearning or LMS development/implementation
-   - Work for schools, universities, or academic institutions as clients
-   - Student information systems, curriculum platforms, or online learning systems
-3. The education reference is clearly tied to a job role, project, client, or product
+IT DOMAIN RESTRICTION:
+Return IT-related domains ONLY if:
+- The employer is an IT company OR
+- The work involved building/selling IT products or platforms
 
-If professional education-domain evidence is missing or ambiguous, return null.
+Using IT skills inside another industry does NOT qualify as IT domain.
 
-DOMAIN SELECTION RULES:
-1. If multiple domains appear, select the MOST RECENT or MOST DOMINANT one.
-2. If IT skills are used INSIDE a non-IT industry (e.g., Banking, Healthcare), return the BUSINESS DOMAIN — NOT IT.
-3. Use STANDARDIZED domain names from the allowed list below.
-4. Do NOT invent, assume, or guess domains.
-5. If no reasonable inference is possible, return null.
-
-IMPORTANT DISTINCTIONS:
-- "Information Technology", "Software & SaaS", "Cloud", "Cybersecurity", "AI", "Data & Analytics"
-  → Use ONLY if the candidate worked on IT PRODUCTS or IT COMPANIES.
-  → DO NOT use these if they are merely skills applied within another industry.
+MULTI-DOMAIN RULE:
+If multiple industries appear in the SAME role,
+select the PRIMARY revenue-driving business domain only.
+Never combine domains.
 
 ANTI-HALLUCINATION RULES:
-- Never infer domain from skills alone.
-- Never infer domain from education or certifications.
-- Never assume domain based on job title alone.
-- Never combine multiple domains.
-- Never return explanations or extra text.
+- Never guess
+- Never infer
+- Never default to IT
+- Prefer null over incorrect classification
 
-ALLOWED SAMPLE DOMAIN LIST (STANDARDIZED OUTPUT VALUES):
+ALLOWED DOMAIN CONSTRAINT:
+The returned value MUST exactly match ONE of the internally allowed
+standardized domains.
+If no allowed domain is clearly supported → return null.
 
-Healthcare  
-Healthcare & Life Sciences  
-Pharmaceuticals & Clinical Research  
-
-Banking  
-Finance  
-Finance & Accounting  
-Banking, Financial Services & Insurance (BFSI)  
-Insurance  
-Capital Markets  
-FinTech  
-
-Retail  
-E-Commerce  
-Retail & E-Commerce  
-
-Manufacturing  
-Manufacturing & Production  
-Supply Chain  
-Operations & Supply Chain Management  
-Logistics  
-Logistics & Transportation  
-Procurement & Vendor Management  
-
-Education  
-Education, Training & Learning  
-
-Government  
-Public Sector  
-Public Sector & Government Services  
-Defense  
-
-Energy  
-Utilities  
-Energy, Utilities & Sustainability  
-
-Telecommunications  
-Media & Entertainment  
-Media, Advertising & Communications  
-Gaming  
-
-Real Estate  
-Real Estate & Facilities Management  
-
-Construction  
-Construction & Infrastructure  
-
-Hospitality  
-Travel & Tourism  
-
-Agriculture  
-Agri-Business  
-
-Legal, Risk & Corporate Governance  
-Quality, Compliance & Audit  
-
-Human Resources  
-Sales & Marketing  
-Customer Service & Customer Experience  
-Administration & Office Management  
-
-Non-Profit  
-NGOs, Social Impact & CSR  
-
-Software & SaaS  
-Cloud & Infrastructure  
-Cybersecurity  
-Information Technology  
-
-Artificial Intelligence  
-→ ONLY if candidate worked on AI products or AI companies (NOT skills)
-
-Data & Analytics  
-→ ONLY if candidate worked on data/analytics companies or platforms (NOT skills)
-
-OUTPUT REQUIREMENTS:
-- Output ONLY valid JSON
-- No explanations
-- No markdown
-- No comments
-- Exactly ONE domain or null
+OUTPUT FORMAT:
+Return ONLY valid JSON.
+No explanations.
+No extra text.
 
 JSON SCHEMA:
 {
   "domain": "string | null"
 }
-
-VALID OUTPUT EXAMPLES:
-{"domain": "Healthcare"}
-{"domain": "Banking"}
-{"domain": "Finance"}
-{"domain": "Banking, Financial Services & Insurance (BFSI)"}
-{"domain": "Insurance"}
-{"domain": "Capital Markets"}
-{"domain": "FinTech"}
-{"domain": "Retail"}
-{"domain": "E-Commerce"}
-{"domain": "Manufacturing"}
-{"domain": "Supply Chain"}
-{"domain": "Logistics"}
-{"domain": "Transportation"}
-{"domain": "Education"}
-{"domain": "Government"}
-{"domain": "Public Sector"}
-{"domain": "Defense"}
-{"domain": "Energy"}
-{"domain": "Utilities"}
-{"domain": "Telecommunications"}
-{"domain": "Media & Entertainment"}
-{"domain": "Gaming"}
-{"domain": "Real Estate"}
-{"domain": "Construction"}
-{"domain": "Hospitality"}
-{"domain": "Travel & Tourism"}
-{"domain": "Automotive"}
-{"domain": "Aerospace"}
-{"domain": "Electronics & Semiconductors"}
-{"domain": "Mining"}
-{"domain": "Metals"}
-{"domain": "Agriculture"}
-{"domain": "AgriTech"}
-{"domain": "Non-Profit"}
-{"domain": "Software & SaaS"}
-{"domain": "Cloud & Infrastructure"}
-{"domain": "Cybersecurity"}
-{"domain": "Information Technology"}
-{"domain": "Artificial Intelligence"}
-{"domain": "Data & Analytics"}
-{"domain": null}
 """
 
 
@@ -299,6 +175,241 @@ class DomainExtractor:
     def __init__(self):
         self.ollama_host = settings.ollama_host
         self.model = "llama3.1"
+        self.MAX_ROLE_CHARS = 1800  # Character limit per role after isolation
+    
+    @dataclass
+    class Role:
+        """Represents a single job role with date information."""
+        date_text: str
+        start_year: Optional[int]
+        end_year: Optional[int]
+        is_current: bool
+        text: str
+        
+        def get_score(self) -> int:
+            """Get recency score: higher = more recent. Present/Current = highest score."""
+            if self.is_current:
+                return 999999  # Highest priority for current roles
+            if self.end_year:
+                return self.end_year * 100  # Year-based scoring
+            if self.start_year:
+                return self.start_year * 100  # Fallback to start year
+            return 0  # Lowest priority if no dates
+    
+    def _extract_roles(self, resume_text: str) -> List['Role']:
+        """
+        Extract individual roles from resume text based on date range boundaries.
+        Each distinct date range = one role.
+        
+        Args:
+            resume_text: The full resume text
+            
+        Returns:
+            List of Role objects, ordered by appearance in resume
+        """
+        if not resume_text:
+            return []
+        
+        lines = resume_text.split('\n')
+        roles = []
+        current_role_lines = []
+        current_date_text = ""
+        current_start_year = None
+        current_end_year = None
+        current_is_current = False
+        
+        # Reuse existing date patterns from _extract_latest_experience
+        date_patterns = [
+            r'\b(january|february|march|april|may|june|july|august|september|october|november|december|jan|feb|mar|apr|may|jun|jul|aug|sep|sept|oct|nov|dec)\.?\s+(\d{4})\b',
+            r'\b(\d{1,2})/(\d{4})\b',  # MM/YYYY
+            r'\b(\d{4})-(\d{1,2})\b',  # YYYY-MM
+            r'\b(19[5-9]\d|20[0-3]\d)\b',  # Year only
+            # Comprehensive ongoing employment keywords
+            r'\b(present|current|now|today|till\s+date|till\s+now|till-date|till-now|tilldate|tillnow|til\s+date|til\s+now|til-date|til-now|tildate|tilnow|still\s+date|still\s+now|still-date|still-now|stilldate|stillnow|still|still\s+working|still\s+employed|still\s+active|to\s+date|to\s+now|to-date|to-now|todate|tonow|until\s+present|until\s+now|until\s+date|until-present|until-now|until-date|untilpresent|untilnow|untildate|up\s+to\s+present|up\s+to\s+now|up\s+to\s+date|up-to-present|up-to-now|up-to-date|uptopresent|uptonow|uptodate|as\s+of\s+now|as\s+of\s+present|as\s+of\s+date|as\s+of\s+today|as-of-now|as-of-present|as-of-date|as-of-today|asofnow|asofpresent|asofdate|asoftoday|ongoing|on-going|on\s+going|working|continuing|continue|active|currently|currently\s+working|currently\s+employed|currently\s+active)\b',
+        ]
+        
+        # Present/current keywords for is_current detection
+        present_keywords = [
+            "present", "current", "now", "today",
+            "till date", "till now", "till-date", "till-now", "tilldate", "tillnow",
+            "til date", "til now", "til-date", "til-now", "tildate", "tilnow",
+            "still date", "still now", "still-date", "still-now", "stilldate", "stillnow",
+            "still", "still working", "still employed", "still active",
+            "to date", "to now", "to-date", "to-now", "todate", "tonow",
+            "until present", "until now", "until date", "until-present", "until-now", "until-date",
+            "untilpresent", "untilnow", "untildate",
+            "up to present", "up to now", "up to date", "up-to-present", "up-to-now", "up-to-date",
+            "uptopresent", "uptonow", "uptodate",
+            "as of now", "as of present", "as of date", "as of today",
+            "as-of-now", "as-of-present", "as-of-date", "as-of-today",
+            "asofnow", "asofpresent", "asofdate", "asoftoday",
+            "ongoing", "on-going", "on going",
+            "working", "working till date", "working till now",
+            "continuing", "continue",
+            "active", "currently", "currently working", "currently employed", "currently active"
+        ]
+        
+        def extract_years_from_line(line: str) -> tuple[Optional[int], Optional[int], bool]:
+            """Extract start_year, end_year, and is_current from a line."""
+            line_lower = line.lower()
+            is_current = any(keyword in line_lower for keyword in present_keywords)
+            
+            # Extract years
+            year_pattern = r'\b(20[0-3]\d|19[5-9]\d)\b'
+            years = [int(y) for y in re.findall(year_pattern, line)]
+            
+            start_year = None
+            end_year = None
+            
+            if years:
+                if len(years) >= 2:
+                    # Assume first year is start, last is end
+                    start_year = min(years)
+                    end_year = max(years)
+                elif len(years) == 1:
+                    # Single year - could be start or end
+                    if is_current:
+                        start_year = years[0]
+                        end_year = None
+                    else:
+                        # Try to infer from context
+                        end_year = years[0]
+            
+            return start_year, end_year, is_current
+        
+        for i, line in enumerate(lines):
+            line_stripped = line.strip()
+            if not line_stripped:
+                if current_role_lines:
+                    current_role_lines.append(line)  # Keep blank lines within role
+                continue
+            
+            line_lower = line_stripped.lower()
+            
+            # Check if this line contains a date range (role boundary)
+            has_date_range = any(re.search(pattern, line_lower, re.IGNORECASE) for pattern in date_patterns)
+            
+            if has_date_range:
+                # Save previous role if exists
+                if current_role_lines:
+                    role_text = '\n'.join(current_role_lines).strip()
+                    if role_text:
+                        roles.append(self.Role(
+                            date_text=current_date_text,
+                            start_year=current_start_year,
+                            end_year=current_end_year,
+                            is_current=current_is_current,
+                            text=role_text
+                        ))
+                
+                # Start new role
+                current_date_text = line_stripped
+                current_start_year, current_end_year, current_is_current = extract_years_from_line(line_stripped)
+                current_role_lines = [line_stripped]
+            else:
+                # Add line to current role (if we're in a role context)
+                if current_role_lines:
+                    # We're in a role context (have seen a date range)
+                    current_role_lines.append(line_stripped)
+                # If no role context yet, skip (wait for first date range)
+        
+        # Save final role if exists
+        if current_role_lines:
+            role_text = '\n'.join(current_role_lines).strip()
+            if role_text:
+                roles.append(self.Role(
+                    date_text=current_date_text,
+                    start_year=current_start_year,
+                    end_year=current_end_year,
+                    is_current=current_is_current,
+                    text=role_text
+                ))
+        
+        logger.debug(
+            f"Extracted {len(roles)} roles from resume",
+            extra={"role_count": len(roles)}
+        )
+        
+        return roles
+    
+    def _select_latest_role(self, roles: List['Role']) -> Optional['Role']:
+        """
+        Select the single most recent role from a list of roles.
+        
+        Scoring logic:
+        1. is_current == True → highest priority
+        2. Highest end_year
+        3. If tie → first occurrence
+        
+        Args:
+            roles: List of Role objects
+            
+        Returns:
+            The most recent Role or None if list is empty
+        """
+        if not roles:
+            return None
+        
+        if len(roles) == 1:
+            return roles[0]
+        
+        # Score each role
+        roles_with_scores = [(role, role.get_score()) for role in roles]
+        
+        # Sort by score (descending) - highest score = most recent
+        roles_with_scores.sort(key=lambda x: x[1], reverse=True)
+        
+        # Get role with highest score
+        latest_role = roles_with_scores[0][0]
+        
+        logger.info(
+            f"Selected latest role (score: {roles_with_scores[0][1]}, is_current: {latest_role.is_current}, "
+            f"end_year: {latest_role.end_year})",
+            extra={
+                "role_score": roles_with_scores[0][1],
+                "is_current": latest_role.is_current,
+                "end_year": latest_role.end_year,
+                "total_roles": len(roles)
+            }
+        )
+        
+        return latest_role
+    
+    def _extract_latest_role(self, resume_text: str) -> Optional['Role']:
+        """
+        Extract the single most recent role from resume text.
+        This is the primary method for role-based domain extraction.
+        
+        Args:
+            resume_text: The full resume text
+            
+        Returns:
+            The most recent Role object, or None if no roles found
+        """
+        if not resume_text:
+            return None
+        
+        # Extract all roles
+        roles = self._extract_roles(resume_text)
+        
+        if not roles:
+            # Fallback: try experience-based extraction
+            logger.debug("No roles found with date ranges, falling back to experience-based extraction")
+            return None
+        
+        # Select latest role
+        latest_role = self._select_latest_role(roles)
+        
+        if latest_role:
+            # Apply character limit after isolation
+            if len(latest_role.text) > self.MAX_ROLE_CHARS:
+                logger.debug(
+                    f"Role text truncated from {len(latest_role.text)} to {self.MAX_ROLE_CHARS} characters",
+                    extra={"original_length": len(latest_role.text)}
+                )
+                latest_role.text = latest_role.text[:self.MAX_ROLE_CHARS]
+        
+        return latest_role
     
     def _extract_latest_experience(self, resume_text: str) -> str:
         """
@@ -470,26 +581,8 @@ class DomainExtractor:
             experience_blocks_with_scores.sort(key=lambda x: x[1], reverse=True)
             latest_experience = experience_blocks_with_scores[0][0]
             
-            # Fix #1: Split multi-role blocks - prefer last role paragraph within same company
-            # This prevents old domain language from contaminating latest domain
-            # Split on double newlines (paragraph breaks) and take first paragraph
-            # This typically contains the most recent role
-            if '\n\n' in latest_experience:
-                paragraphs = latest_experience.split('\n\n')
-                # Take first paragraph (usually most recent role)
-                latest_experience = paragraphs[0]
-                logger.debug(
-                    f"Multi-role block detected, using first paragraph (most recent role)",
-                    extra={"original_paragraphs": len(paragraphs)}
-                )
-            
-            # Limit to 3000 characters for LLM context
-            if len(latest_experience) > 3000:
-                latest_experience = latest_experience[:3000]
-                logger.debug(
-                    f"Latest experience truncated to 3000 characters",
-                    extra={"original_length": len(experience_blocks_with_scores[0][0])}
-                )
+            # Note: No truncation here - truncation only belongs in role-based path
+            # Note: No paragraph splitting - paragraph order is not a reliable recency signal
             logger.info(
                 f"✅ Extracted latest experience section by date ({len(latest_experience)} chars)",
                 extra={"experience_length": len(latest_experience), "date_score": experience_blocks_with_scores[0][1]}
@@ -688,13 +781,17 @@ class DomainExtractor:
     
     def _detect_domain_from_keywords(self, resume_text: str, filename: str = "resume") -> Optional[str]:
         """
-        Fallback method to detect domain from keywords when LLM returns null.
-        This is a safety net to catch obvious domain indicators that LLM might miss.
-        Uses strict scoring to ensure only resume-related domains are detected.
+        Keyword-based domain detection method.
+        
+        NOTE: This method is no longer used as a fallback when LLM returns null.
+        LLM null is now respected as the authoritative decision (conservative behavior).
+        
+        This method may be used for validation or other purposes in the future.
+        Uses strict scoring to ensure only business/industry domain terms are detected.
         Filters out education sections to prevent false Education domain detection.
         
         Args:
-            resume_text: The resume text to analyze
+            resume_text: The resume text to analyze (should be single role text for recency)
             filename: Name of the file (for logging)
         
         Returns:
@@ -995,15 +1092,17 @@ class DomainExtractor:
             },
             "Energy": {
                 "high": [
-                    "energy", "power", "utilities", "electric utility", "renewable energy",
-                    "solar energy", "wind energy", "oil and gas", "petroleum", "energy sector",
-                    "power generation", "energy management", "utility company"
+                    "power plant", "power station", "electric utility", "utility company",
+                    "renewable energy", "solar energy", "wind energy", "oil and gas", "petroleum",
+                    "energy sector", "energy company", "energy industry", "oil company", "gas company",
+                    "solar company", "wind company", "renewable energy company",
+                    "transmission", "distribution", "power grid", "electric grid", "energy grid"
                 ],
                 "medium": [
-                    "energy", "power", "utilities", "electric", "renewable", "solar",
-                    "wind", "oil", "gas", "petroleum", "energy"
+                    "utilities", "renewable", "solar", "wind", "oil", "gas", "petroleum",
+                    "power generation", "energy generation", "electric power", "renewable power"
                 ],
-                "low": []  # Removed abstract keywords: power, energy
+                "low": []  # Removed generic terms: "energy", "power" - too generic, match technical terms
             },
             "Logistics": {
                 "high": [
@@ -1410,27 +1509,68 @@ class DomainExtractor:
                 )
                 model_to_use = available_model
             
-            # Extract latest experience section (experience-first approach)
-            latest_experience = self._extract_latest_experience(resume_text)
+            # Extract latest role (role-based approach - PRIMARY)
+            latest_role = self._extract_latest_role(resume_text)
             
-            # Use latest experience (up to 3000 characters) for LLM context
-            # This ensures we prioritize the most recent domain
-            text_to_send = latest_experience[:3000]
-            if len(latest_experience) > 3000:
+            # Handle no-date resume case: Dates → Titles → null
+            # Never use LLM or keyword fallback on experience blocks
+            if not latest_role:
                 logger.debug(
-                    f"Latest experience truncated from {len(latest_experience)} to 3000 characters for domain extraction",
-                    extra={"file_name": filename, "original_length": len(latest_experience)}
+                    "No roles found with date ranges, using title-based inference only (no LLM, no keyword fallback)",
+                    extra={"file_name": filename}
                 )
+                latest_experience = self._extract_latest_experience(resume_text)
+                if not latest_experience or not latest_experience.strip():
+                    logger.warning(
+                        f"No extractable experience text found for title inference",
+                        extra={"file_name": filename}
+                    )
+                    return None
+                
+                # Only try title inference on experience text (Dates → Titles → null)
+                domain = self._infer_domain_from_job_titles(latest_experience, filename)
+                if domain:
+                    logger.info(
+                        f"✅ Domain inferred from job titles (no-date resume): {domain} for {filename}",
+                        extra={"file_name": filename, "detected_domain": domain, "method": "title_inference_no_dates"}
+                    )
+                else:
+                    logger.info(
+                        f"ℹ️ No domain found via title inference (no-date resume), returning null",
+                        extra={"file_name": filename}
+                    )
+                return domain
             
+            # Role-based path: Use latest role text (already truncated to MAX_ROLE_CHARS in _extract_latest_role)
+            text_to_analyze = latest_role.text
+            logger.info(
+                f"✅ Using role-based extraction (role text: {len(text_to_analyze)} chars, "
+                f"is_current: {latest_role.is_current}, end_year: {latest_role.end_year})",
+                extra={
+                    "file_name": filename,
+                    "role_text_length": len(text_to_analyze),
+                    "is_current": latest_role.is_current,
+                    "end_year": latest_role.end_year
+                }
+            )
+            
+            if not text_to_analyze or not text_to_analyze.strip():
+                logger.warning(
+                    f"No extractable text found for domain extraction",
+                    extra={"file_name": filename}
+                )
+                return None
+            
+            # LLM extraction (only for role-based path)
             prompt = f"""{DOMAIN_PROMPT}
 
 IMPORTANT CONTEXT:
-- The text below contains the MOST RECENT work experience section
-- Prioritize the domain from this latest experience
-- If domain is unclear, return null (acceptable)
+The text below represents ONE SINGLE, MOST RECENT JOB ROLE.
+Do NOT infer domain from anything else.
+If domain is unclear, return null (acceptable).
 
-Input resume text (latest experience):
-{text_to_send}
+Input resume text (latest role):
+{text_to_analyze}
 
 Output (JSON only, no other text, no explanations):"""
             
@@ -1441,7 +1581,7 @@ Output (JSON only, no other text, no explanations):"""
                     "model": model_to_use,
                     "ollama_host": self.ollama_host,
                     "resume_text_length": len(resume_text),
-                    "text_sent_length": len(text_to_send),
+                    "text_sent_length": len(text_to_analyze),
                 }
             )
             
@@ -1552,56 +1692,54 @@ Output (JSON only, no other text, no explanations):"""
             else:
                 domain = None
             
-            # FALLBACK LAYER 1: Strict keyword-based domain detection (ATS-grade)
-            # Only use latest experience for fallback to maintain "latest domain" priority
-            if not domain and latest_experience:
-                domain = self._detect_domain_from_keywords(latest_experience, filename)
-                if domain:
-                    logger.info(
-                        f"✅ FALLBACK LAYER 1: Domain detected from keywords (latest experience): {domain} for {filename}",
-                        extra={"file_name": filename, "detected_domain": domain, "method": "strict_keyword_fallback"}
-                    )
-            
-            # FALLBACK LAYER 2: Conservative job title inference (only if Layer 1 fails)
-            # Only use latest experience to maintain "latest domain" priority
-            if not domain and latest_experience:
-                domain = self._infer_domain_from_job_titles(latest_experience, filename)
-                if domain:
-                    logger.info(
-                        f"✅ FALLBACK LAYER 2: Domain inferred from job titles (latest experience): {domain} for {filename}",
-                        extra={"file_name": filename, "detected_domain": domain, "method": "job_title_inference"}
-                    )
-            
-            # Log the raw response for debugging (enhanced for troubleshooting)
-            logger.info(
-                f"🔍 DOMAIN EXTRACTION DEBUG for {filename}",
-                extra={
-                    "file_name": filename,
-                    "raw_output_hash": hash(raw_output[:1000]) if raw_output else None,
-                    "raw_output_length": len(raw_output) if raw_output else 0,
-                    "parsed_data": parsed_data,
-                    "extracted_domain": domain,
-                    "resume_text_length": len(resume_text),
-                    "text_sent_length": len(text_to_send),
-                    "resume_text_hash": hash(resume_text[:1000]) if resume_text else None
-                }
-            )
-            
-            # If domain is null, log details (null is acceptable for ATS-grade systems)
-            if not domain:
+            # CRITICAL FIX: If LLM returns null, respect it and return null immediately
+            # LLM null is intentional conservative behavior - do NOT override with keyword fallback
+            # This prevents false positives from technical terms (e.g., "energy consumption" → Energy domain)
+            # Architecture: LLM is the authoritative source - if it says null, domain is unclear
+            if domain is None:
                 logger.info(
-                    f"ℹ️ DOMAIN EXTRACTION RETURNED NULL for {filename} (acceptable - unclear domain)",
+                    f"✅ LLM returned null (no clear domain) - respecting LLM decision and returning null",
                     extra={
                         "file_name": filename,
-                        "resume_text_length": len(resume_text),
-                        "latest_experience_length": len(latest_experience),
-                        "text_sent_length": len(text_to_send),
-                        "raw_output_hash": hash(raw_output[:2000]) if raw_output else None,
-                        "parsed_data": parsed_data,
-                        "latest_experience_hash": hash(latest_experience[:1000]) if latest_experience else None,
-                        "note": "Null is acceptable when domain is unclear (ATS-grade behavior)"
+                        "note": "LLM null is correct conservative behavior - not overriding with keyword fallback"
                     }
                 )
+                return None
+            
+            # Log the raw response for debugging (enhanced for troubleshooting)
+            # Only log LLM details if we used role-based extraction
+            if latest_role:
+                logger.info(
+                    f"🔍 DOMAIN EXTRACTION DEBUG for {filename}",
+                    extra={
+                        "file_name": filename,
+                        "raw_output_hash": hash(raw_output[:1000]) if raw_output else None,
+                        "raw_output_length": len(raw_output) if raw_output else 0,
+                        "parsed_data": parsed_data,
+                        "extracted_domain": domain,
+                        "resume_text_length": len(resume_text),
+                        "text_sent_length": len(text_to_analyze),
+                        "resume_text_hash": hash(resume_text[:1000]) if resume_text else None,
+                        "extraction_method": "role_based"
+                    }
+                )
+                
+                # If domain is null, log details (null is acceptable for ATS-grade systems)
+                if not domain:
+                    logger.info(
+                        f"ℹ️ DOMAIN EXTRACTION RETURNED NULL for {filename} (acceptable - unclear domain)",
+                        extra={
+                            "file_name": filename,
+                            "resume_text_length": len(resume_text),
+                            "text_analyzed_length": len(text_to_analyze),
+                            "text_sent_length": len(text_to_analyze),
+                            "raw_output_hash": hash(raw_output[:2000]) if raw_output else None,
+                            "parsed_data": parsed_data,
+                            "text_analyzed_hash": hash(text_to_analyze[:1000]) if text_to_analyze else None,
+                            "extraction_method": "role_based",
+                            "note": "Null is acceptable when domain is unclear (ATS-grade behavior)"
+                        }
+                    )
             
             logger.info(
                 f"✅ DOMAIN EXTRACTED from {filename}",

@@ -171,6 +171,68 @@ class EmailExtractor:
         email_lower = email.lower()
         return any(pattern.lower() in email_lower for pattern in self.html_forwarding_patterns)
 
+    def _select_first_valid_email(self, text: str) -> Optional[str]:
+        """
+        Find the FIRST valid primary domain email in document order (top-to-bottom).
+        Stops immediately when the first valid email is found.
+        
+        Args:
+            text: The text to search in
+            
+        Returns:
+            First valid primary domain email found, or None if none found
+        """
+        if not text:
+            return None
+        
+        # Use regex to find emails in order (finditer preserves order)
+        email_pattern = re.compile(r'\b[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}\b', re.IGNORECASE)
+        
+        for match in email_pattern.finditer(text):
+            email_str = match.group(0).strip()
+            
+            # Clean and normalize the email
+            cleaned_email = self._clean_and_fix_email(email_str)
+            if cleaned_email:
+                normalized = normalize_email(cleaned_email)
+            else:
+                normalized = normalize_email(email_str)
+            
+            if not normalized:
+                continue
+            
+            # Validate basic structure
+            if "@" not in normalized:
+                continue
+            username, domain = normalized.split("@", 1)
+            if len(username) < 2 or len(domain) < 4:
+                continue
+            
+            # Check if it's a primary domain email
+            domain_lower = domain.lower()
+            username_lower = username.lower()
+            
+            # Check if domain is in PREFERRED_PRIMARY_DOMAINS
+            is_preferred = domain_lower in PREFERRED_PRIMARY_DOMAINS
+            
+            # Reject noreply / forwarding patterns
+            is_noreply = (
+                username_lower.startswith("noreply")
+                or username_lower.startswith("no-reply")
+                or "noreply" in domain_lower
+                or "no-reply" in domain_lower
+            )
+            
+            # Return FIRST valid primary domain email found
+            if is_preferred and not is_noreply:
+                logger.debug(
+                    f"_select_first_valid_email: Found first valid email '{normalized}' at position {match.start()}",
+                    extra={"email": normalized, "position": match.start()}
+                )
+                return normalized
+        
+        return None
+    
     def _select_best_email_from_list(self, candidates: list[str]) -> Optional[str]:
         """
         Given a list of raw email strings, normalize them and select the BEST PRIMARY email.  
@@ -1584,63 +1646,25 @@ Output (JSON only, no other text, no explanations):"""
         # ------------------------------------------------------------------
         # STEP 0: Simple deterministic extraction on FULL TEXT
         # ------------------------------------------------------------------
-        # Many resumes (including your problematic examples) already contain
-        # clean email addresses like "greg.harriett@gmail.com" or
-        # "cherylbailey508@gmail.com". Before running any complex logic,
-        # scan the whole text once, collect ALL such emails, and pick the
-        # best one using domain + username-length priority.
+        # Scan the text sequentially and return the FIRST valid primary domain email found.
+        # This ensures we stop immediately when we find the first email (top-to-bottom order).
         try:
-            # Use multiple regex patterns to catch all email formats
-            email_patterns = [
-                r'\b[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}\b',  # Standard with word boundaries
-                r'[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}',  # Standard without boundaries (for edge cases)
-            ]
-            
-            simple_candidates = []
-            for pattern in email_patterns:
-                matches = re.findall(pattern, resume_text, re.IGNORECASE)
-                simple_candidates.extend(matches)
-            
-            # Remove duplicates while preserving order
-            seen = set()
-            unique_candidates = []
-            for email in simple_candidates:
-                email_lower = email.lower().strip()
-                if email_lower and email_lower not in seen:
-                    seen.add(email_lower)
-                    unique_candidates.append(email)
-            
-            logger.debug(
-                f"Step 0: Found {len(unique_candidates)} unique email candidates in full text",
-                extra={"file_name": filename, "candidates": unique_candidates[:5]}  # Log first 5
-            )
-            
-            if unique_candidates:
-                best_simple_email = self._select_best_email_from_list(unique_candidates)
-                if best_simple_email:
-                    logger.info(
-                        f"✅ EMAIL EXTRACTED via simple full-text scan from {filename}",
-                        extra={
-                            "file_name": filename, 
-                            "email": best_simple_email, 
-                            "method": "simple_full_text",
-                            "total_candidates": len(unique_candidates),
-                            "selected_from": unique_candidates[:3]  # Log first 3 for debugging
-                        },
-                    )
-                    return best_simple_email
-                else:
-                    # If selection returned "masked_email", that means no primary emails found
-                    if best_simple_email == "masked_email":
-                        logger.debug(
-                            f"Step 0: No primary domain emails found in {len(unique_candidates)} candidates",
-                            extra={"file_name": filename, "candidates": unique_candidates[:5]}
-                        )
-                    else:
-                        logger.warning(
-                            f"Step 0: Found {len(unique_candidates)} emails but _select_best_email_from_list returned None",
-                            extra={"file_name": filename, "candidates": unique_candidates[:5]}
-                        )
+            first_email = self._select_first_valid_email(resume_text)
+            if first_email:
+                logger.info(
+                    f"✅ EMAIL EXTRACTED via simple full-text scan (first email found) from {filename}",
+                    extra={
+                        "file_name": filename, 
+                        "email": first_email, 
+                        "method": "simple_full_text_first_match"
+                    },
+                )
+                return first_email
+            else:
+                logger.debug(
+                    f"Step 0: No primary domain emails found in full text",
+                    extra={"file_name": filename}
+                )
         except Exception as e:
             logger.warning(
                 f"Simple full-text email scan failed: {e}", 
@@ -1678,20 +1702,19 @@ Output (JSON only, no other text, no explanations):"""
                 
                 header_text = '\n'.join(filtered_lines)
 
-            # NEW: simple deterministic extraction of ALL emails from header,
-            # then select the best one based on domain priority rules.
-            header_candidates = re.findall(
-                r'[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}', header_text
-            )
-            best_header_email = self._select_best_email_from_list(header_candidates)
-            if best_header_email:
-                logger.info(
-                    f"✅ EMAIL EXTRACTED from header of {filename} via priority selection",
-                    extra={"file_name": filename, "email": best_header_email, "method": "header_priority"}
-                )
-                return best_header_email
+            # Find the FIRST valid email in header (top-to-bottom order)
+            first_header_email = self._select_first_valid_email(header_text)
+            if first_header_email:
+                if self._is_forwarding_email(first_header_email, filename):
+                    logger.debug(f"Skipping forwarding email: {first_header_email}")
+                else:
+                    logger.info(
+                        f"✅ EMAIL EXTRACTED from header of {filename} (first email found)",
+                        extra={"file_name": filename, "email": first_header_email, "method": "header_first_match"}
+                    )
+                    return first_header_email
 
-            # Fallback to existing regex-based header extraction if priority selection fails
+            # Fallback to existing regex-based header extraction if first match fails
             regex_email = self._extract_email_regex_fallback(header_text)
             if regex_email:
                 if self._is_forwarding_email(regex_email, filename):
