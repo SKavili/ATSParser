@@ -43,12 +43,26 @@ TASK:
 Analyze the provided text (represents ONE most recent job role).
 Return EXACTLY ONE industry domain OR null.
 
+IMPORTANT ORGANIZATIONS (for context):
+- DRDO = Defence Research and Development Organisation (Defense domain)
+- ISRO = Indian Space Research Organisation (Aerospace/Defense domain)
+- BARC = Bhabha Atomic Research Centre (Energy/Defense domain)
+- NASA = National Aeronautics and Space Administration (Aerospace domain)
+- DOD = Department of Defense (Defense domain)
+- Epiq Systems = Legal services company (Class Action lawsuits, Legal domain)
+- HireRight = Background check/HR services company (Human Resources domain)
+
 EVIDENCE HIERARCHY (MUST FOLLOW):
 1. Employer organization or company
 2. Paying client or customer
 3. Commercial product or service
 4. Business operations described
 5. Industry-regulated terminology
+
+INFERENCE RULE:
+If business context is implied but not explicit (e.g., company name suggests industry,
+client context indicates domain, or business operations clearly point to an industry),
+select the closest standardized domain that matches the implied context.
 
 If none of the above clearly indicate an industry → return null.
 
@@ -70,12 +84,41 @@ Return "Education" ONLY if the candidate worked professionally
 for education institutions or education products.
 Academic background alone is NEVER sufficient.
 
+SPECIFIC TECHNOLOGY/PLATFORM DOMAINS (HIGHEST PRIORITY):
+If the candidate's PRIMARY work is centered around a specific technology platform, return that specific domain:
+- "Salesforce" → If work is primarily Salesforce Admin/Developer/Consultant at any company
+- "AWS" → If work is primarily AWS cloud services/architecture
+- "Microsoft" → If work is primarily Microsoft technologies (Azure, Dynamics, Office 365)
+- "Oracle" → If work is primarily Oracle products (Oracle ERP, Oracle Cloud, Oracle Database)
+- "SAP" → If work is primarily SAP implementation/consulting
+- "ServiceNow" → If work is primarily ServiceNow platform
+- "Workday" → If work is primarily Workday HR/Finance platform
+- "Adobe" → If work is primarily Adobe products (Marketing Cloud, Experience Cloud)
+- "Google Cloud" → If work is primarily Google Cloud Platform
+- "Azure" → If work is primarily Microsoft Azure cloud
+
+Examples:
+- "Salesforce Admin at Cloud Co OP" → Salesforce (not Software, not IT)
+- "Salesforce Developer at Bank of America" → Salesforce (platform-specific, not Banking)
+- "AWS Solutions Architect at TechCorp" → AWS (platform-specific)
+- "SAP Consultant at Manufacturing Co" → SAP (platform-specific)
+
+IT vs SOFTWARE vs PLATFORM DISTINCTION:
+- "Information Technology" → Generic IT services company or IT department
+- "Software & SaaS" → Software product company (builds/sells software products)
+- "Salesforce/AWS/Microsoft/etc." → Specific platform/technology domain (highest specificity)
+
 IT DOMAIN RESTRICTION:
-Return IT-related domains ONLY if:
-- The employer is an IT company OR
-- The work involved building/selling IT products or platforms
+Return "Information Technology" if:
+- The employer is a generic IT services company OR
+- The work involved generic IT services/consulting (not platform-specific) OR
+- Company name suggests technology/services (e.g., contains "Tech", "Software", "Solutions", "Systems", "Digital", "Cloud", "Data", "IT", "Information Technology")
 
 Using IT skills inside another industry does NOT qualify as IT domain.
+Examples:
+- "Software Developer at Bank of America" → Banking (not IT, not Software)
+- "Backend Engineer at TechCorp Solutions" → Information Technology (generic IT company)
+- "Salesforce Admin at Bank of America" → Salesforce (platform-specific, not Banking)
 
 MULTI-DOMAIN RULE:
 If multiple industries appear in the SAME role,
@@ -83,14 +126,31 @@ select the PRIMARY revenue-driving business domain only.
 Never combine domains.
 
 ANTI-HALLUCINATION RULES:
-- Never guess
-- Never infer
-- Never default to IT
+- Never guess without evidence
+- Never infer from skills or tools alone
+- Never default to IT without business context
 - Prefer null over incorrect classification
+- Allow reasonable inference when business context is clearly implied
 
 ALLOWED DOMAIN CONSTRAINT:
 The returned value MUST exactly match ONE of the internally allowed
 standardized domains.
+
+IMPORTANT: Platform-specific domains are allowed and should be returned when appropriate:
+- Salesforce (for Salesforce Admin/Developer/Consultant work)
+- AWS (for AWS cloud services/architecture work)
+- Microsoft (for Microsoft technologies: Azure, Dynamics, Office 365)
+- Oracle (for Oracle products: ERP, Cloud, Database)
+- SAP (for SAP implementation/consulting)
+- ServiceNow (for ServiceNow platform work)
+- Workday (for Workday HR/Finance platform work)
+- Adobe (for Adobe products: Marketing Cloud, Experience Cloud)
+- Google Cloud (for Google Cloud Platform work)
+- Azure (for Microsoft Azure cloud work)
+
+Other allowed domains include: Banking, Finance, Healthcare, IT, Software & SaaS, Manufacturing, 
+Retail, E-Commerce, Education, Government, Defense, Energy, Logistics, Legal, HR, and many more.
+
 If no allowed domain is clearly supported → return null.
 
 OUTPUT FORMAT:
@@ -170,6 +230,17 @@ class DomainExtractor:
         "Cybersecurity",
         "Data & Analytics",
         "Artificial Intelligence",
+        # Specific Technology/Platform domains (highest specificity)
+        "Salesforce",
+        "AWS",
+        "Microsoft",
+        "Oracle",
+        "SAP",
+        "ServiceNow",
+        "Workday",
+        "Adobe",
+        "Google Cloud",
+        "Azure",
     ]
     
     def __init__(self):
@@ -219,10 +290,14 @@ class DomainExtractor:
         current_is_current = False
         
         # Reuse existing date patterns from _extract_latest_experience
+        # Enhanced to support em dash (—), en dash (–), and various date formats
         date_patterns = [
             r'\b(january|february|march|april|may|june|july|august|september|october|november|december|jan|feb|mar|apr|may|jun|jul|aug|sep|sept|oct|nov|dec)\.?\s+(\d{4})\b',
             r'\b(\d{1,2})/(\d{4})\b',  # MM/YYYY
-            r'\b(\d{4})-(\d{1,2})\b',  # YYYY-MM
+            r'\b(\d{1,2})/(\d{4})\s*[-–—]\s*(present|current|now|today|till\s+date|till\s+now|till-date|till-now|tilldate|tillnow|til\s+date|til\s+now|til-date|til-now|tildate|tilnow|still\s+date|still\s+now|still-date|still-now|stilldate|stillnow|still|still\s+working|still\s+employed|still\s+active|to\s+date|to\s+now|to-date|to-now|todate|tonow|until\s+present|until\s+now|until\s+date|until-present|until-now|until-date|untilpresent|untilnow|untildate|up\s+to\s+present|up\s+to\s+now|up\s+to\s+date|up-to-present|up-to-now|up-to-date|uptopresent|uptonow|uptodate|as\s+of\s+now|as\s+of\s+present|as\s+of\s+date|as\s+of\s+today|as-of-now|as-of-present|as-of-date|as-of-today|asofnow|asofpresent|asofdate|asoftoday|ongoing|on-going|on\s+going|working|continuing|continue|active|currently|currently\s+working|currently\s+employed|currently\s+active)\b',  # MM/YYYY – Present (supports -, –, —)
+            r'\b(\d{4})[-\u2013\u2014]\s*(\d{1,2})\b',  # YYYY-MM/YYYY–MM/YYYY—MM (hyphen, em dash, en dash)
+            r'\b(\d{4})\s*[-–—]\s*(present|current|now|today|till\s+date|till\s+now|till-date|till-now|tilldate|tillnow|til\s+date|til\s+now|til-date|til-now|tildate|tilnow|still\s+date|still\s+now|still-date|still-now|stilldate|stillnow|still|still\s+working|still\s+employed|still\s+active|to\s+date|to\s+now|to-date|to-now|todate|tonow|until\s+present|until\s+now|until\s+date|until-present|until-now|until-date|untilpresent|untilnow|untildate|up\s+to\s+present|up\s+to\s+now|up\s+to\s+date|up-to-present|up-to-now|up-to-date|uptopresent|uptonow|uptodate|as\s+of\s+now|as\s+of\s+present|as\s+of\s+date|as\s+of\s+today|as-of-now|as-of-present|as-of-date|as-of-today|asofnow|asofpresent|asofdate|asoftoday|ongoing|on-going|on\s+going|working|continuing|continue|active|currently|currently\s+working|currently\s+employed|currently\s+active)\b',  # YYYY – Present (supports -, –, —)
+            r'\b(jan|feb|mar|apr|may|jun|jul|aug|sep|sept|oct|nov|dec)\'?(\d{2})\s*[-–—]\s*(present|current|now|jan|feb|mar|apr|may|jun|jul|aug|sep|sept|oct|nov|dec|\d{2,4})\b',  # Jan'23 – Present or Jan'23 – Now (supports -, –, —)
             r'\b(19[5-9]\d|20[0-3]\d)\b',  # Year only
             # Comprehensive ongoing employment keywords
             r'\b(present|current|now|today|till\s+date|till\s+now|till-date|till-now|tilldate|tillnow|til\s+date|til\s+now|til-date|til-now|tildate|tilnow|still\s+date|still\s+now|still-date|still-now|stilldate|stillnow|still|still\s+working|still\s+employed|still\s+active|to\s+date|to\s+now|to-date|to-now|todate|tonow|until\s+present|until\s+now|until\s+date|until-present|until-now|until-date|untilpresent|untilnow|untildate|up\s+to\s+present|up\s+to\s+now|up\s+to\s+date|up-to-present|up-to-now|up-to-date|uptopresent|uptonow|uptodate|as\s+of\s+now|as\s+of\s+present|as\s+of\s+date|as\s+of\s+today|as-of-now|as-of-present|as-of-date|as-of-today|asofnow|asofpresent|asofdate|asoftoday|ongoing|on-going|on\s+going|working|continuing|continue|active|currently|currently\s+working|currently\s+employed|currently\s+active)\b',
@@ -248,6 +323,52 @@ class DomainExtractor:
             "continuing", "continue",
             "active", "currently", "currently working", "currently employed", "currently active"
         ]
+        
+        def is_likely_header_or_contact_info(line: str) -> bool:
+            """
+            Check if a line is likely header/contact info (address, phone, email) rather than a date range.
+            Returns True if line should be excluded from date detection.
+            """
+            line_lower = line.lower().strip()
+            
+            # Too short - likely header
+            if len(line_lower) < 10:
+                return True
+            
+            # Contains email pattern
+            if '@' in line_lower or re.search(r'\b[\w\.-]+@[\w\.-]+\.\w+\b', line_lower):
+                return True
+            
+            # Contains phone number patterns
+            phone_patterns = [
+                r'\(\d{3}\)',  # (xxx)
+                r'\d{3}[-.]\d{3}[-.]\d{4}',  # xxx-xxx-xxxx
+                r'\+\d{1,3}[\s-]?\d{1,4}[\s-]?\d{1,4}[\s-]?\d{1,9}',  # +x xxx xxx xxxx
+                r'phone|tel|mobile|cell',
+            ]
+            if any(re.search(pattern, line_lower) for pattern in phone_patterns):
+                return True
+            
+            # Contains address indicators
+            address_indicators = [
+                r'\b(rd|road|st|street|ave|avenue|blvd|boulevard|dr|drive|ln|lane|ct|court|pl|place|way|cir|circle)\b',
+                r'\b(apt|apartment|suite|unit|#)\s*\d+',
+                r'\b(p\.o\.|po\s+box|post\s+office)',
+                r'\b(zip|postal\s+code)',
+                r'^\d+\s+[a-z]+\s+(rd|st|ave|blvd|dr|ln|ct|pl|way|cir)',  # "1509 Cedrus Rd"
+            ]
+            if any(re.search(pattern, line_lower) for pattern in address_indicators):
+                return True
+            
+            # Contains URL patterns
+            if re.search(r'https?://|www\.|linkedin\.com|github\.com', line_lower):
+                return True
+            
+            # Contains only numbers and common non-date words (likely address/ID)
+            if re.match(r'^[\d\s\-\(\)]+$', line_lower) and len(line_lower) < 20:
+                return True
+            
+            return False
         
         def extract_years_from_line(line: str) -> tuple[Optional[int], Optional[int], bool]:
             """Extract start_year, end_year, and is_current from a line."""
@@ -285,6 +406,10 @@ class DomainExtractor:
                 continue
             
             line_lower = line_stripped.lower()
+            
+            # Skip header/contact info lines (addresses, phone numbers, emails)
+            if is_likely_header_or_contact_info(line_stripped):
+                continue
             
             # Check if this line contains a date range (role boundary)
             has_date_range = any(re.search(pattern, line_lower, re.IGNORECASE) for pattern in date_patterns)
@@ -438,10 +563,14 @@ class DomainExtractor:
         ]
         
         # Date patterns to identify experience entries
+        # Enhanced to support em dash (—), en dash (–), and various date formats
         date_patterns = [
             r'\b(january|february|march|april|may|june|july|august|september|october|november|december|jan|feb|mar|apr|may|jun|jul|aug|sep|sept|oct|nov|dec)\.?\s+(\d{4})\b',
             r'\b(\d{1,2})/(\d{4})\b',  # MM/YYYY
-            r'\b(\d{4})-(\d{1,2})\b',  # YYYY-MM
+            r'\b(\d{1,2})/(\d{4})\s*[-–—]\s*(present|current|now|today|till\s+date|till\s+now|till-date|till-now|tilldate|tillnow|til\s+date|til\s+now|til-date|til-now|tildate|tilnow|still\s+date|still\s+now|still-date|still-now|stilldate|stillnow|still|still\s+working|still\s+employed|still\s+active|to\s+date|to\s+now|to-date|to-now|todate|tonow|until\s+present|until\s+now|until\s+date|until-present|until-now|until-date|untilpresent|untilnow|untildate|up\s+to\s+present|up\s+to\s+now|up\s+to\s+date|up-to-present|up-to-now|up-to-date|uptopresent|uptonow|uptodate|as\s+of\s+now|as\s+of\s+present|as\s+of\s+date|as\s+of\s+today|as-of-now|as-of-present|as-of-date|as-of-today|asofnow|asofpresent|asofdate|asoftoday|ongoing|on-going|on\s+going|working|continuing|continue|active|currently|currently\s+working|currently\s+employed|currently\s+active)\b',  # MM/YYYY – Present (supports -, –, —)
+            r'\b(\d{4})[-\u2013\u2014]\s*(\d{1,2})\b',  # YYYY-MM/YYYY–MM/YYYY—MM (hyphen, em dash, en dash)
+            r'\b(\d{4})\s*[-–—]\s*(present|current|now|today|till\s+date|till\s+now|till-date|till-now|tilldate|tillnow|til\s+date|til\s+now|til-date|til-now|tildate|tilnow|still\s+date|still\s+now|still-date|still-now|stilldate|stillnow|still|still\s+working|still\s+employed|still\s+active|to\s+date|to\s+now|to-date|to-now|todate|tonow|until\s+present|until\s+now|until\s+date|until-present|until-now|until-date|untilpresent|untilnow|untildate|up\s+to\s+present|up\s+to\s+now|up\s+to\s+date|up-to-present|up-to-now|up-to-date|uptopresent|uptonow|uptodate|as\s+of\s+now|as\s+of\s+present|as\s+of\s+date|as\s+of\s+today|as-of-now|as-of-present|as-of-date|as-of-today|asofnow|asofpresent|asofdate|asoftoday|ongoing|on-going|on\s+going|working|continuing|continue|active|currently|currently\s+working|currently\s+employed|currently\s+active)\b',  # YYYY – Present (supports -, –, —)
+            r'\b(jan|feb|mar|apr|may|jun|jul|aug|sep|sept|oct|nov|dec)\'?(\d{2})\s*[-–—]\s*(present|current|now|jan|feb|mar|apr|may|jun|jul|aug|sep|sept|oct|nov|dec|\d{2,4})\b',  # Jan'23 – Present or Jan'23 – Now (supports -, –, —)
             r'\b(19[5-9]\d|20[0-3]\d)\b',  # Year only
             # Comprehensive ongoing employment keywords
             r'\b(present|current|now|today|till\s+date|till\s+now|till-date|till-now|tilldate|tillnow|til\s+date|til\s+now|til-date|til-now|tildate|tilnow|still\s+date|still\s+now|still-date|still-now|stilldate|stillnow|still|still\s+working|still\s+employed|still\s+active|to\s+date|to\s+now|to-date|to-now|todate|tonow|until\s+present|until\s+now|until\s+date|until-present|until-now|until-date|untilpresent|untilnow|untildate|up\s+to\s+present|up\s+to\s+now|up\s+to\s+date|up-to-present|up-to-now|up-to-date|uptopresent|uptonow|uptodate|as\s+of\s+now|as\s+of\s+present|as\s+of\s+date|as\s+of\s+today|as-of-now|as-of-present|as-of-date|as-of-today|asofnow|asofpresent|asofdate|asoftoday|ongoing|on-going|on\s+going|working|continuing|continue|active|currently|currently\s+working|currently\s+employed|currently\s+active)\b',
@@ -1204,6 +1333,149 @@ class DomainExtractor:
                 "low": [
                     "transport", "transit"
                 ]
+            },
+            "Salesforce": {
+                "high": [
+                    "salesforce admin", "salesforce developer", "salesforce consultant", "salesforce architect",
+                    "salesforce platform", "salesforce crm", "salesforce.com", "salesforce org",
+                    "apex", "visualforce", "lightning", "salesforce certification", "salesforce trailhead",
+                    "salesforce administrator", "salesforce developer", "salesforce implementation",
+                    "salesforce project", "salesforce work", "salesforce experience"
+                ],
+                "medium": [
+                    "salesforce", "sfdc", "sales cloud", "service cloud", "marketing cloud",
+                    "salesforce ecosystem", "salesforce environment"
+                ],
+                "low": []
+            },
+            "AWS": {
+                "high": [
+                    "aws solutions architect", "aws developer", "aws engineer", "aws consultant",
+                    "aws cloud", "amazon web services", "aws platform", "aws services",
+                    "aws certification", "aws infrastructure", "aws deployment",
+                    "ec2", "s3", "lambda", "rds", "aws cloudformation", "aws cloudwatch"
+                ],
+                "medium": [
+                    "aws", "amazon web services", "aws cloud", "aws platform"
+                ],
+                "low": []
+            },
+            "Microsoft": {
+                "high": [
+                    "microsoft technologies", "microsoft stack", "microsoft platform",
+                    "microsoft azure", "microsoft dynamics", "office 365", "microsoft 365",
+                    "sharepoint", "power platform", "power bi", "power apps", "power automate",
+                    "microsoft consultant", "microsoft developer", "microsoft architect",
+                    ".net", "asp.net", "microsoft certification"
+                ],
+                "medium": [
+                    "microsoft", "microsoft technologies", "microsoft platform", "ms technologies"
+                ],
+                "low": []
+            },
+            "Oracle": {
+                "high": [
+                    "oracle erp", "oracle cloud", "oracle database", "oracle consultant",
+                    "oracle developer", "oracle implementation", "oracle ebs", "oracle fusion",
+                    "oracle financials", "oracle hcm", "oracle scm", "oracle platform",
+                    "oracle certification", "oracle project"
+                ],
+                "medium": [
+                    "oracle", "oracle technologies", "oracle platform", "oracle systems"
+                ],
+                "low": []
+            },
+            "SAP": {
+                "high": [
+                    "sap consultant", "sap developer", "sap implementation", "sap project",
+                    "sap erp", "sap s4hana", "sap ecc", "sap fico", "sap mm", "sap sd",
+                    "sap hcm", "sap abap", "sap basis", "sap platform", "sap certification",
+                    "sap work", "sap experience"
+                ],
+                "medium": [
+                    "sap", "sap erp", "sap system", "sap platform", "sap technologies"
+                ],
+                "low": []
+            },
+            "ServiceNow": {
+                "high": [
+                    "servicenow admin", "servicenow developer", "servicenow consultant",
+                    "servicenow platform", "servicenow implementation", "servicenow project",
+                    "servicenow itil", "servicenow certification", "servicenow instance",
+                    "servicenow work", "servicenow experience"
+                ],
+                "medium": [
+                    "servicenow", "service now", "servicenow platform", "servicenow system"
+                ],
+                "low": []
+            },
+            "Workday": {
+                "high": [
+                    "workday consultant", "workday developer", "workday implementation",
+                    "workday hcm", "workday financials", "workday platform", "workday project",
+                    "workday certification", "workday admin", "workday work", "workday experience"
+                ],
+                "medium": [
+                    "workday", "workday platform", "workday system", "workday technologies"
+                ],
+                "low": []
+            },
+            "Adobe": {
+                "high": [
+                    "adobe marketing cloud", "adobe experience cloud", "adobe consultant",
+                    "adobe developer", "adobe implementation", "adobe analytics", "adobe campaign",
+                    "adobe target", "adobe aem", "adobe experience manager", "adobe platform",
+                    "adobe certification", "adobe work", "adobe experience"
+                ],
+                "medium": [
+                    "adobe marketing", "adobe experience", "adobe platform", "adobe technologies"
+                ],
+                "low": []
+            },
+            "Google Cloud": {
+                "high": [
+                    "google cloud platform", "gcp", "google cloud architect", "google cloud engineer",
+                    "google cloud consultant", "google cloud certification", "gcp platform",
+                    "google cloud services", "gcp deployment", "gcp infrastructure"
+                ],
+                "medium": [
+                    "google cloud", "gcp", "google cloud platform", "google cloud services"
+                ],
+                "low": []
+            },
+            "Azure": {
+                "high": [
+                    "azure cloud", "microsoft azure", "azure architect", "azure engineer",
+                    "azure consultant", "azure certification", "azure platform",
+                    "azure services", "azure deployment", "azure infrastructure",
+                    "azure devops", "azure functions", "azure sql"
+                ],
+                "medium": [
+                    "azure", "microsoft azure", "azure cloud", "azure platform", "azure services"
+                ],
+                "low": []
+            },
+            "Legal, Risk & Corporate Governance": {
+                "high": [
+                    "legal services", "law firm", "legal consulting", "legal department",
+                    "attorney", "lawyer", "legal counsel", "legal advisor", "litigation",
+                    "class action", "legal case", "legal practice", "legal industry"
+                ],
+                "medium": [
+                    "legal", "law", "legal services", "legal practice", "legal industry"
+                ],
+                "low": []
+            },
+            "Human Resources": {
+                "high": [
+                    "hr services", "human resources", "hr consulting", "hr department",
+                    "background check", "talent acquisition", "hr platform", "hr technology",
+                    "hr services company", "hr solutions"
+                ],
+                "medium": [
+                    "human resources", "hr", "hr services", "hr consulting", "hr solutions"
+                ],
+                "low": []
             }
         }
         
@@ -1240,11 +1512,37 @@ class DomainExtractor:
                     "medium_matches": medium_matches
                 }
         
+        # Platform-specific domains (highest priority when they have matches)
+        platform_domains = ["Salesforce", "AWS", "Microsoft", "Oracle", "SAP", "ServiceNow", 
+                           "Workday", "Adobe", "Google Cloud", "Azure"]
+        
         # Return domain with highest score if score is significant
         if domain_scores:
-            best_domain = max(domain_scores, key=lambda x: domain_scores[x]["score"])
-            best_data = domain_scores[best_domain]
-            best_score = best_data["score"]
+            # First, check if any platform-specific domain has matches (prioritize these)
+            # Check ALL domain_scores, not just those that passed threshold
+            platform_matches = {
+                domain: data for domain, data in domain_scores.items() 
+                if domain in platform_domains and (data["high_matches"] > 0 or data["medium_matches"] > 0)
+            }
+            
+            if platform_matches:
+                # Use platform domain with highest score (even if below threshold)
+                best_domain = max(platform_matches, key=lambda x: platform_matches[x]["score"])
+                best_data = platform_matches[best_domain]
+                best_score = best_data["score"]
+                # For platform domains, lower threshold - just need any match
+                if best_data["high_matches"] > 0 or best_data["medium_matches"] > 0:
+                    logger.info(
+                        f"✅ Platform-specific domain detected: {best_domain} (score: {best_score}, high: {best_data['high_matches']}, medium: {best_data['medium_matches']})",
+                        extra={"file_name": filename, "domain": best_domain, "score": best_score}
+                    )
+                    return best_domain
+                # If platform domain doesn't have matches, fall through to regular logic
+            else:
+                # No platform domain matches, use highest scoring domain
+                best_domain = max(domain_scores, key=lambda x: domain_scores[x]["score"])
+                best_data = domain_scores[best_domain]
+                best_score = best_data["score"]
             
             # Special handling for Education domain - must have work context
             if best_domain == "Education":
@@ -1512,11 +1810,10 @@ class DomainExtractor:
             # Extract latest role (role-based approach - PRIMARY)
             latest_role = self._extract_latest_role(resume_text)
             
-            # Handle no-date resume case: Dates → Titles → null
-            # Never use LLM or keyword fallback on experience blocks
+            # Handle no-date resume case: Dates → Titles → Keywords → null
             if not latest_role:
                 logger.debug(
-                    "No roles found with date ranges, using title-based inference only (no LLM, no keyword fallback)",
+                    "No roles found with date ranges, using title inference and keyword fallback",
                     extra={"file_name": filename}
                 )
                 latest_experience = self._extract_latest_experience(resume_text)
@@ -1527,19 +1824,29 @@ class DomainExtractor:
                     )
                     return None
                 
-                # Only try title inference on experience text (Dates → Titles → null)
+                # Try title inference first
                 domain = self._infer_domain_from_job_titles(latest_experience, filename)
                 if domain:
                     logger.info(
                         f"✅ Domain inferred from job titles (no-date resume): {domain} for {filename}",
                         extra={"file_name": filename, "detected_domain": domain, "method": "title_inference_no_dates"}
                     )
-                else:
+                    return domain
+                
+                # If title inference fails, try keyword fallback
+                keyword_domain = self._detect_domain_from_keywords(latest_experience, filename)
+                if keyword_domain:
                     logger.info(
-                        f"ℹ️ No domain found via title inference (no-date resume), returning null",
-                        extra={"file_name": filename}
+                        f"✅ Domain detected from keywords (no-date resume): {keyword_domain} for {filename}",
+                        extra={"file_name": filename, "detected_domain": keyword_domain, "method": "keyword_fallback_no_dates"}
                     )
-                return domain
+                    return keyword_domain
+                
+                logger.info(
+                    f"ℹ️ No domain found via title inference or keyword fallback (no-date resume), returning null",
+                    extra={"file_name": filename}
+                )
+                return None
             
             # Role-based path: Use latest role text (already truncated to MAX_ROLE_CHARS in _extract_latest_role)
             text_to_analyze = latest_role.text
@@ -1692,18 +1999,36 @@ Output (JSON only, no other text, no explanations):"""
             else:
                 domain = None
             
-            # CRITICAL FIX: If LLM returns null, respect it and return null immediately
-            # LLM null is intentional conservative behavior - do NOT override with keyword fallback
-            # This prevents false positives from technical terms (e.g., "energy consumption" → Energy domain)
-            # Architecture: LLM is the authoritative source - if it says null, domain is unclear
+            # If LLM returns null, try keyword fallback as safety net (with strict validation)
+            # Keyword fallback only runs on role text and uses business-only terms
+            # This provides reliability while maintaining precision
             if domain is None:
                 logger.info(
-                    f"✅ LLM returned null (no clear domain) - respecting LLM decision and returning null",
+                    f"ℹ️ LLM returned null - attempting keyword fallback as safety net",
                     extra={
                         "file_name": filename,
-                        "note": "LLM null is correct conservative behavior - not overriding with keyword fallback"
+                        "note": "Keyword fallback will use strict business-only validation"
                     }
                 )
+                # Try keyword fallback only if we have role text
+                if text_to_analyze and latest_role:
+                    keyword_domain = self._detect_domain_from_keywords(text_to_analyze, filename)
+                    if keyword_domain:
+                        logger.info(
+                            f"✅ Keyword fallback detected domain: {keyword_domain} for {filename}",
+                            extra={
+                                "file_name": filename,
+                                "detected_domain": keyword_domain,
+                                "method": "keyword_fallback_after_llm_null"
+                            }
+                        )
+                        return keyword_domain
+                    else:
+                        logger.info(
+                            f"ℹ️ Keyword fallback also returned null - domain unclear",
+                            extra={"file_name": filename}
+                        )
+                # If no role text or keyword fallback fails, return null
                 return None
             
             # Log the raw response for debugging (enhanced for troubleshooting)
