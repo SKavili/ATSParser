@@ -22,6 +22,26 @@ PREFERRED_PRIMARY_DOMAINS = {
     "me.com",
 }
 
+# PRIMARY email regex pattern - matches primary domains with .com requirement
+PRIMARY_EMAIL_REGEX = re.compile(
+    r'[a-zA-Z0-9._%+-]+@(?:gmail|outlook|hotmail|live|yahoo|icloud|me)\.com',
+    re.IGNORECASE
+)
+
+# SECONDARY proxy domains for fallback extraction
+SECONDARY_PROXY_DOMAINS = {
+    "mail.dice.com",
+    "dice.com",
+    "linkedin.com",
+    "indeedmail.com",
+    "ziprecruiter.com",
+    "glassdoor.com",
+    "monster.com",
+    "workday.com",
+    "greenhouse.io",
+    "lever.co"
+}
+
 # OLLAMA is accessed via HTTP API directly
 
 EMAIL_PROMPT = """
@@ -36,13 +56,13 @@ Candidate profiles and resumes may be unstructured and inconsistently formatted.
 Email refers ONLY to the candidate's contact email address explicitly written in the resume.
 
 TASK:
-Extract ALL email addresses found in the resume text and identify the candidate's PRIMARY email address.
+Extract  one email addresse found in the resume text and identify the candidate's PRIMARY email address.
 
 CRITICAL EXTRACTION REQUIREMENTS:
 - Scan the ENTIRE resume text (header, footer, body, contact section, anywhere).
-- Extract EVERY valid email address found.
-- NEVER stop after finding one email.
-- Preserve emails exactly as written (lowercasing allowed).
+- Ensure  email must have  both '@' and '.com' . 
+- Stop extraction if one email found.
+- Preserve email exactly as written (lowercasing allowed).
 
 PRIMARY EMAIL DOMAIN ALLOWLIST (STRICT):
 ONLY the following domains are allowed to be selected as "primary_email":
@@ -56,15 +76,14 @@ ONLY the following domains are allowed to be selected as "primary_email":
 - me.com
 
 SELECTION RULES:
-1. If MULTIPLE emails exist:
-   - Return ALL emails in "all_emails" as a comma-separated string.
-   - Select the FIRST email (top-to-bottom in resume order) whose domain
-     EXACTLY matches one of the allowed primary domains.
-2. If ONLY ONE email exists:
-   - If its domain is in the allowlist → set as primary_email.
-   - If its domain is NOT in the allowlist → primary_email = "masked_email".
-3. If NO email from the allowlist exists but other emails exist:
-   - primary_email MUST be "masked_email".
+1.Scan the document that resume text provided. 
+2.If any email exists whose domain exactly matches one of the allowed domains:
+*Select the FIRST such email found.
+*Set it as primary_email.
+3.If emails exist but none belong to the allowed domain list:
+*Set primary_email to "masked_email".
+4.If no email exists at all:
+Set primary_email to "masked_email".
 
 IMPORTANT DOMAIN HANDLING:
 - ONLY emails from the PRIMARY EMAIL DOMAIN ALLOWLIST can be selected as primary_email.
@@ -100,56 +119,6 @@ EXAMPLES:
 {"primary_email": null}
 """
 
-FALLBACK_EMAIL_MOBILE_PROMPT = """
-You are an intelligent resume data extraction engine.
-
-The resume may contain icons, symbols, images, special characters, or non-standard formatting
-(such as 📞, ✉️, ☎, 📍, bullets, headers, or decorative fonts) instead of plain text for contact details.
-
-IMPORTANT: The text has been cleaned to remove symbols and emojis.
-Look for email and phone patterns in the cleaned text.
-
-Your task is to accurately extract ALL EMAIL ADDRESSES and the candidate's MOBILE PHONE NUMBER.
-
-PRIMARY EMAIL DOMAIN ALLOWLIST (STRICT):
-ONLY the following domains are allowed to be selected as "primary_email":
-- gmail.com
-- outlook.com
-- hotmail.com
-- live.com
-- yahoo.com
-- icloud.com
-- me.com
-
-IMPORTANT EMAIL HANDLING:
-- Extract ALL valid email addresses found in the resume - if multiple emails exist, extract ALL of them.
-- If the resume has 2 emails, return both. If it has 3 emails, return all 3. If it has only 1 email, return that 1 email.
-- DO NOT stop after finding the first email - continue scanning the entire resume text for ALL emails.
-- Normalize emails (lowercase, remove spaces).
-- Return ALL extracted emails as a comma-separated string in the "all_emails" field.
-- Select ONE primary email ONLY from the PRIMARY EMAIL DOMAIN ALLOWLIST for the "primary_email" field.
-- If NO email from the allowlist exists, set primary_email as "masked_email" but still return all emails in "all_emails".
-
-PHONE EXTRACTION RULES:
-1. Look for phone patterns: 10-15 digits, may include +, -, spaces, or parentheses.
-2. Normalize mobile number to digits only (retain country code like +1 if present).
-3. Ignore fax, office, or location numbers.
-4. If multiple numbers exist, choose the most likely personal mobile number.
-
-ANTI-HALLUCINATION RULES:
-- Do not guess or infer data.
-- Extract only from the provided resume content.
-- If email or mobile is not found, return null.
-
-OUTPUT FORMAT (JSON ONLY):
-{
-  "primary_email": "<email | masked_email | null>",
-  "all_emails": "<comma_separated_emails | null>",
-  "mobile": "<mobile_or_null>"
-}
-
-Do not add explanations. Do not hallucinate values.
-"""
 
 
 class EmailExtractor:
@@ -170,6 +139,102 @@ class EmailExtractor:
             return False
         email_lower = email.lower()
         return any(pattern.lower() in email_lower for pattern in self.html_forwarding_patterns)
+    
+    def extract_primary_email_with_context(
+        self,
+        resume_text: str,
+        before: int = 400,
+        after: int = 200
+    ) -> Optional[str]:
+        """
+        Scan resume text top-to-bottom.
+        STOP execution immediately when the FIRST primary email is found.
+        Uses 400 chars before and 200 chars after the regex match.
+        
+        Args:
+            resume_text: The text content of the resume
+            before: Number of characters to include before match (default: 400)
+            after: Number of characters to include after match (default: 200)
+        
+        Returns:
+            First valid primary email found, or None if not found
+        """
+        if not resume_text:
+            return None
+        
+        for match in PRIMARY_EMAIL_REGEX.finditer(resume_text):
+            start, end = match.span()
+            
+            context = resume_text[
+                max(0, start - before) : min(len(resume_text), end + after)
+            ]
+            
+            cleaned_context = remove_symbols_and_emojis(context)
+            candidate = self._clean_and_fix_email(match.group())
+            
+            if candidate:
+                email = normalize_email(candidate)
+                if email:
+                    # Validate email contains both '@' and '.com'
+                    if '@' in email and '.com' in email:
+                        logger.info(
+                            "Primary email found — stopping execution",
+                            extra={"email": email, "position": start}
+                        )
+                        return email
+        
+        return None
+    
+    def extract_secondary_proxy_email(
+        self,
+        resume_text: str,
+        before: int = 400,
+        after: int = 200
+    ) -> Optional[str]:
+        """
+        Executed ONLY if primary extraction fails.
+        Extracts secondary/proxy emails from allowed proxy domains.
+        
+        Args:
+            resume_text: The text content of the resume
+            before: Number of characters to include before match (default: 400)
+            after: Number of characters to include after match (default: 200)
+        
+        Returns:
+            First valid secondary proxy email found, or None if not found
+        """
+        if not resume_text:
+            return None
+        
+        proxy_pattern = re.compile(
+            r'[a-zA-Z0-9._%+-]+@(?:' +
+            '|'.join(map(re.escape, SECONDARY_PROXY_DOMAINS)) +
+            r')',
+            re.IGNORECASE
+        )
+        
+        for match in proxy_pattern.finditer(resume_text):
+            start, end = match.span()
+            
+            context = resume_text[
+                max(0, start - before) : min(len(resume_text), end + after)
+            ]
+            
+            cleaned_context = remove_symbols_and_emojis(context)
+            candidate = self._clean_and_fix_email(match.group())
+            
+            if candidate:
+                email = normalize_email(candidate)
+                if email:
+                    # Validate email contains both '@' and '.com'
+                    if '@' in email and '.com' in email:
+                        logger.info(
+                            "Secondary proxy email extracted",
+                            extra={"email": email}
+                        )
+                        return email
+        
+        return None
 
     def _select_first_valid_email(self, text: str) -> Optional[str]:
         """
@@ -1629,8 +1694,8 @@ Output (JSON only, no other text, no explanations):"""
     
     async def extract_email(self, resume_text: str, filename: str = "resume") -> Optional[str]:
         """
-        Extract email address from resume text using regex fallback first, then OLLAMA LLM.
-        Scans full text multiple times with different strategies.
+        Extract email address from resume text using PRIMARY-first approach, then fallback.
+        Execution stops immediately when a PRIMARY email is found.
         
         Args:
             resume_text: The text content of the resume
@@ -1644,8 +1709,65 @@ Output (JSON only, no other text, no explanations):"""
             return None
 
         # ------------------------------------------------------------------
-        # STEP 0: Simple deterministic extraction on FULL TEXT
+        # STEP 1: PRIMARY EMAIL EXTRACTION (HIGHEST PRIORITY)
         # ------------------------------------------------------------------
+        # Extract primary email with context - STOPS IMMEDIATELY when found
+        try:
+            primary = self.extract_primary_email_with_context(resume_text)
+            if primary:
+                logger.info(
+                    f"✅ PRIMARY EMAIL EXTRACTED from {filename}",
+                    extra={
+                        "file_name": filename,
+                        "email": primary,
+                        "method": "primary_email_with_context"
+                    }
+                )
+                return primary
+            else:
+                logger.debug(
+                    f"Step 1: No primary email found with context extraction",
+                    extra={"file_name": filename}
+                )
+        except Exception as e:
+            logger.warning(
+                f"Primary email extraction failed: {e}",
+                extra={"file_name": filename, "error": str(e)},
+                exc_info=True
+            )
+
+        # ------------------------------------------------------------------
+        # STEP 2: SECONDARY PROXY EMAIL EXTRACTION (FALLBACK)
+        # ------------------------------------------------------------------
+        # ONLY executed if primary extraction failed
+        try:
+            secondary = self.extract_secondary_proxy_email(resume_text)
+            if secondary:
+                logger.info(
+                    f"✅ SECONDARY PROXY EMAIL EXTRACTED from {filename}",
+                    extra={
+                        "file_name": filename,
+                        "email": secondary,
+                        "method": "secondary_proxy_email"
+                    }
+                )
+                return secondary
+            else:
+                logger.debug(
+                    f"Step 2: No secondary proxy email found",
+                    extra={"file_name": filename}
+                )
+        except Exception as e:
+            logger.warning(
+                f"Secondary proxy email extraction failed: {e}",
+                extra={"file_name": filename, "error": str(e)},
+                exc_info=True
+            )
+
+        # ------------------------------------------------------------------
+        # STEP 3: EXISTING FALLBACK LOGIC (ONLY AFTER PRIMARY AND SECONDARY FAIL)
+        # ------------------------------------------------------------------
+        # Continue with existing regex fallback and/or LLM fallback logic
         # Scan the text sequentially and return the FIRST valid primary domain email found.
         # This ensures we stop immediately when we find the first email (top-to-bottom order).
         try:
@@ -1662,7 +1784,7 @@ Output (JSON only, no other text, no explanations):"""
                 return first_email
             else:
                 logger.debug(
-                    f"Step 0: No primary domain emails found in full text",
+                    f"Step 3: No primary domain emails found in full text",
                     extra={"file_name": filename}
                 )
         except Exception as e:
