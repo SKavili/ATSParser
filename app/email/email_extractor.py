@@ -41,7 +41,6 @@ Extract ALL email addresses found in the resume text and identify the candidate'
 CRITICAL EXTRACTION REQUIREMENTS:
 - Scan the ENTIRE resume text (header, footer, body, contact section, anywhere).
 - Extract EVERY valid email address found.
-- NEVER stop after finding one email.
 - Preserve emails exactly as written (lowercasing allowed).
 
 PRIMARY EMAIL DOMAIN ALLOWLIST (STRICT):
