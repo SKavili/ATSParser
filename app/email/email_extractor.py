@@ -185,56 +185,56 @@ class EmailExtractor:
         
         return None
     
-    def extract_secondary_proxy_email(
-        self,
-        resume_text: str,
-        before: int = 400,
-        after: int = 200
-    ) -> Optional[str]:
-        """
-        Executed ONLY if primary extraction fails.
-        Extracts secondary/proxy emails from allowed proxy domains.
+    # def extract_secondary_proxy_email(
+    #     self,
+    #     resume_text: str,
+    #     before: int = 400,
+    #     after: int = 200
+    # ) -> Optional[str]:
+    #     """
+    #     Executed ONLY if primary extraction fails.
+    #     Extracts secondary/proxy emails from allowed proxy domains.
         
-        Args:
-            resume_text: The text content of the resume
-            before: Number of characters to include before match (default: 400)
-            after: Number of characters to include after match (default: 200)
+    #     Args:
+    #         resume_text: The text content of the resume
+    #         before: Number of characters to include before match (default: 400)
+    #         after: Number of characters to include after match (default: 200)
         
-        Returns:
-            First valid secondary proxy email found, or None if not found
-        """
-        if not resume_text:
-            return None
+    #     Returns:
+    #         First valid secondary proxy email found, or None if not found
+    #     """
+    #     if not resume_text:
+    #         return None
         
-        proxy_pattern = re.compile(
-            r'[a-zA-Z0-9._%+-]+@(?:' +
-            '|'.join(map(re.escape, SECONDARY_PROXY_DOMAINS)) +
-            r')',
-            re.IGNORECASE
-        )
+    #     proxy_pattern = re.compile(
+    #         r'[a-zA-Z0-9._%+-]+@(?:' +
+    #         '|'.join(map(re.escape, SECONDARY_PROXY_DOMAINS)) +
+    #         r')',
+    #         re.IGNORECASE
+    #     )
         
-        for match in proxy_pattern.finditer(resume_text):
-            start, end = match.span()
+    #     for match in proxy_pattern.finditer(resume_text):
+    #         start, end = match.span()
             
-            context = resume_text[
-                max(0, start - before) : min(len(resume_text), end + after)
-            ]
+    #         context = resume_text[
+    #             max(0, start - before) : min(len(resume_text), end + after)
+    #         ]
             
-            cleaned_context = remove_symbols_and_emojis(context)
-            candidate = self._clean_and_fix_email(match.group())
+    #         cleaned_context = remove_symbols_and_emojis(context)
+    #         candidate = self._clean_and_fix_email(match.group())
             
-            if candidate:
-                email = normalize_email(candidate)
-                if email:
-                    # Validate email contains both '@' and '.com'
-                    if '@' in email and '.com' in email:
-                        logger.info(
-                            "Secondary proxy email extracted",
-                            extra={"email": email}
-                        )
-                        return email
+    #         if candidate:
+    #             email = normalize_email(candidate)
+    #             if email:
+    #                 # Validate email contains both '@' and '.com'
+    #                 if '@' in email and '.com' in email:
+    #                     logger.info(
+    #                         "Secondary proxy email extracted",
+    #                         extra={"email": email}
+    #                     )
+    #                     return email
         
-        return None
+    #     return None
 
     def _select_first_valid_email(self, text: str) -> Optional[str]:
         """
@@ -298,115 +298,115 @@ class EmailExtractor:
         
         return None
     
-    def _select_best_email_from_list(self, candidates: list[str]) -> Optional[str]:
-        """
-        Given a list of raw email strings, normalize them and select the BEST PRIMARY email.  
-        Selection rules (STRICT PRIMARY-ONLY):
-        1. ONLY accept emails from PREFERRED_PRIMARY_DOMAINS (gmail.com, outlook.com, etc.)
-        2. Reject ALL other domains (only primary domains accepted)
-        3. Within primary domains, prefer longer username part (more complete).
-        4. As a final tie‑breaker, prefer longer full email string.
-        5. If NO primary emails exist, return "masked_email".
-        """
-        if not candidates:
-            return None
+    # def _select_best_email_from_list(self, candidates: list[str]) -> Optional[str]:
+    #     """
+    #     Given a list of raw email strings, normalize them and select the BEST PRIMARY email.  
+    #     Selection rules (STRICT PRIMARY-ONLY):
+    #     1. ONLY accept emails from PREFERRED_PRIMARY_DOMAINS (gmail.com, outlook.com, etc.)
+    #     2. Reject ALL other domains (only primary domains accepted)
+    #     3. Within primary domains, prefer longer username part (more complete).
+    #     4. As a final tie‑breaker, prefer longer full email string.
+    #     5. If NO primary emails exist, return "masked_email".
+    #     """
+    #     if not candidates:
+    #         return None
 
-        cleaned_unique: dict[str, str] = {}
-        rejected_reasons = []
+    #     cleaned_unique: dict[str, str] = {}
+    #     rejected_reasons = []
 
-        for raw in candidates:
-            if not raw:
-                continue
-            email_str = str(raw).strip()
+    #     for raw in candidates:
+    #         if not raw:
+    #             continue
+    #         email_str = str(raw).strip()
 
-            # First try to clean and fix email (handles extra text appended)
-            cleaned_email = self._clean_and_fix_email(email_str)
-            if cleaned_email:
-                normalized = normalize_email(cleaned_email)
-            else:
-                normalized = normalize_email(email_str)
+    #         # First try to clean and fix email (handles extra text appended)
+    #         cleaned_email = self._clean_and_fix_email(email_str)
+    #         if cleaned_email:
+    #             normalized = normalize_email(cleaned_email)
+    #         else:
+    #             normalized = normalize_email(email_str)
 
-            if not normalized:
-                rejected_reasons.append(f"{email_str[:50]}: normalization failed")
-                continue
+    #         if not normalized:
+    #             rejected_reasons.append(f"{email_str[:50]}: normalization failed")
+    #             continue
 
-            # Ensure basic validity and minimum username length
-            if "@" not in normalized:
-                rejected_reasons.append(f"{normalized[:50]}: no @ symbol")
-                continue
-            username, domain = normalized.split("@", 1)
-            if len(username) < 2:
-                rejected_reasons.append(f"{normalized[:50]}: username too short ({len(username)} chars)")
-                continue
-            if len(domain) < 4:
-                rejected_reasons.append(f"{normalized[:50]}: domain too short ({len(domain)} chars)")
-                continue
+    #         # Ensure basic validity and minimum username length
+    #         if "@" not in normalized:
+    #             rejected_reasons.append(f"{normalized[:50]}: no @ symbol")
+    #             continue
+    #         username, domain = normalized.split("@", 1)
+    #         if len(username) < 2:
+    #             rejected_reasons.append(f"{normalized[:50]}: username too short ({len(username)} chars)")
+    #             continue
+    #         if len(domain) < 4:
+    #             rejected_reasons.append(f"{normalized[:50]}: domain too short ({len(domain)} chars)")
+    #             continue
 
-            cleaned_unique[normalized] = normalized
+    #         cleaned_unique[normalized] = normalized
 
-        if not cleaned_unique:
-            logger.debug(
-                f"_select_best_email_from_list: All {len(candidates)} candidates rejected",
-                extra={"rejected_reasons": rejected_reasons[:5]}  # Log first 5 rejection reasons
-            )
-            return None
+    #     if not cleaned_unique:
+    #         logger.debug(
+    #             f"_select_best_email_from_list: All {len(candidates)} candidates rejected",
+    #             extra={"rejected_reasons": rejected_reasons[:5]}  # Log first 5 rejection reasons
+    #         )
+    #         return None
 
-        # Filter to ONLY primary domain emails
-        primary_emails = []
-        for email in cleaned_unique.values():
-            username, domain = email.split("@", 1)
-            domain_lower = domain.lower()
-            username_lower = username.lower()
+    #     # Filter to ONLY primary domain emails
+    #     primary_emails = []
+    #     for email in cleaned_unique.values():
+    #         username, domain = email.split("@", 1)
+    #         domain_lower = domain.lower()
+    #         username_lower = username.lower()
             
-            # Check if domain is in PREFERRED_PRIMARY_DOMAINS
-            is_preferred = domain_lower in PREFERRED_PRIMARY_DOMAINS
+    #         # Check if domain is in PREFERRED_PRIMARY_DOMAINS
+    #         is_preferred = domain_lower in PREFERRED_PRIMARY_DOMAINS
             
-            # Reject noreply / forwarding patterns even in primary domains
-            is_noreply = (
-                username_lower.startswith("noreply")
-                or username_lower.startswith("no-reply")
-                or "noreply" in domain_lower
-                or "no-reply" in domain_lower
-            )
+    #         # Reject noreply / forwarding patterns even in primary domains
+    #         is_noreply = (
+    #             username_lower.startswith("noreply")
+    #             or username_lower.startswith("no-reply")
+    #             or "noreply" in domain_lower
+    #             or "no-reply" in domain_lower
+    #         )
             
-            # ONLY accept preferred primary domains that are not noreply
-            if is_preferred and not is_noreply:
-                primary_emails.append(email)
+    #         # ONLY accept preferred primary domains that are not noreply
+    #         if is_preferred and not is_noreply:
+    #             primary_emails.append(email)
         
-        # If NO primary emails found, return "masked_email"
-        if not primary_emails:
-            logger.debug(
-                "_select_best_email_from_list: No primary domain emails found, returning 'masked_email'",
-                extra={
-                    "total_candidates": len(candidates),
-                    "example_emails": list(cleaned_unique.values())[:3],
-                },
-            )
-            return "masked_email"
+    #     # If NO primary emails found, return "masked_email"
+    #     if not primary_emails:
+    #         logger.debug(
+    #             "_select_best_email_from_list: No primary domain emails found, returning 'masked_email'",
+    #             extra={
+    #                 "total_candidates": len(candidates),
+    #                 "example_emails": list(cleaned_unique.values())[:3],
+    #             },
+    #         )
+    #         return "masked_email"
         
-        # Select best primary email (prefer longer username, then longer email)
-        def score(email: str) -> tuple[int, int]:
-            """Return sorting score for an email (higher is better)."""
-            username, _ = email.split("@", 1)
-            username_len = len(username)
-            total_len = len(email)
-            return (username_len, total_len)
+    #     # Select best primary email (prefer longer username, then longer email)
+    #     def score(email: str) -> tuple[int, int]:
+    #         """Return sorting score for an email (higher is better)."""
+    #         username, _ = email.split("@", 1)
+    #         username_len = len(username)
+    #         total_len = len(email)
+    #         return (username_len, total_len)
         
-        best_email = max(primary_emails, key=score)
+    #     best_email = max(primary_emails, key=score)
         
-        # Log selection details for debugging
-        all_scores = [(email, score(email)) for email in primary_emails]
-        all_scores.sort(key=lambda x: x[1], reverse=True)
+    #     # Log selection details for debugging
+    #     all_scores = [(email, score(email)) for email in primary_emails]
+    #     all_scores.sort(key=lambda x: x[1], reverse=True)
 
-        logger.debug(
-            f"_select_best_email_from_list: Selected '{best_email}' from {len(cleaned_unique)} valid emails",
-            extra={
-                "selected": best_email,
-                "top_3_scores": all_scores[:3],  # Log top 3 for debugging
-                "total_candidates": len(candidates)
-            }
-        )
-        return best_email
+    #     logger.debug(
+    #         f"_select_best_email_from_list: Selected '{best_email}' from {len(cleaned_unique)} valid emails",
+    #         extra={
+    #             "selected": best_email,
+    #             "top_3_scores": all_scores[:3],  # Log top 3 for debugging
+    #             "total_candidates": len(candidates)
+    #         }
+    #     )
+    #     return best_email
     
     async def _check_ollama_connection(self) -> tuple[bool, Optional[str]]:
         """Check if OLLAMA is accessible and running. Returns (is_connected, available_model)."""
@@ -428,264 +428,264 @@ class EmailExtractor:
             logger.warning(f"Failed to check OLLAMA connection: {e}", extra={"error": str(e)})
             return False, None
     
-    def _clean_and_fix_email(self, email_str: str) -> Optional[str]:
-        """
-        Clean and fix email addresses that may have extra text appended or formatting issues.
+    # # def _clean_and_fix_email(self, email_str: str) -> Optional[str]:
+    # #     """
+    # #     Clean and fix email addresses that may have extra text appended or formatting issues.
         
-        Handles cases like:
-        - "evansharenow@gmail.comemail" -> "evansharenow@gmail.com"
-        - "user@domain.comemail" -> "user@domain.com"
-        - Removes common words appended after TLD (email, com, net, org, etc.)
-        - Validates email has reasonable username length
+    # #     Handles cases like:
+    # #     - "evansharenow@gmail.comemail" -> "evansharenow@gmail.com"
+    # #     - "user@domain.comemail" -> "user@domain.com"
+    # #     - Removes common words appended after TLD (email, com, net, org, etc.)
+    # #     - Validates email has reasonable username length
         
-        Args:
-            email_str: Raw email string that may have issues
+    # #     Args:
+    # #         email_str: Raw email string that may have issues
             
-        Returns:
-            Cleaned email or None if invalid
-        """
-        if not email_str:
-            return None
+    # #     Returns:
+    # #         Cleaned email or None if invalid
+    # #     """
+    # #     if not email_str:
+    # #         return None
         
-        # Remove spaces and normalize
-        email_str = email_str.strip().lower()
+    # #     # Remove spaces and normalize
+    # #     email_str = email_str.strip().lower()
         
-        # Common words that might be appended after email domains
-        appended_words = ['email', 'com', 'net', 'org', 'edu', 'gov', 'io', 'co', 'uk', 'us', 'ca', 'au', 'in', 'de', 'fr', 'jp', 'cn', 'info', 'biz', 'name', 'me', 'tv', 'cc', 'ws', 'mobi', 'asia', 'tel']
+    # #     # Common words that might be appended after email domains
+    # #     appended_words = ['email', 'com', 'net', 'org', 'edu', 'gov', 'io', 'co', 'uk', 'us', 'ca', 'au', 'in', 'de', 'fr', 'jp', 'cn', 'info', 'biz', 'name', 'me', 'tv', 'cc', 'ws', 'mobi', 'asia', 'tel']
         
-        # Quick check: if email is already valid, check if it has appended words
-        # This prevents breaking valid emails like "john.doe@gmail.com" or "greg.harritt@gmail.com"
-        email_pattern = r'^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$'
-        if re.match(email_pattern, email_str):
-            username_part, domain_part_final = email_str.split('@')
-            # Require at least 2 characters for username to reject incomplete emails like "08@gmail.com"
-            if len(username_part) >= 2 and len(domain_part_final) >= 4:
-                # Check if domain ends with appended words (like "comemail" or "gmail.comemail")
-                domain_lower = domain_part_final.lower()
-                has_appended_words = False
+    # #     # Quick check: if email is already valid, check if it has appended words
+    # #     # This prevents breaking valid emails like "john.doe@gmail.com" or "greg.harritt@gmail.com"
+    # #     email_pattern = r'^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$'
+    # #     if re.match(email_pattern, email_str):
+    # #         username_part, domain_part_final = email_str.split('@')
+    # #         # Require at least 2 characters for username to reject incomplete emails like "08@gmail.com"
+    # #         if len(username_part) >= 2 and len(domain_part_final) >= 4:
+    # #             # Check if domain ends with appended words (like "comemail" or "gmail.comemail")
+    # #             domain_lower = domain_part_final.lower()
+    # #             has_appended_words = False
                 
-                # Check if removing any appended word from the end leaves a valid domain
-                # Only flag as needing cleaning if removing the word creates a valid domain
-                # This ensures we don't break valid domains like "gmail.com" where "com" is the actual TLD
-                for word in sorted(appended_words, key=len, reverse=True):
-                    if domain_lower.endswith(word) and len(domain_part_final) > len(word):
-                        test_domain = domain_part_final[:-len(word)]
-                        # Make sure the test domain is still valid and ends with a proper TLD
-                        if re.match(r'^[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$', test_domain):
-                            # Get the TLD of the test domain
-                            test_tld = test_domain.split('.')[-1].lower()
-                            # Get the TLD of the original domain (last part after last dot)
-                            original_tld = domain_part_final.split('.')[-1].lower()
+    # #             # Check if removing any appended word from the end leaves a valid domain
+    # #             # Only flag as needing cleaning if removing the word creates a valid domain
+    # #             # This ensures we don't break valid domains like "gmail.com" where "com" is the actual TLD
+    # #             for word in sorted(appended_words, key=len, reverse=True):
+    # #                 if domain_lower.endswith(word) and len(domain_part_final) > len(word):
+    # #                     test_domain = domain_part_final[:-len(word)]
+    # #                     # Make sure the test domain is still valid and ends with a proper TLD
+    # #                     if re.match(r'^[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$', test_domain):
+    # #                         # Get the TLD of the test domain
+    # #                         test_tld = test_domain.split('.')[-1].lower()
+    # #                         # Get the TLD of the original domain (last part after last dot)
+    # #                         original_tld = domain_part_final.split('.')[-1].lower()
                             
-                            # Check if original TLD is longer than test TLD (meaning word was appended to TLD)
-                            # Or if original ends with word repeated (like "comcom")
-                            # Or if test domain is shorter (meaning word was appended)
-                            tld_has_appended = len(original_tld) > len(test_tld) and original_tld.startswith(test_tld)
-                            has_double_word = domain_lower.endswith(word.lower() + word.lower())
-                            is_shorter = len(test_domain) < len(domain_part_final)
+    # #                         # Check if original TLD is longer than test TLD (meaning word was appended to TLD)
+    # #                         # Or if original ends with word repeated (like "comcom")
+    # #                         # Or if test domain is shorter (meaning word was appended)
+    # #                         tld_has_appended = len(original_tld) > len(test_tld) and original_tld.startswith(test_tld)
+    # #                         has_double_word = domain_lower.endswith(word.lower() + word.lower())
+    # #                         is_shorter = len(test_domain) < len(domain_part_final)
                             
-                            if tld_has_appended or has_double_word or (is_shorter and test_tld != word.lower()):
-                                # Found appended word, needs cleaning
-                                has_appended_words = True
-                                break
+    # #                         if tld_has_appended or has_double_word or (is_shorter and test_tld != word.lower()):
+    # #                             # Found appended word, needs cleaning
+    # #                             has_appended_words = True
+    # #                             break
                 
-                # If no appended words found, email is clean and valid - return immediately
-                if not has_appended_words:
-                    return email_str.lower()
-                # Otherwise, continue to cleaning logic below
+    # #             # If no appended words found, email is clean and valid - return immediately
+    # #             if not has_appended_words:
+    # #                 return email_str.lower()
+    # #             # Otherwise, continue to cleaning logic below
         
-        # Find the @ symbol position
-        at_pos = email_str.find('@')
-        if at_pos == -1 or at_pos == 0:
-            return None  # No @ or @ at start (invalid)
+    # #     # Find the @ symbol position
+    # #     at_pos = email_str.find('@')
+    # #     if at_pos == -1 or at_pos == 0:
+    # #         return None  # No @ or @ at start (invalid)
         
-        # Extract username and domain parts
-        username = email_str[:at_pos]
-        domain_part_raw = email_str[at_pos + 1:]
+    # #     # Extract username and domain parts
+    # #     username = email_str[:at_pos]
+    # #     domain_part_raw = email_str[at_pos + 1:]
         
-        # Validate username has at least 1 character
-        if not username or len(username) == 0:
-            return None
+    # #     # Validate username has at least 1 character
+    # #     if not username or len(username) == 0:
+    # #         return None
         
-        # Reject emails with very short usernames that are likely incomplete (like "08@gmail.com")
-        # Minimum username length should be at least 2 characters for valid emails
-        # Exception: single character usernames are technically valid but rare, so we'll be conservative
-        if len(username) < 2:
-            # This is likely an incomplete extraction (e.g., "08" from "cherylbailey508")
-            return None
+    # #     # Reject emails with very short usernames that are likely incomplete (like "08@gmail.com")
+    # #     # Minimum username length should be at least 2 characters for valid emails
+    # #     # Exception: single character usernames are technically valid but rare, so we'll be conservative
+    # #     if len(username) < 2:
+    # #         # This is likely an incomplete extraction (e.g., "08" from "cherylbailey508")
+    # #         return None
         
-        # Common TLDs (sorted by length descending to match longer ones first)
-        common_tlds = ['info', 'mobi', 'asia', 'name', 'biz', 'tel', 'com', 'net', 'org', 'edu', 'gov', 'io', 'co', 'uk', 'us', 'ca', 'au', 'in', 'de', 'fr', 'jp', 'cn', 'me', 'tv', 'cc', 'ws']
+    # #     # Common TLDs (sorted by length descending to match longer ones first)
+    # #     common_tlds = ['info', 'mobi', 'asia', 'name', 'biz', 'tel', 'com', 'net', 'org', 'edu', 'gov', 'io', 'co', 'uk', 'us', 'ca', 'au', 'in', 'de', 'fr', 'jp', 'cn', 'me', 'tv', 'cc', 'ws']
         
-        # appended_words is already defined above in the early validation check
-        appended_words_pattern = r'(?:' + '|'.join(appended_words) + ')+'
+    # #     # appended_words is already defined above in the early validation check
+    # #     appended_words_pattern = r'(?:' + '|'.join(appended_words) + ')+'
         
-        # Strategy: Directly extract valid domain.tld and remove all appended words
-        # This handles cases like "gmail.comemail" -> "gmail.com"
+    # #     # Strategy: Directly extract valid domain.tld and remove all appended words
+    # #     # This handles cases like "gmail.comemail" -> "gmail.com"
         
-        # Find the first valid domain.tld pattern
-        domain_match = re.search(r'([a-zA-Z0-9][a-zA-Z0-9.-]*\.([a-zA-Z]{2,}))', domain_part_raw)
-        if not domain_match:
-            return None
+    # #     # Find the first valid domain.tld pattern
+    # #     domain_match = re.search(r'([a-zA-Z0-9][a-zA-Z0-9.-]*\.([a-zA-Z]{2,}))', domain_part_raw)
+    # #     if not domain_match:
+    # #         return None
         
-        matched_domain = domain_match.group(1)  # e.g., "gmail.com" from "gmail.comemail"
-        tld_part = domain_match.group(2).lower()  # e.g., "com" or "comemail"
+    # #     matched_domain = domain_match.group(1)  # e.g., "gmail.com" from "gmail.comemail"
+    # #     tld_part = domain_match.group(2).lower()  # e.g., "com" or "comemail"
         
-        # Clean TLD: remove appended words from TLD itself
-        cleaned_tld = tld_part
-        for common_tld in sorted(common_tlds, key=len, reverse=True):
-            if tld_part.startswith(common_tld):
-                remaining = tld_part[len(common_tld):].lower()
-                if remaining:
-                    # Try to remove all appended words from remaining
-                    temp_rem = remaining
-                    while temp_rem:
-                        found_word = False
-                        for word in appended_words:
-                            if temp_rem.startswith(word):
-                                temp_rem = temp_rem[len(word):]
-                                found_word = True
-                                break
-                        if not found_word:
-                            break
-                    if temp_rem == '':
-                        cleaned_tld = common_tld
-                        break
-                else:
-                    cleaned_tld = common_tld
-                    break
+    # #     # Clean TLD: remove appended words from TLD itself
+    # #     cleaned_tld = tld_part
+    # #     for common_tld in sorted(common_tlds, key=len, reverse=True):
+    # #         if tld_part.startswith(common_tld):
+    # #             remaining = tld_part[len(common_tld):].lower()
+    # #             if remaining:
+    # #                 # Try to remove all appended words from remaining
+    # #                 temp_rem = remaining
+    # #                 while temp_rem:
+    # #                     found_word = False
+    # #                     for word in appended_words:
+    # #                         if temp_rem.startswith(word):
+    # #                             temp_rem = temp_rem[len(word):]
+    # #                             found_word = True
+    # #                             break
+    # #                     if not found_word:
+    # #                         break
+    # #                 if temp_rem == '':
+    # #                     cleaned_tld = common_tld
+    # #                     break
+    # #             else:
+    # #                 cleaned_tld = common_tld
+    # #                 break
         
-        # Reconstruct domain
-        if '.' in matched_domain:
-            domain_base = '.'.join(matched_domain.split('.')[:-1])
-            domain_part = f"{domain_base}.{cleaned_tld}"
-        else:
-            domain_part = cleaned_tld
+    # #     # Reconstruct domain
+    # #     if '.' in matched_domain:
+    # #         domain_base = '.'.join(matched_domain.split('.')[:-1])
+    # #         domain_part = f"{domain_base}.{cleaned_tld}"
+    # #     else:
+    # #         domain_part = cleaned_tld
         
-        # Find what comes after the matched domain in the original string
-        match_pos = domain_part_raw.find(matched_domain)
-        if match_pos != -1:
-            after_domain = domain_part_raw[match_pos + len(matched_domain):]
-            if after_domain:
-                # Remove appended words from after_domain
-                after_lower = after_domain.lower()
-                temp_after = after_lower
-                while temp_after:
-                    found_word = False
-                    for word in appended_words:
-                        if temp_after.startswith(word):
-                            temp_after = temp_after[len(word):]
-                            found_word = True
-                            break
-                    if not found_word:
-                        break
-                # If we removed everything, domain_part is correct
-                # If there's still text, it's likely part of next word
+    # #     # Find what comes after the matched domain in the original string
+    # #     match_pos = domain_part_raw.find(matched_domain)
+    # #     if match_pos != -1:
+    # #         after_domain = domain_part_raw[match_pos + len(matched_domain):]
+    # #         if after_domain:
+    # #             # Remove appended words from after_domain
+    # #             after_lower = after_domain.lower()
+    # #             temp_after = after_lower
+    # #             while temp_after:
+    # #                 found_word = False
+    # #                 for word in appended_words:
+    # #                     if temp_after.startswith(word):
+    # #                         temp_after = temp_after[len(word):]
+    # #                         found_word = True
+    # #                         break
+    # #                 if not found_word:
+    # #                     break
+    # #             # If we removed everything, domain_part is correct
+    # #             # If there's still text, it's likely part of next word
         
-        # Final direct cleanup: remove appended words from the END of domain_part
-        # This is the most reliable method for "gmail.comemail" -> "gmail.com"
-        domain_lower = domain_part.lower()
-        max_iterations = 10  # Safety limit to prevent infinite loops
-        iteration = 0
-        while iteration < max_iterations:
-            iteration += 1
-            found_removal = False
-            # Sort words by length (longest first) to match longer words first
-            # Prioritize "email" as it's the most common appended word
-            sorted_words = sorted(appended_words, key=lambda x: (x != 'email', -len(x)))
-            for word in sorted_words:
-                if domain_lower.endswith(word) and len(domain_part) > len(word):
-                    test_domain = domain_part[:-len(word)]
-                    # Validate the test domain is still valid
-                    if re.match(r'^[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$', test_domain):
-                        # Additional check: ensure we're not removing a valid TLD
-                        # If the word is a TLD and the domain ends with it, check if it's actually appended
-                        test_tld = test_domain.split('.')[-1].lower()
-                        original_tld = domain_part.split('.')[-1].lower()
-                        # If removing the word gives us a valid domain with a different TLD, it's appended
-                        if test_tld != word.lower() or len(original_tld) > len(test_tld):
-                            domain_part = test_domain
-                            domain_lower = domain_part.lower()
-                            found_removal = True
-                            break
-            if not found_removal:
-                break
+    # #     # Final direct cleanup: remove appended words from the END of domain_part
+    # #     # This is the most reliable method for "gmail.comemail" -> "gmail.com"
+    # #     domain_lower = domain_part.lower()
+    # #     max_iterations = 10  # Safety limit to prevent infinite loops
+    # #     iteration = 0
+    # #     while iteration < max_iterations:
+    # #         iteration += 1
+    # #         found_removal = False
+    # #         # Sort words by length (longest first) to match longer words first
+    # #         # Prioritize "email" as it's the most common appended word
+    # #         sorted_words = sorted(appended_words, key=lambda x: (x != 'email', -len(x)))
+    # #         for word in sorted_words:
+    # #             if domain_lower.endswith(word) and len(domain_part) > len(word):
+    # #                 test_domain = domain_part[:-len(word)]
+    # #                 # Validate the test domain is still valid
+    # #                 if re.match(r'^[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$', test_domain):
+    # #                     # Additional check: ensure we're not removing a valid TLD
+    # #                     # If the word is a TLD and the domain ends with it, check if it's actually appended
+    # #                     test_tld = test_domain.split('.')[-1].lower()
+    # #                     original_tld = domain_part.split('.')[-1].lower()
+    # #                     # If removing the word gives us a valid domain with a different TLD, it's appended
+    # #                     if test_tld != word.lower() or len(original_tld) > len(test_tld):
+    # #                         domain_part = test_domain
+    # #                         domain_lower = domain_part.lower()
+    # #                         found_removal = True
+    # #                         break
+    # #         if not found_removal:
+    # #             break
         
-        # Validate final domain_part
-        if not re.match(r'^[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$', domain_part):
-            # Last resort: extract first valid domain.tld and use it
-            simple_match = re.search(r'([a-zA-Z0-9][a-zA-Z0-9.-]*\.[a-zA-Z]{2,})', domain_part_raw)
-            if simple_match:
-                potential = simple_match.group(1)
-                # Remove appended words from end (try multiple times)
-                pot_lower = potential.lower()
-                cleaned_potential = potential
-                for _ in range(5):  # Try up to 5 times to remove multiple appended words
-                    found_removal = False
-                    for word in sorted(appended_words, key=len, reverse=True):
-                        if pot_lower.endswith(word) and len(cleaned_potential) > len(word):
-                            test = cleaned_potential[:-len(word)]
-                            if re.match(r'^[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$', test):
-                                cleaned_potential = test
-                                pot_lower = cleaned_potential.lower()
-                                found_removal = True
-                                break
-                    if not found_removal:
-                        break
+    # #     # Validate final domain_part
+    # #     if not re.match(r'^[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$', domain_part):
+    # #         # Last resort: extract first valid domain.tld and use it
+    # #         simple_match = re.search(r'([a-zA-Z0-9][a-zA-Z0-9.-]*\.[a-zA-Z]{2,})', domain_part_raw)
+    # #         if simple_match:
+    # #             potential = simple_match.group(1)
+    # #             # Remove appended words from end (try multiple times)
+    # #             pot_lower = potential.lower()
+    # #             cleaned_potential = potential
+    # #             for _ in range(5):  # Try up to 5 times to remove multiple appended words
+    # #                 found_removal = False
+    # #                 for word in sorted(appended_words, key=len, reverse=True):
+    # #                     if pot_lower.endswith(word) and len(cleaned_potential) > len(word):
+    # #                         test = cleaned_potential[:-len(word)]
+    # #                         if re.match(r'^[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$', test):
+    # #                             cleaned_potential = test
+    # #                             pot_lower = cleaned_potential.lower()
+    # #                             found_removal = True
+    # #                             break
+    # #                 if not found_removal:
+    # #                     break
                 
-                if re.match(r'^[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$', cleaned_potential):
-                    domain_part = cleaned_potential
-                elif re.match(r'^[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$', potential):
-                    domain_part = potential
-                else:
-                    return None
-            else:
-                return None
+    # #             if re.match(r'^[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$', cleaned_potential):
+    # #                 domain_part = cleaned_potential
+    # #             elif re.match(r'^[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$', potential):
+    # #                 domain_part = potential
+    # #             else:
+    # #                 return None
+    # #         else:
+    # #             return None
         
-        # Reconstruct email
-        cleaned_email = f"{username}@{domain_part}"
+    # #     # Reconstruct email
+    # #     cleaned_email = f"{username}@{domain_part}"
         
-        # Final validation: ensure it's a valid email format
-        email_pattern = r'^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$'
-        if re.match(email_pattern, cleaned_email):
-            # Additional validation: username should be at least 2 chars (reject incomplete like "08@gmail.com")
-            # domain should be reasonable
-            username_part, domain_part_final = cleaned_email.split('@')
-            if len(username_part) >= 2 and len(domain_part_final) >= 4:  # At least 2 char username, "a.co" domain
-                return cleaned_email.lower()
+    # #     # Final validation: ensure it's a valid email format
+    # #     email_pattern = r'^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$'
+    # #     if re.match(email_pattern, cleaned_email):
+    # #         # Additional validation: username should be at least 2 chars (reject incomplete like "08@gmail.com")
+    # #         # domain should be reasonable
+    # #         username_part, domain_part_final = cleaned_email.split('@')
+    # #         if len(username_part) >= 2 and len(domain_part_final) >= 4:  # At least 2 char username, "a.co" domain
+    # #             return cleaned_email.lower()
         
-        # If cleaning resulted in invalid email, try one more simple approach:
-        # Directly remove appended words from the entire original email string
-        original_full_email = f"{username}@{domain_part_raw}"
-        # Try removing appended words from the end of the entire email
-        # Prioritize "email" as it's the most common appended word
-        email_lower = original_full_email.lower()
-        # Check for "email" first (most common case)
-        if email_lower.endswith('email') and len(original_full_email) > len('email') + len(username) + 1:
-            test_email = original_full_email[:-len('email')]
-            if re.match(email_pattern, test_email):
-                username_part, domain_part_final = test_email.split('@')
-                if len(username_part) >= 2 and len(domain_part_final) >= 4:  # Require at least 2 char username
-                    return test_email.lower()
+    # #     # If cleaning resulted in invalid email, try one more simple approach:
+    # #     # Directly remove appended words from the entire original email string
+    # #     original_full_email = f"{username}@{domain_part_raw}"
+    # #     # Try removing appended words from the end of the entire email
+    # #     # Prioritize "email" as it's the most common appended word
+    # #     email_lower = original_full_email.lower()
+    # #     # Check for "email" first (most common case)
+    # #     if email_lower.endswith('email') and len(original_full_email) > len('email') + len(username) + 1:
+    # #         test_email = original_full_email[:-len('email')]
+    # #         if re.match(email_pattern, test_email):
+    # #             username_part, domain_part_final = test_email.split('@')
+    # #             if len(username_part) >= 2 and len(domain_part_final) >= 4:  # Require at least 2 char username
+    # #                 return test_email.lower()
         
-        # Try other appended words
-        for word in sorted([w for w in appended_words if w != 'email'], key=len, reverse=True):
-            if email_lower.endswith(word) and len(original_full_email) > len(word) + len(username) + 1:  # +1 for @
-                test_email = original_full_email[:-len(word)]
-                if re.match(email_pattern, test_email):
-                    username_part, domain_part_final = test_email.split('@')
-                    if len(username_part) >= 2 and len(domain_part_final) >= 4:  # Require at least 2 char username
-                        return test_email.lower()
+    # #     # Try other appended words
+    # #     for word in sorted([w for w in appended_words if w != 'email'], key=len, reverse=True):
+    # #         if email_lower.endswith(word) and len(original_full_email) > len(word) + len(username) + 1:  # +1 for @
+    # #             test_email = original_full_email[:-len(word)]
+    # #             if re.match(email_pattern, test_email):
+    # #                 username_part, domain_part_final = test_email.split('@')
+    # #                 if len(username_part) >= 2 and len(domain_part_final) >= 4:  # Require at least 2 char username
+    # #                     return test_email.lower()
         
-        # Last resort: if original email was close to valid, try to return it
-        # This ensures we don't lose valid emails due to over-aggressive cleaning
-        # But still require minimum 2 char username to reject incomplete emails
-        if re.match(email_pattern, original_full_email):
-            username_part, domain_part_final = original_full_email.split('@')
-            if len(username_part) >= 2 and len(domain_part_final) >= 4:  # Require at least 2 char username
-                return original_full_email.lower()
+    # #     # Last resort: if original email was close to valid, try to return it
+    # #     # This ensures we don't lose valid emails due to over-aggressive cleaning
+    # #     # But still require minimum 2 char username to reject incomplete emails
+    # #     if re.match(email_pattern, original_full_email):
+    # #         username_part, domain_part_final = original_full_email.split('@')
+    # #         if len(username_part) >= 2 and len(domain_part_final) >= 4:  # Require at least 2 char username
+    # #             return original_full_email.lower()
         
-        return None
+    # #     return None
     
     def _extract_json(self, text: str) -> Dict:
         """Extract JSON object from LLM response."""
@@ -747,582 +747,7 @@ class EmailExtractor:
         )
         return {"email": None}
     
-    def _extract_email_regex_fallback(self, text: str) -> Optional[str]:
-        """
-        Fast regex-based fallback for email extraction.
-        Extracts the first valid email address found in the text.
-        Uses multiple patterns and scans full text thoroughly.
-        
-        Args:
-            text: The resume text
-        
-        Returns:
-            Extracted email or None if not found
-        """
-        if not text:
-            return None
-        
-        # Try cleaning text first to remove symbols that might interfere
-        cleaned_text = remove_symbols_and_emojis(text)
-        if cleaned_text:
-            text = cleaned_text
-        
-        # Multiple email regex patterns to catch various formats
-        # Order matters - more specific patterns first
-        # Updated patterns to handle emails with extra text appended (like "email" after TLD)
-        email_patterns = [
-            # Email with label and mailto: Email: mailto:email@domain.com (HTML format)
-            re.compile(r'(?:email|e-mail)\s*:\s*mailto\s*:?\s*([a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}(?:email|com|net|org|edu|gov|io|co|uk|us|ca|au|in|de|fr|jp|cn)*)\b', re.IGNORECASE),
-            # Email with mailto: prefix (standalone)
-            re.compile(r'mailto\s*:?\s*([a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}(?:email|com|net|org|edu|gov|io|co|uk|us|ca|au|in|de|fr|jp|cn)*)\b', re.IGNORECASE),
-            # Email with label and colon (most common in headers): Email:email@domain.com
-            re.compile(r'(?:email|e-mail)\s*:?\s*([a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}(?:email|com|net|org|edu|gov|io|co|uk|us|ca|au|in|de|fr|jp|cn)*)\b', re.IGNORECASE),
-            # Email in mixed text with pipes: |Email:email@domain.com| or |email@domain.com|
-            re.compile(r'[|:]\s*([a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}(?:email|com|net|org|edu|gov|io|co|uk|us|ca|au|in|de|fr|jp|cn)*)\s*[|]?', re.IGNORECASE),
-            # Email with brackets: <email@domain.com>
-            re.compile(r'<([a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}(?:email|com|net|org|edu|gov|io|co|uk|us|ca|au|in|de|fr|jp|cn)*)>'),
-            # Email in parentheses: (email@domain.com)
-            re.compile(r'\(([a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}(?:email|com|net|org|edu|gov|io|co|uk|us|ca|au|in|de|fr|jp|cn)*)\)'),
-            # Standard email pattern with potential extra text (word boundary)
-            re.compile(r'\b[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}(?:email|com|net|org|edu|gov|io|co|uk|us|ca|au|in|de|fr|jp|cn)*\b'),
-            # Email with spaces (OCR errors): "email @ domain.com"
-            re.compile(r'\b[a-zA-Z0-9._%+-]+\s*@\s*[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}(?:email|com|net|org|edu|gov|io|co|uk|us|ca|au|in|de|fr|jp|cn)*\b'),
-            # Email at start of line (common in headers)
-            re.compile(r'^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}(?:email|com|net|org|edu|gov|io|co|uk|us|ca|au|in|de|fr|jp|cn)*\b', re.MULTILINE),
-            # Email on its own line or after whitespace (common in contact sections)
-            re.compile(r'(?:^|\s)([a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}(?:email|com|net|org|edu|gov|io|co|uk|us|ca|au|in|de|fr|jp|cn)*)(?:\s|$)', re.MULTILINE),
-            # Standard email pattern (word boundary) - fallback without extra text
-            re.compile(r'\b[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}\b'),
-        ]
-        
-        # Try each pattern and collect all matches, then prioritize longer/more complete emails
-        all_matches = []
-        for pattern in email_patterns:
-            try:
-                matches = pattern.findall(text)
-                if matches:
-                    for match in matches:
-                        # Handle tuple results (from groups)
-                        if isinstance(match, tuple):
-                            # Get first non-empty group, or first element if all empty
-                            email_str = next((m for m in match if m and len(str(m).strip()) > 0), match[0] if match else '')
-                            if not email_str:
-                                continue
-                        else:
-                            email_str = match
-                        
-                        if not email_str or len(email_str.strip()) == 0:
-                            continue
-                        
-                        # Clean up any spaces or special characters
-                        email_str = email_str.replace(' ', '').replace('<', '').replace('>', '').strip()
-                        
-                        # Skip if too short to be valid
-                        if len(email_str) < 5:  # Minimum like "a@b.c"
-                            continue
-                        
-                        # REJECT emails with very short numeric-only usernames (like "08")
-                        # But be more lenient - only reject if it's clearly incomplete
-                        if '@' in email_str:
-                            username_part = email_str.split('@')[0]
-                            # Only reject if username is:
-                            # 1. Less than 2 chars, OR
-                            # 2. Exactly 2 chars and all digits (like "08" from "508")
-                            # But allow longer usernames even if they start with digits
-                            if len(username_part) < 2:
-                                continue  # Too short
-                            elif len(username_part) == 2 and username_part.isdigit():
-                                # This is likely incomplete (e.g., "08" from "cherylbailey508")
-                                # Reject immediately to prevent incomplete email extraction
-                                continue  # Skip incomplete 2-digit numeric usernames
-                        
-                        # First try to clean and fix email (handles extra text appended)
-                        cleaned_email = self._clean_and_fix_email(email_str)
-                        if cleaned_email:
-                            # Validate with normalize_email
-                            email = normalize_email(cleaned_email)
-                            username_len = len(email.split('@')[0])
-                            # Require at least 2 chars
-                            # For 2-digit usernames, we'll filter them out when prioritizing
-                            if username_len >= 2:
-                                # Store email with its length for prioritization
-                                all_matches.append((email, len(email), email_str))
-                        
-                        # If cleaning didn't work, try normal normalization
-                        if not cleaned_email:
-                            email = normalize_email(email_str)
-                            username_len = len(email.split('@')[0])
-                            # Require at least 2 chars
-                            if username_len >= 2:
-                                all_matches.append((email, len(email), email_str))
-            except Exception as e:
-                logger.debug(f"Error processing pattern {pattern.pattern[:50]}: {e}")
-                continue
-        
-        # If we found matches, prioritize longer emails (more complete) and return the best one
-        if all_matches:
-            # Filter out emails with very short usernames (likely incomplete)
-            # Keep only emails with username length >= 2
-            valid_matches = [(email, length, orig) for email, length, orig in all_matches 
-                            if len(email.split('@')[0]) >= 2]
-            
-            if valid_matches:
-                # Filter out 2-digit-only usernames (like "08") - these are likely incomplete
-                # But keep them as fallback if no better matches exist
-                best_matches = [(email, length, orig) for email, length, orig in valid_matches
-                               if not (len(email.split('@')[0]) == 2 and email.split('@')[0].isdigit())]
-                
-                # If we have matches after filtering 2-digit usernames, use those
-                if best_matches:
-                    # Sort by username length first (longest username = more complete), then total length
-                    best_matches.sort(key=lambda x: (len(x[0].split('@')[0]), x[1]), reverse=True)
-                    best_email = best_matches[0][0]
-                    logger.debug(f"Regex fallback extracted email: {best_email} (from {len(best_matches)} best matches out of {len(valid_matches)} valid)")
-                    return best_email
-                # If only 2-digit usernames found, reject them - they're incomplete
-                # Don't return incomplete emails like "08@gmail.com"
-                elif valid_matches:
-                    logger.debug(f"Regex fallback: Only incomplete 2-digit usernames found, rejecting all {len(valid_matches)} matches")
-                    # Continue to next extraction method instead of returning incomplete email
-            else:
-                # If no valid matches with >= 2 char username, but we have matches, 
-                # check if any are actually valid (might be edge case)
-                if all_matches:
-                    # Sort by total length and return longest if it's reasonable
-                    all_matches.sort(key=lambda x: x[1], reverse=True)
-                    longest_email = all_matches[0][0]
-                    # Additional safety check: reject 2-digit numeric usernames
-                    username_check = longest_email.split('@')[0] if '@' in longest_email else ''
-                    if len(username_check) == 2 and username_check.isdigit():
-                        logger.debug(f"Regex fallback: Rejecting incomplete 2-digit username email: {longest_email}")
-                    # Only return if email is reasonably long (at least 10 chars like "ab@cd.com")
-                    # AND username is not a 2-digit number
-                    elif len(longest_email) >= 10 and not (len(username_check) == 2 and username_check.isdigit()):
-                        logger.debug(f"Regex fallback extracted email (fallback): {longest_email} (from {len(all_matches)} matches)")
-                        return longest_email
-            # If no valid matches, return None (don't return incomplete emails)
-            logger.debug(f"No valid emails found (all {len(all_matches)} matches had short usernames or were too short)")
-            return None
-        
-        # If no pattern matched, try a more aggressive search
-        # Look for @ symbol and try to extract email around it
-        # This handles cases where email is split by spaces or special characters
-        at_positions = [i for i, char in enumerate(text) if char == '@']
-        
-        # Collect all potential emails from @ positions, then prioritize longer ones
-        potential_emails = []
-        for pos in at_positions:
-            # Extract more chars before and after @ to handle edge cases
-            # Increased context to capture emails split by spaces and mailto: format
-            # Increased before context to capture longer usernames
-            start = max(0, pos - 150)  # Increased from 100 to 150 to capture longer usernames
-            end = min(len(text), pos + 100)
-            snippet = text[start:end]
-            
-            # Try multiple patterns in the snippet, including emails with spaces and mailto:
-            # Updated to handle emails with extra text appended
-            snippet_patterns = [
-                r'mailto\s*:?\s*([a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}(?:email|com|net|org|edu|gov|io|co|uk|us|ca|au|in|de|fr|jp|cn)*)',  # mailto: format first
-                r'[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}(?:email|com|net|org|edu|gov|io|co|uk|us|ca|au|in|de|fr|jp|cn)*',  # Standard (no spaces, with potential extra text)
-                r'[a-zA-Z0-9._%+-]+\s*@\s*[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}(?:email|com|net|org|edu|gov|io|co|uk|us|ca|au|in|de|fr|jp|cn)*',  # With spaces around @
-                r'[a-zA-Z0-9._%+-]+\s+[a-zA-Z0-9._%+-]*\s*@\s*[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}(?:email|com|net|org|edu|gov|io|co|uk|us|ca|au|in|de|fr|jp|cn)*',  # With spaces in username
-                r'[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}',  # Standard (no spaces, no extra text) - fallback
-            ]
-            
-            for pattern in snippet_patterns:
-                email_match = re.search(pattern, snippet, re.IGNORECASE)
-                if email_match:
-                    # Handle group matches (from mailto: pattern)
-                    if email_match.groups():
-                        email_str = email_match.group(1)
-                    else:
-                        email_str = email_match.group(0)
-                    # Remove ALL spaces, newlines, and special formatting characters
-                    email_str = email_str.replace(' ', '').replace('\n', '').replace('\r', '').replace('\t', '').strip()
-                    # Remove any trailing punctuation that might have been captured
-                    email_str = re.sub(r'[.,;:!?|]+$', '', email_str)
-                    
-                    # REJECT emails with very short usernames that are likely incomplete
-                    # Like "08" from "cherylbailey 508@gmail.com" - these are partial matches
-                    if '@' in email_str:
-                        username_part = email_str.split('@')[0]
-                        # Reject if username is:
-                        # 1. Shorter than 2 chars (too short)
-                        # 2. Only 2 chars and all numeric (like "08" - likely incomplete)
-                        if len(username_part) < 2 or (len(username_part) == 2 and username_part.isdigit()):
-                            continue  # Skip this match, look for better ones
-                    
-                        # Try to clean and fix email (handles extra text appended)
-                        cleaned_email = self._clean_and_fix_email(email_str)
-                        if cleaned_email:
-                            email = normalize_email(cleaned_email)
-                            username_len = len(email.split('@')[0])
-                            # Require at least 2 chars - we'll filter 2-digit usernames when prioritizing
-                            if username_len >= 2:
-                                potential_emails.append((email, username_len, email_str))
-                        
-                        # If cleaning didn't work, try normal normalization
-                        if not cleaned_email:
-                            email = normalize_email(email_str)
-                            username_len = len(email.split('@')[0])
-                            # Require at least 2 chars - we'll filter 2-digit usernames when prioritizing
-                            if username_len >= 2:
-                                potential_emails.append((email, username_len, email_str))
-        
-        # Special handling for emails split by spaces (e.g., "cherylbailey 508@gmail.com" -> "cherylbailey508@gmail.com")
-        # Check each @ position for split usernames - this is CRITICAL for catching split emails
-        for pos in at_positions:
-            # Increase context before @ to capture longer usernames that might be split
-            before_at = text[max(0, pos - 100):pos]  # Increased from 50 to 100
-            after_at = text[pos:min(len(text), pos + 50)]
-            
-            # Try to find username parts before @ (may be split by spaces)
-            # Look for alphanumeric sequences before @ - capture more context
-            username_parts = re.findall(r'[a-zA-Z0-9._%+-]+', before_at)
-            if username_parts:
-                # Try different combinations of username parts
-                # Start with more parts and work down to find the longest valid username
-                max_parts_to_try = min(5, len(username_parts))  # Try up to 5 parts
-                for num_parts in range(max_parts_to_try, 0, -1):  # Start with most parts, work down
-                    # Take the last N parts and combine them
-                    username = ''.join(username_parts[-num_parts:])
-                    
-                    # Skip if username is too short (likely incomplete)
-                    if len(username) < 2:
-                        continue
-                    
-                    # Extract domain after @ (updated to handle potential extra text)
-                    domain_match = re.search(r'@\s*([a-zA-Z0-9.-]+\.[a-zA-Z]{2,}(?:email|com|net|org|edu|gov|io|co|uk|us|ca|au|in|de|fr|jp|cn)*)', after_at)
-                    if domain_match:
-                        domain = domain_match.group(1).replace(' ', '').strip()
-                        email_str = f"{username}@{domain}"
-                        # Remove any trailing punctuation
-                        email_str = re.sub(r'[.,;:!?|]+$', '', email_str)
-                        
-                        # Try to clean and fix email (handles extra text appended)
-                        cleaned_email = self._clean_and_fix_email(email_str)
-                        if cleaned_email and len(cleaned_email.split('@')[0]) >= 2:
-                            email = normalize_email(cleaned_email)
-                            if email:
-                                potential_emails.append((email, len(email.split('@')[0]), email_str))
-                                # If we found a good email with longer username, prioritize it
-                                # Don't break here - collect all possibilities and sort later
-                        
-                        # If cleaning didn't work, try normal normalization
-                        if not cleaned_email:
-                            email = normalize_email(email_str)
-                            if email and len(email.split('@')[0]) >= 2:
-                                potential_emails.append((email, len(email.split('@')[0]), email_str))
-        
-        # After checking all @ positions, prioritize longer usernames
-        if potential_emails:
-            # Filter out 2-digit-only usernames first, but keep them as fallback
-            best_emails = [(email, username_len, orig) for email, username_len, orig in potential_emails
-                          if not (username_len == 2 and email.split('@')[0].isdigit())]
-            
-            if best_emails:
-                # Sort by username length (longest first), then total email length
-                best_emails.sort(key=lambda x: (x[1], len(x[0])), reverse=True)
-                best_email = best_emails[0][0]
-                logger.debug(f"Regex fallback extracted email from @ positions: {best_email} (from {len(best_emails)} best matches out of {len(potential_emails)} total)")
-                return best_email
-            else:
-                # If only 2-digit usernames found, reject them - they're incomplete
-                # Don't return incomplete emails like "08@gmail.com"
-                logger.debug(f"Regex fallback from @ positions: Only incomplete 2-digit usernames found, rejecting all {len(potential_emails)} matches")
-                # Continue to next extraction method instead of returning incomplete email
-        
-        # Final fallback: Try to find ANY email pattern in the text (very permissive)
-        # This catches emails that might have been missed by other patterns
-        final_fallback_pattern = re.compile(r'\b([a-zA-Z0-9][a-zA-Z0-9._%+-]*@[a-zA-Z0-9][a-zA-Z0-9.-]*\.[a-zA-Z]{2,})\b', re.IGNORECASE)
-        final_matches = final_fallback_pattern.findall(text)
-        if final_matches:
-            # Collect all candidates and prioritize longer usernames
-            final_candidates = []
-            for email_candidate in final_matches:
-                if isinstance(email_candidate, tuple):
-                    email_candidate = email_candidate[0] if email_candidate else ''
-                if not email_candidate:
-                    continue
-                
-                email_candidate = email_candidate.strip()
-                # Skip if too short
-                if len(email_candidate) < 5:
-                    continue
-                
-                # REJECT short numeric-only usernames
-                if '@' in email_candidate:
-                    username_part = email_candidate.split('@')[0]
-                    if len(username_part) < 2 or (len(username_part) == 2 and username_part.isdigit()):
-                        continue  # Skip short numeric usernames
-                
-                # Clean and validate
-                cleaned = self._clean_and_fix_email(email_candidate)
-                if cleaned:
-                    username_len = len(cleaned.split('@')[0])
-                    if username_len >= 2 and not (username_len == 2 and cleaned.split('@')[0].isdigit()):
-                        normalized = normalize_email(cleaned)
-                        if normalized:
-                            final_candidates.append((normalized, username_len))
-                
-                # Try without cleaning
-                if not cleaned:
-                    normalized = normalize_email(email_candidate)
-                    username_len = len(normalized.split('@')[0]) if normalized else 0
-                    if normalized and username_len >= 2 and not (username_len == 2 and normalized.split('@')[0].isdigit()):
-                        final_candidates.append((normalized, username_len))
-            
-            # If we found candidates, return the one with longest username
-            if final_candidates:
-                final_candidates.sort(key=lambda x: x[1], reverse=True)  # Sort by username length
-                best_email = final_candidates[0][0]
-                logger.debug(f"Regex fallback extracted email via final fallback: {best_email} (from {len(final_candidates)} candidates)")
-                return best_email
-        
-        # Last resort: Look for any @ symbol and try to construct email
-        # This handles cases where email might be split by spaces or have unusual formatting
-        for pos in at_positions[:5]:  # Only check first 5 @ symbols to avoid false positives
-            # Get context around @ (increased context to capture split emails)
-            start = max(0, pos - 60)
-            end = min(len(text), pos + 60)
-            context = text[start:end]
-            
-            # Try to extract username and domain
-            # Look for username before @ - may be split by spaces
-            # First try standard pattern (no spaces)
-            username_match = re.search(r'([a-zA-Z0-9._%+-]+)\s*@', context)
-            if username_match:
-                username = username_match.group(1).replace(' ', '').strip()
-            else:
-                # Try to find username parts that might be split by spaces
-                # Look for alphanumeric sequences before @
-                before_at_context = text[max(0, pos - 50):pos]
-                username_parts = re.findall(r'[a-zA-Z0-9._%+-]+', before_at_context)
-                if username_parts:
-                    # Take the last few parts and combine them
-                    username = ''.join(username_parts[-3:])  # Take up to 3 parts
-                else:
-                    continue  # Skip this @ if we can't find username
-            
-            # Look for domain after @ (updated to handle potential extra text)
-            domain_match = re.search(r'@\s*([a-zA-Z0-9.-]+\.[a-zA-Z]{2,}(?:email|com|net|org|edu|gov|io|co|uk|us|ca|au|in|de|fr|jp|cn)*)', context)
-            if domain_match:
-                domain = domain_match.group(1).replace(' ', '').strip()
-                email_str = f"{username}@{domain}"
-                # Remove any trailing punctuation
-                email_str = re.sub(r'[.,;:!?|]+$', '', email_str)
-                
-                # Try to clean and fix email (handles extra text appended)
-                cleaned_email = self._clean_and_fix_email(email_str)
-                if cleaned_email:
-                    email = normalize_email(cleaned_email)
-                    if email and len(email) > 8:  # Basic validation (at least 8 chars like "a@b.co")
-                        logger.debug(f"Regex fallback constructed and cleaned email from @ context: {email}")
-                        return email
-                
-                # If cleaning didn't work, try normal normalization
-                email = normalize_email(email_str)
-                if email and len(email) > 8:  # Basic validation (at least 8 chars like "a@b.co")
-                    logger.debug(f"Regex fallback constructed email from @ context: {email}")
-                    return email
-        
-        return None
-    
-    async def _extract_with_fallback_prompt(self, resume_text: str, filename: str = "resume") -> Dict[str, Optional[str]]:
-        """
-        Fallback extraction method using specialized prompt for edge cases.
-        Extracts both email and mobile together when regular extraction fails.
-        Removes symbols and emojis before extraction to improve accuracy.
-        
-        Args:
-            resume_text: The text content of the resume
-            filename: Name of the resume file (for logging)
-        
-        Returns:
-            Dictionary with "email" and "mobile" keys, or {"email": None, "mobile": None} if extraction fails
-        """
-        try:
-            is_connected, available_model = await self._check_ollama_connection()
-            if not is_connected:
-                logger.debug(f"OLLAMA not accessible for fallback extraction: {filename}")
-                return {"email": None, "mobile": None}
-            
-            model_to_use = self.model
-            if available_model and "llama3.1" not in available_model.lower():
-                model_to_use = available_model
-            
-            # Remove symbols and emojis before extraction
-            cleaned_text = remove_symbols_and_emojis(resume_text)
-            if not cleaned_text:
-                cleaned_text = resume_text  # Fallback to original if cleaning removes everything
-            
-            logger.debug(
-                f"Cleaned resume text for fallback extraction (removed symbols/emojis)",
-                extra={"file_name": filename, "original_length": len(resume_text), "cleaned_length": len(cleaned_text)}
-            )
-            
-            prompt = f"""{FALLBACK_EMAIL_MOBILE_PROMPT}
 
-Resume content:
-{cleaned_text[:10000]}
-
-Output (JSON only, no other text, no explanations):"""
-            
-            logger.info(
-                f"📤 CALLING OLLAMA API for fallback email/mobile extraction",
-                extra={
-                    "file_name": filename,
-                    "model": model_to_use,
-                    "ollama_host": self.ollama_host,
-                }
-            )
-            
-            result = None
-            last_error = None
-            
-            async with httpx.AsyncClient(timeout=Timeout(60.0)) as client:
-                try:
-                    response = await client.post(
-                        f"{self.ollama_host}/api/generate",
-                        json={
-                            "model": model_to_use,
-                            "prompt": prompt,
-                            "stream": False,
-                            "options": {
-                                "temperature": 0.1,
-                                "top_p": 0.9,
-                            }
-                        }
-                    )
-                    response.raise_for_status()
-                    result = response.json()
-                    response_text = result.get("response", "") or result.get("text", "")
-                    if not response_text and "message" in result:
-                        response_text = result.get("message", {}).get("content", "")
-                    result = {"response": response_text}
-                except httpx.HTTPStatusError as e:
-                    if e.response.status_code != 404:
-                        raise
-                    last_error = e
-                    logger.debug("OLLAMA /api/generate returned 404, trying /api/chat endpoint")
-                
-                if result is None:
-                    try:
-                        response = await client.post(
-                            f"{self.ollama_host}/api/chat",
-                            json={
-                                "model": model_to_use,
-                                "messages": [
-                                    {"role": "system", "content": "You are a fresh, isolated extraction agent. This is a new, independent task with no previous context."},
-                                    {"role": "user", "content": prompt}
-                                ],
-                                "stream": False,
-                                "options": {
-                                    "temperature": 0.1,
-                                    "top_p": 0.9,
-                                    "num_predict": 500,
-                                }
-                            }
-                        )
-                        response.raise_for_status()
-                        result = response.json()
-                        if "message" in result and "content" in result["message"]:
-                            result = {"response": result["message"]["content"]}
-                        else:
-                            raise ValueError("Unexpected response format from OLLAMA chat API")
-                    except Exception as e2:
-                        last_error = e2
-                        logger.debug(f"OLLAMA /api/chat also failed: {e2}")
-                
-                if result is None:
-                    logger.warning(f"All OLLAMA API endpoints failed for fallback extraction: {last_error}")
-                    return {"email": None, "mobile": None}
-            
-            raw_output = ""
-            if isinstance(result, dict):
-                if "response" in result:
-                    raw_output = str(result["response"])
-                elif "text" in result:
-                    raw_output = str(result["text"])
-                elif "content" in result:
-                    raw_output = str(result["content"])
-                elif "message" in result and isinstance(result.get("message"), dict):
-                    raw_output = str(result["message"].get("content", ""))
-            else:
-                raw_output = str(result)
-            
-            # Extract JSON from response
-            cleaned_text = raw_output.strip()
-            if cleaned_text.startswith("```json"):
-                cleaned_text = cleaned_text[7:]
-            elif cleaned_text.startswith("```"):
-                cleaned_text = cleaned_text[3:]
-            if cleaned_text.endswith("```"):
-                cleaned_text = cleaned_text[:-3]
-            cleaned_text = cleaned_text.strip()
-            
-            start_idx = cleaned_text.find('{')
-            end_idx = cleaned_text.rfind('}')
-            
-            if start_idx != -1 and end_idx != -1 and end_idx > start_idx:
-                cleaned_text = cleaned_text[start_idx:end_idx + 1]
-            
-            try:
-                parsed = json.loads(cleaned_text)
-                if isinstance(parsed, dict):
-                    # Handle new format: primary_email, all_emails, mobile
-                    primary_email = parsed.get("primary_email")
-                    all_emails = parsed.get("all_emails")
-                    mobile = parsed.get("mobile")
-                    
-                    # PRIMARY-focused selection:
-                    # 1) Trust a non‑masked primary_email from the LLM.
-                    # 2) Otherwise, use _select_best_email_from_list over all_emails.
-                    # 3) If no primary domain emails exist, this will return "masked_email".
-                    email = None
-                    if primary_email and isinstance(primary_email, str) and primary_email.lower() not in {"masked_email", "null"}:
-                        email = primary_email
-                    elif all_emails:
-                        email_list = [e.strip() for e in str(all_emails).split(',') if e and str(e).strip()]
-                        if email_list:
-                            email = self._select_best_email_from_list(email_list)
-                    
-                    # Clean, fix, and normalize email unless it is the special "masked_email" sentinel
-                    if email:
-                        if isinstance(email, str) and email == "masked_email":
-                            # Do not attempt to normalize the sentinel value.
-                            pass
-                        else:
-                            email_str = str(email).strip()
-                            # First try to clean and fix email (handles extra text appended)
-                            cleaned_email = self._clean_and_fix_email(email_str)
-                            if cleaned_email:
-                                email = normalize_email(cleaned_email)
-                            else:
-                                # If cleaning didn't work, try normal normalization
-                                email = normalize_email(email_str)
-                    
-                    logger.info(
-                        f"✅ FALLBACK EXTRACTION completed for {filename}",
-                        extra={
-                            "file_name": filename,
-                            "email": email,
-                            "primary_email": primary_email,
-                            "all_emails": all_emails,
-                            "mobile": mobile,
-                            "status": "success"
-                        }
-                    )
-                    
-                    return {"email": email, "mobile": mobile}
-            except json.JSONDecodeError:
-                logger.warning(f"Failed to parse JSON from fallback extraction response: {filename}")
-            
-            return {"email": None, "mobile": None}
-            
-        except Exception as e:
-            logger.debug(f"Fallback extraction failed: {e}", extra={"file_name": filename, "error": str(e)})
-            return {"email": None, "mobile": None}
     
     def _extract_all_emails_regex(self, text: str) -> set:
         """
@@ -1495,7 +920,8 @@ Output (JSON only, no other text, no explanations):"""
                 continue
         
         return all_emails_found
-    
+   
+	
     async def extract_all_emails(self, resume_text: str, filename: str = "resume") -> str:
         """
         Extract ALL email addresses from resume text and return as comma-separated string.
@@ -2099,103 +1525,7 @@ Output (JSON only, no other text, no explanations):"""
                 f"⚠️ Regular email extraction returned null for {filename}, trying fallback prompt",
                 extra={"file_name": filename, "status": "trying_fallback"}
             )
-            try:
-                fallback_result = await self._extract_with_fallback_prompt(resume_text, filename)
-                email = fallback_result.get("email")
-                
-                # If fallback also returned null, try one more aggressive regex search on full text
-                if not email:
-                    logger.info(
-                        f"⚠️ Fallback prompt also returned null for {filename}, trying aggressive regex search",
-                        extra={"file_name": filename, "status": "trying_aggressive_regex"}
-                    )
-                    # Try one more time with very aggressive regex on full text
-                    aggressive_email = self._extract_email_regex_fallback(resume_text)
-                    if aggressive_email:
-                        email = aggressive_email
-                        logger.info(
-                            f"✅ EMAIL EXTRACTED via aggressive regex search from {filename}",
-                            extra={"file_name": filename, "email": email, "method": "aggressive_regex"}
-                        )
-                        return email
-                
-                if email:
-                    logger.info(
-                        f"✅ EMAIL EXTRACTED via fallback prompt from {filename}",
-                        extra={"file_name": filename, "email": email, "method": "fallback_prompt"}
-                    )
-                    return email
-            except Exception as fallback_error:
-                logger.debug(f"Fallback prompt extraction failed: {fallback_error}")
-                # Even if fallback fails, try aggressive regex as last resort
-                try:
-                    aggressive_email = self._extract_email_regex_fallback(resume_text)
-                    if aggressive_email:
-                        logger.info(
-                            f"✅ EMAIL EXTRACTED via aggressive regex (after fallback error) from {filename}",
-                            extra={"file_name": filename, "email": aggressive_email, "method": "aggressive_regex_fallback"}
-                        )
-                        return aggressive_email
-                except Exception as regex_error:
-                    logger.debug(f"Aggressive regex also failed: {regex_error}")
-            
-            logger.info(
-                f"❌ EMAIL NOT FOUND in {filename}",
-                extra={"file_name": filename, "status": "not_found"}
-            )
-            return None
-            
-        except httpx.TimeoutException:
-            logger.warning(f"OLLAMA timeout for email extraction: {filename}, trying fallback prompt")
-            # Try fallback prompt before giving up
-            try:
-                fallback_result = await self._extract_with_fallback_prompt(resume_text, filename)
-                email = fallback_result.get("email")
-                if email:
-                    logger.info(
-                        f"✅ EMAIL EXTRACTED via fallback prompt (after timeout) from {filename}",
-                        extra={"file_name": filename, "email": email, "method": "fallback_prompt"}
-                    )
-                    return email
-            except Exception as fallback_error:
-                logger.debug(f"Fallback prompt extraction failed after timeout: {fallback_error}")
-            return None
-        except httpx.HTTPError as e:
-            logger.warning(
-                f"HTTP error calling OLLAMA for email extraction: {e}",
-                extra={"file_name": filename, "error": str(e)}
-            )
-            # Try fallback prompt before giving up
-            try:
-                fallback_result = await self._extract_with_fallback_prompt(resume_text, filename)
-                email = fallback_result.get("email")
-                if email:
-                    logger.info(
-                        f"✅ EMAIL EXTRACTED via fallback prompt (after HTTP error) from {filename}",
-                        extra={"file_name": filename, "email": email, "method": "fallback_prompt"}
-                    )
-                    return email
-            except Exception as fallback_error:
-                logger.debug(f"Fallback prompt extraction failed after HTTP error: {fallback_error}")
-            return None
         except Exception as e:
-            logger.warning(
-                f"Error extracting email with LLM: {e}",
-                extra={"file_name": filename, "error": str(e)}
-            )
-            # Try fallback prompt before giving up
-            try:
-                fallback_result = await self._extract_with_fallback_prompt(resume_text, filename)
-                email = fallback_result.get("email")
-                if email:
-                    logger.info(
-                        f"✅ EMAIL EXTRACTED via fallback prompt from {filename}",
-                        extra={"file_name": filename, "email": email, "method": "fallback_prompt"}
-                    )
-                    return email
-            except Exception as fallback_error:
-                logger.debug(f"Fallback prompt extraction also failed: {fallback_error}")
-            return None
+            logger.debug(f"LLM email extraction failed: {e}")
         
-        # All extraction methods have been tried, return None
         return None

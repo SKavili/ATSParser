@@ -243,7 +243,7 @@ class SkillsExtractor:
             
             prompt = f"""{active_prompt}
 
-Input resume text:
+<<<RESUME_TEXT>>>
 {text_to_send}
 
 Output (JSON only, no other text, no explanations):"""
