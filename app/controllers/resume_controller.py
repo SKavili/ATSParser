@@ -282,6 +282,18 @@ class ResumeController:
             # Extract text from file
             try:
                 resume_text = await self.resume_parser.extract_text(file_content, safe_filename)
+                
+                # ✅ ADD LOG HERE
+                logger.info(
+                    f"📄 EXTRACTED RESUME TEXT for resume ID {resume_id}",
+                    extra={
+                        "resume_id": resume_id,
+                        "file_name": safe_filename,
+                        "text_length": len(resume_text),
+                        "text_preview": resume_text[:500],  # First 500 chars
+                        "full_text": resume_text  # Full text (be careful with large resumes)
+                    }
+                )
             except Exception as e:
                 # Update status to failed for extraction error
                 # Use stored resume_id to avoid MissingGreenlet errors

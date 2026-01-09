@@ -24,139 +24,73 @@ DOMAIN_PROMPT = """
 IMPORTANT:
 This is a FRESH, ISOLATED, SINGLE-TASK extraction.
 Ignore ALL previous conversations, memory, instructions, or assumptions.
-You are responsible for accurate resume domain classification.
-
-CRITICAL RECENCY RULE:
-You MUST extract the domain ONLY from the MOST RECENT job role.
-IGNORE all older roles, projects, internships, or academic work.
 
 ROLE:
-You are an ATS resume-parsing expert specializing in conservative,
-evidence-based industry domain identification.
-
-DEFINITION:
-"Domain" means the PRIMARY BUSINESS / INDUSTRY in which the candidate
-has professionally WORKED.
-It is NOT skills, tools, technologies, education, or academic projects.
+You are an ATS resume parser specializing in conservative, evidence-based industry domain identification.
 
 TASK:
-Analyze the provided text (represents ONE most recent job role).
-Return EXACTLY ONE industry domain OR null.
+Determine the industry domain of the candidate's MOST RECENT job role ONLY.
+Return EXACTLY ONE domain OR null.
 
-IMPORTANT ORGANIZATIONS (for context):
-- DRDO = Defence Research and Development Organisation (Defense domain)
-- ISRO = Indian Space Research Organisation (Aerospace/Defense domain)
-- BARC = Bhabha Atomic Research Centre (Energy/Defense domain)
-- NASA = National Aeronautics and Space Administration (Aerospace domain)
-- DOD = Department of Defense (Defense domain)
-- Epiq Systems = Legal services company (Class Action lawsuits, Legal domain)
-- HireRight = Background check/HR services company (Human Resources domain)
+DEFINITION:
+"Domain" = PRIMARY BUSINESS/INDUSTRY where candidate WORKED (company/industry).
+NOT skills, tools, technologies, education, or academic projects.
 
-EVIDENCE HIERARCHY (MUST FOLLOW):
-1. Employer organization or company
-2. Paying client or customer
-3. Commercial product or service
+EVIDENCE HIERARCHY (use in this order):
+1. Employer organization/company
+2. Paying client/customer
+3. Commercial product/service
 4. Business operations described
 5. Industry-regulated terminology
 
-INFERENCE RULE:
-If business context is implied but not explicit (e.g., company name suggests industry,
-client context indicates domain, or business operations clearly point to an industry),
-select the closest standardized domain that matches the implied context.
+CRITICAL RULES:
+- Use ONLY business/industry context (company, client, product, operations).
+- NEVER infer domain from skills, programming languages, tools, or technologies.
+- NEVER guess or assume - require explicit evidence.
+- NEVER default to IT without explicit IT company/business context.
+- Job titles are unreliable unless clearly industry-specific.
+- If domain is unclear or ambiguous → return null (prefer null over wrong classification).
+- Same role text must produce same domain result (deterministic).
 
-If none of the above clearly indicate an industry → return null.
+PLATFORM DOMAINS (return ONLY if work is clearly centered on that platform):
+- "Salesforce" → ONLY if job title/role is "Salesforce Admin/Developer/Consultant/Architect"
+- "AWS" → ONLY if job title/role is "AWS Solutions Architect/Engineer/Consultant" OR explicit AWS-focused role
+- "SAP" → ONLY if job title/role is "SAP Consultant/Developer" OR primarily SAP implementation
+- "Microsoft" → ONLY if job title/role is "Microsoft Consultant/Architect" OR primarily Microsoft stack work
+- "Oracle" → ONLY if job title/role is "Oracle Consultant/Developer" OR primarily Oracle products
+- "ServiceNow", "Workday", "Adobe", "Google Cloud", "Azure" → Same strict criteria
 
-STRICT EXCLUSIONS:
-DO NOT infer domain from:
-- Skills, programming languages, or tools
-- Academic projects or coursework
-- Education or degree specialization
-- Certifications or training
-- Internships without industry business context
-- Generic job titles
+AWS ANTI-HALLUCINATION:
+DO NOT return "AWS" if:
+- Text only mentions "AWS" in skills/technologies used
+- Text mentions "cloud" or "cloud services" without explicit AWS role
+- Text mentions "EC2", "S3", "Lambda" without explicit AWS-focused job title
+- Work is at a company that uses AWS but role is not AWS-specific
 
-JOB TITLE RULE:
-Use job title ONLY if it is explicitly industry-bound.
-If ambiguous → ignore it.
+Return "AWS" ONLY if:
+- Job title contains "AWS" (e.g., "AWS Solutions Architect", "AWS Engineer")
+- Role description explicitly states PRIMARY work is AWS architecture/consulting
 
-EDUCATION DOMAIN RULE (MANDATORY):
-Return "Education" ONLY if the candidate worked professionally
-for education institutions or education products.
-Academic background alone is NEVER sufficient.
+EXAMPLES:
+- "Python Developer at Bank of America" → Banking (NOT IT, NOT Software)
+- "Salesforce Developer at Bank of America" → Salesforce (platform-specific, NOT Banking)
+- "Software Engineer using AWS at Bank" → Banking (NOT AWS - no explicit AWS role)
+- "AWS Solutions Architect at TechCorp" → AWS (explicit AWS role)
+- "Backend Engineer at TechCorp Solutions" → Information Technology (generic IT company)
 
-SPECIFIC TECHNOLOGY/PLATFORM DOMAINS (HIGHEST PRIORITY):
-If the candidate's PRIMARY work is centered around a specific technology platform, return that specific domain:
-- "Salesforce" → If work is primarily Salesforce Admin/Developer/Consultant at any company
-- "AWS" → If work is primarily AWS cloud services/architecture
-- "Microsoft" → If work is primarily Microsoft technologies (Azure, Dynamics, Office 365)
-- "Oracle" → If work is primarily Oracle products (Oracle ERP, Oracle Cloud, Oracle Database)
-- "SAP" → If work is primarily SAP implementation/consulting
-- "ServiceNow" → If work is primarily ServiceNow platform
-- "Workday" → If work is primarily Workday HR/Finance platform
-- "Adobe" → If work is primarily Adobe products (Marketing Cloud, Experience Cloud)
-- "Google Cloud" → If work is primarily Google Cloud Platform
-- "Azure" → If work is primarily Microsoft Azure cloud
-
-Examples:
-- "Salesforce Admin at Cloud Co OP" → Salesforce (not Software, not IT)
-- "Salesforce Developer at Bank of America" → Salesforce (platform-specific, not Banking)
-- "AWS Solutions Architect at TechCorp" → AWS (platform-specific)
-- "SAP Consultant at Manufacturing Co" → SAP (platform-specific)
-
-IT vs SOFTWARE vs PLATFORM DISTINCTION:
+IT vs SOFTWARE vs PLATFORM:
 - "Information Technology" → Generic IT services company or IT department
 - "Software & SaaS" → Software product company (builds/sells software products)
-- "Salesforce/AWS/Microsoft/etc." → Specific platform/technology domain (highest specificity)
+- "Salesforce/AWS/SAP/etc." → Specific platform domain (highest specificity, requires explicit platform role)
 
-IT DOMAIN RESTRICTION:
-Return "Information Technology" if:
-- The employer is a generic IT services company OR
-- The work involved generic IT services/consulting (not platform-specific) OR
-- Company name suggests technology/services (e.g., contains "Tech", "Software", "Solutions", "Systems", "Digital", "Cloud", "Data", "IT", "Information Technology")
+DOMAIN CONSISTENCY:
+- Analyze the SAME role text consistently
+- If domain is unclear or ambiguous → return null (do NOT flip between domains)
+- If multiple domains are possible → return null (do NOT randomly pick one)
+- Same role text should produce same domain result (deterministic)
 
-Using IT skills inside another industry does NOT qualify as IT domain.
-Examples:
-- "Software Developer at Bank of America" → Banking (not IT, not Software)
-- "Backend Engineer at TechCorp Solutions" → Information Technology (generic IT company)
-- "Salesforce Admin at Bank of America" → Salesforce (platform-specific, not Banking)
-
-MULTI-DOMAIN RULE:
-If multiple industries appear in the SAME role,
-select the PRIMARY revenue-driving business domain only.
-Never combine domains.
-
-ANTI-HALLUCINATION RULES:
-- Never guess without evidence
-- Never infer from skills or tools alone
-- Never default to IT without business context
-- Prefer null over incorrect classification
-- Allow reasonable inference when business context is clearly implied
-
-ALLOWED DOMAIN CONSTRAINT:
-The returned value MUST exactly match ONE of the internally allowed
-standardized domains.
-
-IMPORTANT: Platform-specific domains are allowed and should be returned when appropriate:
-- Salesforce (for Salesforce Admin/Developer/Consultant work)
-- AWS (for AWS cloud services/architecture work)
-- Microsoft (for Microsoft technologies: Azure, Dynamics, Office 365)
-- Oracle (for Oracle products: ERP, Cloud, Database)
-- SAP (for SAP implementation/consulting)
-- ServiceNow (for ServiceNow platform work)
-- Workday (for Workday HR/Finance platform work)
-- Adobe (for Adobe products: Marketing Cloud, Experience Cloud)
-- Google Cloud (for Google Cloud Platform work)
-- Azure (for Microsoft Azure cloud work)
-
-Other allowed domains include: Banking, Finance, Healthcare, IT, Software & SaaS, Manufacturing, 
-Retail, E-Commerce, Education, Government, Defense, Energy, Logistics, Legal, HR, and many more.
-
-If no allowed domain is clearly supported → return null.
-
-OUTPUT FORMAT:
-Return ONLY valid JSON.
-No explanations.
-No extra text.
+OUTPUT:
+Return ONLY valid JSON. No explanations. No extra text.
 
 JSON SCHEMA:
 {
@@ -243,6 +177,91 @@ class DomainExtractor:
         "Azure",
     ]
     
+    # Employer domain mapping (deterministic - highest priority)
+    # Maps known employer names to their domains
+    EMPLOYER_DOMAIN_MAP = {
+        # Healthcare
+        "myeyedr": "Healthcare",
+        "apollo": "Healthcare",
+        "fortis": "Healthcare",
+        "narayana": "Healthcare",
+        "max healthcare": "Healthcare",
+        "manipal": "Healthcare",
+        "apollo hospitals": "Healthcare",
+        "fortis healthcare": "Healthcare",
+        "narayana health": "Healthcare",
+        "mayo clinic": "Healthcare",
+        "cleveland clinic": "Healthcare",
+        "kaiser permanente": "Healthcare",
+        "johns hopkins": "Healthcare",
+        "mass general": "Healthcare",
+        "vancouver clinic": "Healthcare",
+        
+        # Banking
+        "bank of america": "Banking",
+        "hdfc": "Banking",
+        "icici": "Banking",
+        "sbi": "Banking",
+        "state bank": "Banking",
+        "chase": "Banking",
+        "wells fargo": "Banking",
+        "citibank": "Banking",
+        "jpmorgan": "Banking",
+        "goldman sachs": "Banking",
+        "morgan stanley": "Banking",
+        
+        # Retail
+        "walmart": "Retail",
+        "target": "Retail",
+        "costco": "Retail",
+        "home depot": "Retail",
+        
+        # E-Commerce
+        "amazon": "E-Commerce",  # Note: Amazon retail vs AWS - context matters
+        "ebay": "E-Commerce",
+        "etsy": "E-Commerce",
+        
+        # Government/Defense
+        "drdo": "Defense",
+        "isro": "Aerospace",
+        "barc": "Energy",
+        "nasa": "Aerospace",
+        "dod": "Defense",
+        "department of defense": "Defense",
+        
+        # Legal
+        "epiq systems": "Legal, Risk & Corporate Governance",
+        
+        # HR
+        "hireright": "Human Resources",
+    }
+    
+    # Healthcare keyword terms (deterministic override)
+    HEALTHCARE_KEYWORDS = [
+        "patient", "patients", "clinic", "clinics", "hospital", "hospitals",
+        "optometry", "optometrist", "optometrists",
+        "ehr", "emr", "electronic health record", "electronic medical record",
+        "medical", "healthcare", "health care", "health system",
+        "physician", "physicians", "nurse", "nurses", "doctor", "doctors",
+        "clinical", "medicare", "medicaid", "hipaa",
+        "pharmacy", "pharmaceutical", "diagnosis", "treatment", "therapy"
+    ]
+    
+    # Banking keyword terms (deterministic override)
+    BANKING_KEYWORDS = [
+        "bank", "banking", "financial institution", "credit union",
+        "mortgage", "lending", "loan", "deposit", "teller",
+        "branch banking", "commercial bank", "retail banking",
+        "investment bank", "banking services", "banking operations"
+    ]
+    
+    # Retail keyword terms (deterministic override)
+    RETAIL_KEYWORDS = [
+        "retail", "retailer", "retail store", "retail chain",
+        "store", "stores", "merchandising", "point of sale", "pos",
+        "inventory management", "retail operations", "retail sales"
+    ]
+    
     def __init__(self):
         self.ollama_host = settings.ollama_host
         self.model = "llama3.1"
@@ -290,14 +309,18 @@ class DomainExtractor:
         current_is_current = False
         
         # Reuse existing date patterns from _extract_latest_experience
-        # Enhanced to support em dash (—), en dash (–), and various date formats
+        # Enhanced to support em dash (—), en dash (–), "to", and various date formats
         date_patterns = [
             r'\b(january|february|march|april|may|june|july|august|september|october|november|december|jan|feb|mar|apr|may|jun|jul|aug|sep|sept|oct|nov|dec)\.?\s+(\d{4})\b',
             r'\b(\d{1,2})/(\d{4})\b',  # MM/YYYY
-            r'\b(\d{1,2})/(\d{4})\s*[-–—]\s*(present|current|now|today|till\s+date|till\s+now|till-date|till-now|tilldate|tillnow|til\s+date|til\s+now|til-date|til-now|tildate|tilnow|still\s+date|still\s+now|still-date|still-now|stilldate|stillnow|still|still\s+working|still\s+employed|still\s+active|to\s+date|to\s+now|to-date|to-now|todate|tonow|until\s+present|until\s+now|until\s+date|until-present|until-now|until-date|untilpresent|untilnow|untildate|up\s+to\s+present|up\s+to\s+now|up\s+to\s+date|up-to-present|up-to-now|up-to-date|uptopresent|uptonow|uptodate|as\s+of\s+now|as\s+of\s+present|as\s+of\s+date|as\s+of\s+today|as-of-now|as-of-present|as-of-date|as-of-today|asofnow|asofpresent|asofdate|asoftoday|ongoing|on-going|on\s+going|working|continuing|continue|active|currently|currently\s+working|currently\s+employed|currently\s+active)\b',  # MM/YYYY – Present (supports -, –, —)
-            r'\b(\d{4})[-\u2013\u2014]\s*(\d{1,2})\b',  # YYYY-MM/YYYY–MM/YYYY—MM (hyphen, em dash, en dash)
-            r'\b(\d{4})\s*[-–—]\s*(present|current|now|today|till\s+date|till\s+now|till-date|till-now|tilldate|tillnow|til\s+date|til\s+now|til-date|til-now|tildate|tilnow|still\s+date|still\s+now|still-date|still-now|stilldate|stillnow|still|still\s+working|still\s+employed|still\s+active|to\s+date|to\s+now|to-date|to-now|todate|tonow|until\s+present|until\s+now|until\s+date|until-present|until-now|until-date|untilpresent|untilnow|untildate|up\s+to\s+present|up\s+to\s+now|up\s+to\s+date|up-to-present|up-to-now|up-to-date|uptopresent|uptonow|uptodate|as\s+of\s+now|as\s+of\s+present|as\s+of\s+date|as\s+of\s+today|as-of-now|as-of-present|as-of-date|as-of-today|asofnow|asofpresent|asofdate|asoftoday|ongoing|on-going|on\s+going|working|continuing|continue|active|currently|currently\s+working|currently\s+employed|currently\s+active)\b',  # YYYY – Present (supports -, –, —)
-            r'\b(jan|feb|mar|apr|may|jun|jul|aug|sep|sept|oct|nov|dec)\'?(\d{2})\s*[-–—]\s*(present|current|now|jan|feb|mar|apr|may|jun|jul|aug|sep|sept|oct|nov|dec|\d{2,4})\b',  # Jan'23 – Present or Jan'23 – Now (supports -, –, —)
+            r'\b(\d{1,2})/(\d{4})\s*[-–—\s]+\s*(present|current|now|today|till\s+date|till\s+now|till-date|till-now|tilldate|tillnow|til\s+date|til\s+now|til-date|til-now|tildate|tilnow|still\s+date|still\s+now|still-date|still-now|stilldate|stillnow|still|still\s+working|still\s+employed|still\s+active|to\s+date|to\s+now|to-date|to-now|todate|tonow|until\s+present|until\s+now|until\s+date|until-present|until-now|until-date|untilpresent|untilnow|untildate|up\s+to\s+present|up\s+to\s+now|up\s+to\s+date|up-to-present|up-to-now|up-to-date|uptopresent|uptonow|uptodate|as\s+of\s+now|as\s+of\s+present|as\s+of\s+date|as\s+of\s+today|as-of-now|as-of-present|as-of-date|as-of-today|asofnow|asofpresent|asofdate|asoftoday|ongoing|on-going|on\s+going|working|continuing|continue|active|currently|currently\s+working|currently\s+employed|currently\s+active)\b',  # MM/YYYY – Present (supports -, –, —, "to")
+            r'\b(\d{1,2})/(\d{4})\s+to\s+(\d{1,2})/(\d{4})\b',  # MM/YYYY to MM/YYYY
+            r'\b(\d{4})[-\u2013\u2014\s]+\s*(\d{1,2})\b',  # YYYY-MM/YYYY–MM/YYYY—MM (hyphen, em dash, en dash)
+            r'\b(\d{4})\s+to\s+(\d{4})\b',  # YYYY to YYYY
+            r'\b(\d{4})\s*[-–—\s]+\s*(present|current|now|today|till\s+date|till\s+now|till-date|till-now|tilldate|tillnow|til\s+date|til\s+now|til-date|til-now|tildate|tilnow|still\s+date|still\s+now|still-date|still-now|stilldate|stillnow|still|still\s+working|still\s+employed|still\s+active|to\s+date|to\s+now|to-date|to-now|todate|tonow|until\s+present|until\s+now|until\s+date|until-present|until-now|until-date|untilpresent|untilnow|untildate|up\s+to\s+present|up\s+to\s+now|up\s+to\s+date|up-to-present|up-to-now|up-to-date|uptopresent|uptonow|uptodate|as\s+of\s+now|as\s+of\s+present|as\s+of\s+date|as\s+of\s+today|as-of-now|as-of-present|as-of-date|as-of-today|asofnow|asofpresent|asofdate|asoftoday|ongoing|on-going|on\s+going|working|continuing|continue|active|currently|currently\s+working|currently\s+employed|currently\s+active)\b',  # YYYY – Present (supports -, –, —, "to")
+            r'\b(january|february|march|april|may|june|july|august|september|october|november|december|jan|feb|mar|apr|may|jun|jul|aug|sep|sept|oct|nov|dec)\.?\s+(\d{4})\s+to\s+(january|february|march|april|may|june|july|august|september|october|november|december|jan|feb|mar|apr|may|jun|jul|aug|sep|sept|oct|nov|dec)\.?\s+(\d{4})\b',  # Month YYYY to Month YYYY
+            r'\b(jan|feb|mar|apr|may|jun|jul|aug|sep|sept|oct|nov|dec)\'?(\d{2})\s*[-–—\s]+\s*(present|current|now|jan|feb|mar|apr|may|jun|jul|aug|sep|sept|oct|nov|dec|\d{2,4})\b',  # Jan'23 – Present or Jan'23 – Now (supports -, –, —, "to")
+            r'\b(jan|feb|mar|apr|may|jun|jul|aug|sep|sept|oct|nov|dec)\'?(\d{2})\s+to\s+(jan|feb|mar|apr|may|jun|jul|aug|sep|sept|oct|nov|dec)\'?(\d{2})\b',  # Jan'23 to Dec'23
             r'\b(19[5-9]\d|20[0-3]\d)\b',  # Year only
             # Comprehensive ongoing employment keywords
             r'\b(present|current|now|today|till\s+date|till\s+now|till-date|till-now|tilldate|tillnow|til\s+date|til\s+now|til-date|til-now|tildate|tilnow|still\s+date|still\s+now|still-date|still-now|stilldate|stillnow|still|still\s+working|still\s+employed|still\s+active|to\s+date|to\s+now|to-date|to-now|todate|tonow|until\s+present|until\s+now|until\s+date|until-present|until-now|until-date|untilpresent|untilnow|untildate|up\s+to\s+present|up\s+to\s+now|up\s+to\s+date|up-to-present|up-to-now|up-to-date|uptopresent|uptonow|uptodate|as\s+of\s+now|as\s+of\s+present|as\s+of\s+date|as\s+of\s+today|as-of-now|as-of-present|as-of-date|as-of-today|asofnow|asofpresent|asofdate|asoftoday|ongoing|on-going|on\s+going|working|continuing|continue|active|currently|currently\s+working|currently\s+employed|currently\s+active)\b',
@@ -500,6 +523,393 @@ class DomainExtractor:
         
         return latest_role
     
+    def _has_business_context(self, role_text: str) -> bool:
+        """
+        Check if role text has clear business/company context.
+        This ensures we only call LLM when role has meaningful business indicators.
+        
+        Args:
+            role_text: The role text to validate
+            
+        Returns:
+            True if role has business context, False otherwise
+        """
+        if not role_text or len(role_text.strip()) < 20:
+            return False
+        
+        text_lower = role_text.lower()
+        
+        # Company/business indicators (high confidence)
+        company_indicators = [
+            r'\b(company|corporation|corp|inc|ltd|llc|pvt|private|limited|enterprises|solutions|services|systems|technologies|tech|group|holdings)\b',
+            r'\b(worked at|employed at|worked for|employed by|at [A-Z][a-z]+)\b',
+            r'\b(client|customer|vendor|partner)\b',
+        ]
+        
+        # Job title + company pattern
+        job_title_patterns = [
+            r'\b(engineer|developer|manager|director|analyst|consultant|specialist|architect|lead|senior|junior)\s+.*\b(at|for|with)\b',
+            r'\b(software|senior|junior|principal|staff)\s+(engineer|developer|manager|analyst)\b',
+        ]
+        
+        # Check for company indicators
+        has_company = any(re.search(pattern, text_lower, re.IGNORECASE) for pattern in company_indicators)
+        
+        # Check for job title + company pattern
+        has_job_company_pattern = any(re.search(pattern, text_lower, re.IGNORECASE) for pattern in job_title_patterns)
+        
+        # Check for explicit company names (capitalized words that look like company names)
+        # Pattern: Job Title - Company Name or Company Name format
+        company_name_pattern = r'\b([A-Z][a-z]+(?:\s+[A-Z][a-z]+)*)\s+(Pvt|Ltd|Inc|Corp|LLC|Limited|Corporation|Solutions|Services|Systems|Technologies|Group)\b'
+        has_company_name = bool(re.search(company_name_pattern, role_text))
+        
+        # Also check for standalone capitalized company-like phrases
+        # Pattern: "ABC Company" or "XYZ Solutions"
+        standalone_company = re.search(r'\b([A-Z]{2,}(?:\s+[A-Z][a-z]+)?)\s+(Company|Corp|Inc|Ltd|Solutions|Services|Systems|Technologies)\b', role_text)
+        has_standalone_company = bool(standalone_company)
+        
+        return has_company or has_job_company_pattern or has_company_name or has_standalone_company
+    
+    def _validate_role_isolation(self, role: 'Role', all_roles: List['Role'], resume_text: str) -> tuple[bool, str]:
+        """
+        Strictly validate that a role is properly isolated before sending to LLM.
+        This prevents sending mixed/multiple roles to LLM.
+        
+        Args:
+            role: The role to validate
+            all_roles: All extracted roles (for context)
+            resume_text: Full resume text (for validation)
+            
+        Returns:
+            Tuple of (is_valid, reason)
+        """
+        if not role or not role.text:
+            return False, "Role is empty"
+        
+        role_text = role.text.strip()
+        
+        # Check 1: Role text must be reasonable length
+        if len(role_text) < 30:
+            return False, f"Role text too short ({len(role_text)} chars)"
+        
+        if len(role_text) > self.MAX_ROLE_CHARS * 2:  # Allow some buffer
+            return False, f"Role text suspiciously long ({len(role_text)} chars) - may contain multiple roles"
+        
+        # Check 2: Must have business context
+        if not self._has_business_context(role_text):
+            return False, "Role lacks clear business/company context"
+        
+        # Check 3: Check for multiple date ranges in role text (indicates multiple roles mixed)
+        date_pattern = r'\b(19[5-9]\d|20[0-3]\d)\b'
+        years_in_role = re.findall(date_pattern, role_text)
+        if len(years_in_role) > 4:  # More than 2 date ranges (4 years) suggests multiple roles
+            return False, f"Role text contains too many date references ({len(years_in_role)} years) - likely multiple roles"
+        
+        # Check 4: Check for multiple company indicators (suggests multiple roles)
+        company_pattern = r'\b(company|corporation|corp|inc|ltd|llc|pvt|limited|solutions|services|systems|technologies)\b'
+        company_matches = re.findall(company_pattern, role_text, re.IGNORECASE)
+        if len(company_matches) > 3:  # Multiple company mentions suggest multiple roles
+            return False, f"Role text contains too many company references ({len(company_matches)}) - likely multiple roles"
+        
+        # Check 5: Check for role separation keywords that suggest multiple roles
+        separation_keywords = [
+            r'\b(previous|prior|earlier|before|also worked|also|additionally)\s+(at|for|as|in)\b',
+            r'\b(prior to|before joining|earlier role|previous position)\b',
+        ]
+        for pattern in separation_keywords:
+            if re.search(pattern, role_text, re.IGNORECASE):
+                return False, "Role text contains separation keywords - likely multiple roles mixed"
+        
+        # Check 6: If we have multiple roles, ensure selected role is clearly the latest
+        if len(all_roles) > 1:
+            # Verify this role has highest score
+            role_scores = [(r, r.get_score()) for r in all_roles]
+            role_scores.sort(key=lambda x: x[1], reverse=True)
+            if role_scores[0][0] != role:
+                return False, "Selected role is not the most recent according to scoring"
+        
+        # Check 7: Ensure role text doesn't contain education section markers
+        education_markers = [
+            r'\b(education|academic|qualification|degree|university|college|school)\s*:',
+            r'\b(bachelor|master|phd|doctorate|graduated)\b',
+        ]
+        for pattern in education_markers:
+            if re.search(pattern, role_text, re.IGNORECASE):
+                # Check if it's in work context (e.g., "Education sector") vs academic section
+                if not re.search(r'\b(worked|employed|role|position|job|experience|sector|industry)\b', role_text, re.IGNORECASE):
+                    return False, "Role text contains education section markers without work context"
+        
+        # Check 8: Ensure role has a date (for proper isolation confidence)
+        # If role has no date at all, it's harder to verify it's the latest
+        if not role.date_text or not role.date_text.strip():
+            # Allow if it's the only role, but be more strict if multiple roles exist
+            if len(all_roles) > 1:
+                return False, "Role has no date and multiple roles exist - cannot verify it's the latest"
+            # If single role but no date, still require strong business context
+            if not self._has_business_context(role_text):
+                return False, "Single role with no date and weak business context - low confidence"
+        
+        return True, "Role is properly isolated"
+    
+    def _extract_employer_name(self, role_text: str) -> Optional[str]:
+        """
+        Extract employer/company name from role text.
+        Returns normalized company name (lowercase, cleaned) or None.
+        """
+        if not role_text:
+            return None
+        
+        text_lower = role_text.lower()
+        
+        # Pattern 1: "Job Title at Company Name" or "Job Title - Company Name"
+        patterns = [
+            r'\bat\s+([A-Z][a-zA-Z\s&]+(?:Inc|Ltd|LLC|Corp|Corporation|Limited|Pvt|Private|Solutions|Services|Systems|Technologies|Group|Holdings)?)',
+            r'[-–—]\s*([A-Z][a-zA-Z\s&]+(?:Inc|Ltd|LLC|Corp|Corporation|Limited|Pvt|Private|Solutions|Services|Systems|Technologies|Group|Holdings)?)',
+            r'\b([A-Z][a-zA-Z\s&]+(?:Inc|Ltd|LLC|Corp|Corporation|Limited|Pvt|Private))\b',
+        ]
+        
+        for pattern in patterns:
+            match = re.search(pattern, role_text)
+            if match:
+                company = match.group(1).strip()
+                # Clean up common suffixes
+                company = re.sub(r'\s+(Inc|Ltd|LLC|Corp|Corporation|Limited|Pvt|Private|Solutions|Services|Systems|Technologies|Group|Holdings)$', '', company, flags=re.IGNORECASE)
+                return company.lower().strip()
+        
+        # Pattern 2: Look for capitalized company-like phrases
+        # "ABC Company" or "XYZ Solutions"
+        company_pattern = r'\b([A-Z][a-z]+(?:\s+[A-Z][a-z]+)*)\s+(Company|Corp|Inc|Ltd|Solutions|Services|Systems|Technologies|Group)\b'
+        match = re.search(company_pattern, role_text)
+        if match:
+            company = match.group(1).strip()
+            return company.lower().strip()
+        
+        return None
+    
+    def _check_employer_domain_map(self, role_text: str) -> Optional[str]:
+        """
+        STEP 1: Check employer domain mapping (deterministic).
+        Returns domain if employer matches known companies, None otherwise.
+        """
+        if not role_text:
+            return None
+        
+        employer_name = self._extract_employer_name(role_text)
+        if not employer_name:
+            return None
+        
+        # Direct match
+        if employer_name in self.EMPLOYER_DOMAIN_MAP:
+            domain = self.EMPLOYER_DOMAIN_MAP[employer_name]
+            logger.info(
+                f"✅ Deterministic: Employer domain map match - {employer_name} → {domain}",
+                extra={"employer": employer_name, "domain": domain, "method": "employer_map"}
+            )
+            return domain
+        
+        # Partial match (employer name contains key)
+        text_lower = role_text.lower()
+        for employer_key, domain in self.EMPLOYER_DOMAIN_MAP.items():
+            if employer_key in text_lower:
+                logger.info(
+                    f"✅ Deterministic: Employer domain map partial match - {employer_key} → {domain}",
+                    extra={"employer_key": employer_key, "domain": domain, "method": "employer_map_partial"}
+                )
+                return domain
+        
+        return None
+    
+    def _check_healthcare_keywords(self, role_text: str) -> Optional[str]:
+        """
+        STEP 2: Check healthcare keyword override (deterministic).
+        Returns "Healthcare" if 2+ healthcare terms found, None otherwise.
+        """
+        if not role_text:
+            return None
+        
+        text_lower = role_text.lower()
+        matches = sum(1 for keyword in self.HEALTHCARE_KEYWORDS if keyword in text_lower)
+        
+        if matches >= 2:
+            logger.info(
+                f"✅ Deterministic: Healthcare keyword override - {matches} healthcare terms found",
+                extra={"matches": matches, "domain": "Healthcare", "method": "healthcare_keywords"}
+            )
+            return "Healthcare"
+        
+        return None
+    
+    def _check_banking_keywords(self, role_text: str) -> Optional[str]:
+        """
+        STEP 2: Check banking keyword override (deterministic).
+        Returns "Banking" if 2+ banking terms found, None otherwise.
+        """
+        if not role_text:
+            return None
+        
+        text_lower = role_text.lower()
+        matches = sum(1 for keyword in self.BANKING_KEYWORDS if keyword in text_lower)
+        
+        if matches >= 2:
+            logger.info(
+                f"✅ Deterministic: Banking keyword override - {matches} banking terms found",
+                extra={"matches": matches, "domain": "Banking", "method": "banking_keywords"}
+            )
+            return "Banking"
+        
+        return None
+    
+    def _check_retail_keywords(self, role_text: str) -> Optional[str]:
+        """
+        STEP 2: Check retail keyword override (deterministic).
+        Returns "Retail" if 2+ retail terms found, None otherwise.
+        """
+        if not role_text:
+            return None
+        
+        text_lower = role_text.lower()
+        matches = sum(1 for keyword in self.RETAIL_KEYWORDS if keyword in text_lower)
+        
+        if matches >= 2:
+            logger.info(
+                f"✅ Deterministic: Retail keyword override - {matches} retail terms found",
+                extra={"matches": matches, "domain": "Retail", "method": "retail_keywords"}
+            )
+            return "Retail"
+        
+        return None
+    
+    def _check_platform_domain_guard(self, role_text: str) -> Optional[str]:
+        """
+        STEP 3: Platform domain guard (deterministic).
+        Returns platform domain ONLY if job title explicitly mentions the platform.
+        Prevents hallucination from skills/technologies.
+        """
+        if not role_text:
+            return None
+        
+        text_lower = role_text.lower()
+        
+        # AWS guard - STRICT
+        aws_patterns = [
+            r'\baws\s+(solutions\s+)?architect',
+            r'\baws\s+(cloud\s+)?engineer',
+            r'\baws\s+consultant',
+            r'\baws\s+developer',
+            r'\bamazon\s+web\s+services\s+(solutions\s+)?architect',
+        ]
+        for pattern in aws_patterns:
+            if re.search(pattern, text_lower):
+                logger.info(
+                    f"✅ Deterministic: Platform domain guard - explicit AWS role detected",
+                    extra={"domain": "AWS", "method": "platform_guard_aws"}
+                )
+                return "AWS"
+        
+        # Salesforce guard - STRICT
+        salesforce_patterns = [
+            r'\bsalesforce\s+(admin|administrator)',
+            r'\bsalesforce\s+developer',
+            r'\bsalesforce\s+consultant',
+            r'\bsalesforce\s+architect',
+        ]
+        for pattern in salesforce_patterns:
+            if re.search(pattern, text_lower):
+                logger.info(
+                    f"✅ Deterministic: Platform domain guard - explicit Salesforce role detected",
+                    extra={"domain": "Salesforce", "method": "platform_guard_salesforce"}
+                )
+                return "Salesforce"
+        
+        # SAP guard - STRICT
+        sap_patterns = [
+            r'\bsap\s+consultant',
+            r'\bsap\s+developer',
+            r'\bsap\s+architect',
+            r'\bsap\s+implementation',
+        ]
+        for pattern in sap_patterns:
+            if re.search(pattern, text_lower):
+                logger.info(
+                    f"✅ Deterministic: Platform domain guard - explicit SAP role detected",
+                    extra={"domain": "SAP", "method": "platform_guard_sap"}
+                )
+                return "SAP"
+        
+        # Oracle guard - STRICT
+        oracle_patterns = [
+            r'\boracle\s+consultant',
+            r'\boracle\s+developer',
+            r'\boracle\s+architect',
+            r'\boracle\s+erp',
+        ]
+        for pattern in oracle_patterns:
+            if re.search(pattern, text_lower):
+                logger.info(
+                    f"✅ Deterministic: Platform domain guard - explicit Oracle role detected",
+                    extra={"domain": "Oracle", "method": "platform_guard_oracle"}
+                )
+                return "Oracle"
+        
+        # Microsoft guard - STRICT
+        microsoft_patterns = [
+            r'\bmicrosoft\s+consultant',
+            r'\bmicrosoft\s+architect',
+            r'\bmicrosoft\s+stack',
+            r'\bmicrosoft\s+technologies',
+        ]
+        for pattern in microsoft_patterns:
+            if re.search(pattern, text_lower):
+                logger.info(
+                    f"✅ Deterministic: Platform domain guard - explicit Microsoft role detected",
+                    extra={"domain": "Microsoft", "method": "platform_guard_microsoft"}
+                )
+                return "Microsoft"
+        
+        # ServiceNow guard
+        if re.search(r'\bservicenow\s+(admin|developer|consultant)', text_lower):
+            logger.info(
+                f"✅ Deterministic: Platform domain guard - explicit ServiceNow role detected",
+                extra={"domain": "ServiceNow", "method": "platform_guard_servicenow"}
+            )
+            return "ServiceNow"
+        
+        # Workday guard
+        if re.search(r'\bworkday\s+(consultant|developer|admin)', text_lower):
+            logger.info(
+                f"✅ Deterministic: Platform domain guard - explicit Workday role detected",
+                extra={"domain": "Workday", "method": "platform_guard_workday"}
+            )
+            return "Workday"
+        
+        # Azure guard
+        azure_patterns = [
+            r'\bazure\s+(architect|engineer|consultant)',
+            r'\bmicrosoft\s+azure\s+(architect|engineer)',
+        ]
+        for pattern in azure_patterns:
+            if re.search(pattern, text_lower):
+                logger.info(
+                    f"✅ Deterministic: Platform domain guard - explicit Azure role detected",
+                    extra={"domain": "Azure", "method": "platform_guard_azure"}
+                )
+                return "Azure"
+        
+        # Google Cloud guard
+        gcp_patterns = [
+            r'\bgoogle\s+cloud\s+(architect|engineer|consultant)',
+            r'\bgcp\s+(architect|engineer)',
+        ]
+        for pattern in gcp_patterns:
+            if re.search(pattern, text_lower):
+                logger.info(
+                    f"✅ Deterministic: Platform domain guard - explicit Google Cloud role detected",
+                    extra={"domain": "Google Cloud", "method": "platform_guard_gcp"}
+                )
+                return "Google Cloud"
+        
+        return None
+    
     def _extract_latest_role(self, resume_text: str) -> Optional['Role']:
         """
         Extract the single most recent role from resume text.
@@ -563,14 +973,18 @@ class DomainExtractor:
         ]
         
         # Date patterns to identify experience entries
-        # Enhanced to support em dash (—), en dash (–), and various date formats
+        # Enhanced to support em dash (—), en dash (–), "to", and various date formats
         date_patterns = [
             r'\b(january|february|march|april|may|june|july|august|september|october|november|december|jan|feb|mar|apr|may|jun|jul|aug|sep|sept|oct|nov|dec)\.?\s+(\d{4})\b',
             r'\b(\d{1,2})/(\d{4})\b',  # MM/YYYY
-            r'\b(\d{1,2})/(\d{4})\s*[-–—]\s*(present|current|now|today|till\s+date|till\s+now|till-date|till-now|tilldate|tillnow|til\s+date|til\s+now|til-date|til-now|tildate|tilnow|still\s+date|still\s+now|still-date|still-now|stilldate|stillnow|still|still\s+working|still\s+employed|still\s+active|to\s+date|to\s+now|to-date|to-now|todate|tonow|until\s+present|until\s+now|until\s+date|until-present|until-now|until-date|untilpresent|untilnow|untildate|up\s+to\s+present|up\s+to\s+now|up\s+to\s+date|up-to-present|up-to-now|up-to-date|uptopresent|uptonow|uptodate|as\s+of\s+now|as\s+of\s+present|as\s+of\s+date|as\s+of\s+today|as-of-now|as-of-present|as-of-date|as-of-today|asofnow|asofpresent|asofdate|asoftoday|ongoing|on-going|on\s+going|working|continuing|continue|active|currently|currently\s+working|currently\s+employed|currently\s+active)\b',  # MM/YYYY – Present (supports -, –, —)
-            r'\b(\d{4})[-\u2013\u2014]\s*(\d{1,2})\b',  # YYYY-MM/YYYY–MM/YYYY—MM (hyphen, em dash, en dash)
-            r'\b(\d{4})\s*[-–—]\s*(present|current|now|today|till\s+date|till\s+now|till-date|till-now|tilldate|tillnow|til\s+date|til\s+now|til-date|til-now|tildate|tilnow|still\s+date|still\s+now|still-date|still-now|stilldate|stillnow|still|still\s+working|still\s+employed|still\s+active|to\s+date|to\s+now|to-date|to-now|todate|tonow|until\s+present|until\s+now|until\s+date|until-present|until-now|until-date|untilpresent|untilnow|untildate|up\s+to\s+present|up\s+to\s+now|up\s+to\s+date|up-to-present|up-to-now|up-to-date|uptopresent|uptonow|uptodate|as\s+of\s+now|as\s+of\s+present|as\s+of\s+date|as\s+of\s+today|as-of-now|as-of-present|as-of-date|as-of-today|asofnow|asofpresent|asofdate|asoftoday|ongoing|on-going|on\s+going|working|continuing|continue|active|currently|currently\s+working|currently\s+employed|currently\s+active)\b',  # YYYY – Present (supports -, –, —)
-            r'\b(jan|feb|mar|apr|may|jun|jul|aug|sep|sept|oct|nov|dec)\'?(\d{2})\s*[-–—]\s*(present|current|now|jan|feb|mar|apr|may|jun|jul|aug|sep|sept|oct|nov|dec|\d{2,4})\b',  # Jan'23 – Present or Jan'23 – Now (supports -, –, —)
+            r'\b(\d{1,2})/(\d{4})\s*[-–—\s]+\s*(present|current|now|today|till\s+date|till\s+now|till-date|till-now|tilldate|tillnow|til\s+date|til\s+now|til-date|til-now|tildate|tilnow|still\s+date|still\s+now|still-date|still-now|stilldate|stillnow|still|still\s+working|still\s+employed|still\s+active|to\s+date|to\s+now|to-date|to-now|todate|tonow|until\s+present|until\s+now|until\s+date|until-present|until-now|until-date|untilpresent|untilnow|untildate|up\s+to\s+present|up\s+to\s+now|up\s+to\s+date|up-to-present|up-to-now|up-to-date|uptopresent|uptonow|uptodate|as\s+of\s+now|as\s+of\s+present|as\s+of\s+date|as\s+of\s+today|as-of-now|as-of-present|as-of-date|as-of-today|asofnow|asofpresent|asofdate|asoftoday|ongoing|on-going|on\s+going|working|continuing|continue|active|currently|currently\s+working|currently\s+employed|currently\s+active)\b',  # MM/YYYY – Present (supports -, –, —, "to")
+            r'\b(\d{1,2})/(\d{4})\s+to\s+(\d{1,2})/(\d{4})\b',  # MM/YYYY to MM/YYYY
+            r'\b(\d{4})[-\u2013\u2014\s]+\s*(\d{1,2})\b',  # YYYY-MM/YYYY–MM/YYYY—MM (hyphen, em dash, en dash)
+            r'\b(\d{4})\s+to\s+(\d{4})\b',  # YYYY to YYYY
+            r'\b(\d{4})\s*[-–—\s]+\s*(present|current|now|today|till\s+date|till\s+now|till-date|till-now|tilldate|tillnow|til\s+date|til\s+now|til-date|til-now|tildate|tilnow|still\s+date|still\s+now|still-date|still-now|stilldate|stillnow|still|still\s+working|still\s+employed|still\s+active|to\s+date|to\s+now|to-date|to-now|todate|tonow|until\s+present|until\s+now|until\s+date|until-present|until-now|until-date|untilpresent|untilnow|untildate|up\s+to\s+present|up\s+to\s+now|up\s+to\s+date|up-to-present|up-to-now|up-to-date|uptopresent|uptonow|uptodate|as\s+of\s+now|as\s+of\s+present|as\s+of\s+date|as\s+of\s+today|as-of-now|as-of-present|as-of-date|as-of-today|asofnow|asofpresent|asofdate|asoftoday|ongoing|on-going|on\s+going|working|continuing|continue|active|currently|currently\s+working|currently\s+employed|currently\s+active)\b',  # YYYY – Present (supports -, –, —, "to")
+            r'\b(january|february|march|april|may|june|july|august|september|october|november|december|jan|feb|mar|apr|may|jun|jul|aug|sep|sept|oct|nov|dec)\.?\s+(\d{4})\s+to\s+(january|february|march|april|may|june|july|august|september|october|november|december|jan|feb|mar|apr|may|jun|jul|aug|sep|sept|oct|nov|dec)\.?\s+(\d{4})\b',  # Month YYYY to Month YYYY
+            r'\b(jan|feb|mar|apr|may|jun|jul|aug|sep|sept|oct|nov|dec)\'?(\d{2})\s*[-–—\s]+\s*(present|current|now|jan|feb|mar|apr|may|jun|jul|aug|sep|sept|oct|nov|dec|\d{2,4})\b',  # Jan'23 – Present or Jan'23 – Now (supports -, –, —, "to")
+            r'\b(jan|feb|mar|apr|may|jun|jul|aug|sep|sept|oct|nov|dec)\'?(\d{2})\s+to\s+(jan|feb|mar|apr|may|jun|jul|aug|sep|sept|oct|nov|dec)\'?(\d{2})\b',  # Jan'23 to Dec'23
             r'\b(19[5-9]\d|20[0-3]\d)\b',  # Year only
             # Comprehensive ongoing employment keywords
             r'\b(present|current|now|today|till\s+date|till\s+now|till-date|till-now|tilldate|tillnow|til\s+date|til\s+now|til-date|til-now|tildate|tilnow|still\s+date|still\s+now|still-date|still-now|stilldate|stillnow|still|still\s+working|still\s+employed|still\s+active|to\s+date|to\s+now|to-date|to-now|todate|tonow|until\s+present|until\s+now|until\s+date|until-present|until-now|until-date|untilpresent|untilnow|untildate|up\s+to\s+present|up\s+to\s+now|up\s+to\s+date|up-to-present|up-to-now|up-to-date|uptopresent|uptonow|uptodate|as\s+of\s+now|as\s+of\s+present|as\s+of\s+date|as\s+of\s+today|as-of-now|as-of-present|as-of-date|as-of-today|asofnow|asofpresent|asofdate|asoftoday|ongoing|on-going|on\s+going|working|continuing|continue|active|currently|currently\s+working|currently\s+employed|currently\s+active)\b',
@@ -1696,6 +2110,72 @@ class DomainExtractor:
         
         return None
     
+    def _validate_llm_domain(self, llm_domain: str, role_text: str) -> tuple[bool, str]:
+        """
+        Validate LLM domain result to prevent hallucinations.
+        
+        Args:
+            llm_domain: Domain returned by LLM
+            role_text: The role text that was analyzed
+            
+        Returns:
+            Tuple of (is_valid, reason)
+        """
+        if not llm_domain or not role_text:
+            return False, "Empty domain or role text"
+        
+        domain_lower = llm_domain.lower()
+        text_lower = role_text.lower()
+        
+        # Check 1: If domain matches employer map → ACCEPT (LLM is correct)
+        employer_domain = self._check_employer_domain_map(role_text)
+        if employer_domain and domain_lower == employer_domain.lower():
+            return True, f"LLM domain matches employer map: {llm_domain}"
+        
+        # Check 2: If domain matches healthcare keywords → ACCEPT (LLM is correct)
+        healthcare_domain = self._check_healthcare_keywords(role_text)
+        if healthcare_domain and domain_lower == healthcare_domain.lower():
+            return True, f"LLM domain matches healthcare keywords: {llm_domain}"
+        
+        # Check 3: If domain matches banking keywords → ACCEPT (LLM is correct)
+        banking_domain = self._check_banking_keywords(role_text)
+        if banking_domain and domain_lower == banking_domain.lower():
+            return True, f"LLM domain matches banking keywords: {llm_domain}"
+        
+        # Check 4: If domain matches retail keywords → ACCEPT (LLM is correct)
+        retail_domain = self._check_retail_keywords(role_text)
+        if retail_domain and domain_lower == retail_domain.lower():
+            return True, f"LLM domain matches retail keywords: {llm_domain}"
+        
+        # Check 5: Platform domain validation (CRITICAL - prevent hallucination)
+        platform_domains = ["aws", "salesforce", "sap", "oracle", "microsoft", "servicenow", 
+                           "workday", "adobe", "google cloud", "azure"]
+        
+        if domain_lower in platform_domains:
+            # Check if explicit platform role exists
+            platform_guard_domain = self._check_platform_domain_guard(role_text)
+            if platform_guard_domain and domain_lower == platform_guard_domain.lower():
+                # LLM returned platform domain AND explicit role exists → ACCEPT
+                return True, f"LLM platform domain validated: {llm_domain} (explicit role found)"
+            else:
+                # LLM returned platform domain BUT no explicit role → REJECT (hallucination)
+                return False, f"LLM platform domain REJECTED: {llm_domain} (no explicit platform role - likely hallucination)"
+        
+        # Check 6: If employer map suggests different domain → REJECT (LLM is wrong)
+        if employer_domain and domain_lower != employer_domain.lower():
+            return False, f"LLM domain REJECTED: {llm_domain} (employer map suggests: {employer_domain})"
+        
+        # Check 7: If healthcare keywords suggest Healthcare but LLM returned something else → REJECT
+        if healthcare_domain and domain_lower != healthcare_domain.lower():
+            return False, f"LLM domain REJECTED: {llm_domain} (healthcare keywords suggest: {healthcare_domain})"
+        
+        # Check 8: If banking keywords suggest Banking but LLM returned something else → REJECT
+        if banking_domain and domain_lower != banking_domain.lower():
+            return False, f"LLM domain REJECTED: {llm_domain} (banking keywords suggest: {banking_domain})"
+        
+        # If no clear validation rules match → ACCEPT (LLM may be handling edge case)
+        return True, f"LLM domain ACCEPTED: {llm_domain} (no validation rules to contradict)"
+    
     def _extract_json(self, text: str) -> Dict:
         """Extract JSON object from LLM response."""
         if not text:
@@ -1808,67 +2288,146 @@ class DomainExtractor:
                 model_to_use = available_model
             
             # Extract latest role (role-based approach - PRIMARY)
-            latest_role = self._extract_latest_role(resume_text)
+            roles = self._extract_roles(resume_text)
+            latest_role = self._select_latest_role(roles) if roles else None
             
-            # Handle no-date resume case: Dates → Titles → Keywords → null
+            # Handle no-date resume case: Fallback to experience-based extraction
             if not latest_role:
-                logger.debug(
-                    "No roles found with date ranges, using title inference and keyword fallback",
-                    extra={"file_name": filename}
+                logger.info(
+                    "⚠️ No roles found with date ranges - falling back to experience-based extraction",
+                    extra={
+                        "file_name": filename,
+                        "reason": "Cannot isolate single role without dates - using experience fallback"
+                    }
                 )
-                latest_experience = self._extract_latest_experience(resume_text)
-                if not latest_experience or not latest_experience.strip():
+                # Fallback: Use experience-based extraction
+                experience_text = self._extract_latest_experience(resume_text)
+                if experience_text and experience_text.strip() and len(experience_text.strip()) > 50:
+                    # Use experience text for domain extraction
+                    text_to_analyze = experience_text[:self.MAX_ROLE_CHARS] if len(experience_text) > self.MAX_ROLE_CHARS else experience_text
+                    logger.info(
+                        f"✅ Using experience-based extraction fallback ({len(text_to_analyze)} chars)",
+                        extra={
+                            "file_name": filename,
+                            "experience_length": len(experience_text),
+                            "truncated_length": len(text_to_analyze),
+                            "method": "experience_fallback"
+                        }
+                    )
+                else:
+                    # Final fallback: Use first part of resume text
+                    text_to_analyze = resume_text[:self.MAX_ROLE_CHARS] if len(resume_text) > self.MAX_ROLE_CHARS else resume_text
+                    logger.info(
+                        f"⚠️ Experience extraction also failed - using resume text fallback ({len(text_to_analyze)} chars)",
+                        extra={
+                            "file_name": filename,
+                            "resume_length": len(resume_text),
+                            "method": "resume_text_fallback"
+                        }
+                    )
+                
+                # Skip role validation since we're using fallback
+                if not text_to_analyze or not text_to_analyze.strip():
                     logger.warning(
-                        f"No extractable experience text found for title inference",
+                        f"No extractable text found for domain extraction",
                         extra={"file_name": filename}
                     )
                     return None
                 
-                # Try title inference first
-                domain = self._infer_domain_from_job_titles(latest_experience, filename)
-                if domain:
-                    logger.info(
-                        f"✅ Domain inferred from job titles (no-date resume): {domain} for {filename}",
-                        extra={"file_name": filename, "detected_domain": domain, "method": "title_inference_no_dates"}
-                    )
-                    return domain
-                
-                # If title inference fails, try keyword fallback
-                keyword_domain = self._detect_domain_from_keywords(latest_experience, filename)
-                if keyword_domain:
-                    logger.info(
-                        f"✅ Domain detected from keywords (no-date resume): {keyword_domain} for {filename}",
-                        extra={"file_name": filename, "detected_domain": keyword_domain, "method": "keyword_fallback_no_dates"}
-                    )
-                    return keyword_domain
-                
+                # Use fallback text for LLM extraction (skip to LLM call section)
+                role_text_hash = hash(text_to_analyze[:500])
                 logger.info(
-                    f"ℹ️ No domain found via title inference or keyword fallback (no-date resume), returning null",
-                    extra={"file_name": filename}
+                    f"✅ Using fallback text for domain extraction (text: {len(text_to_analyze)} chars)",
+                    extra={
+                        "file_name": filename,
+                        "text_length": len(text_to_analyze),
+                        "text_hash": role_text_hash,
+                        "text_preview": text_to_analyze[:150],
+                        "method": "fallback_extraction"
+                    }
                 )
-                return None
+            else:
+                # CRITICAL: Strict validation before calling LLM
+                # If role cannot be properly isolated → return null (don't call LLM)
+                is_valid, validation_reason = self._validate_role_isolation(latest_role, roles, resume_text)
+                if not is_valid:
+                    logger.info(
+                        f"🔒 Role isolation validation FAILED - falling back to experience extraction",
+                        extra={
+                            "file_name": filename,
+                            "reason": validation_reason,
+                            "role_text_length": len(latest_role.text) if latest_role else 0,
+                            "role_text_preview": latest_role.text[:200] if latest_role else None,
+                        }
+                    )
+                    # Fallback to experience extraction
+                    experience_text = self._extract_latest_experience(resume_text)
+                    if experience_text and experience_text.strip() and len(experience_text.strip()) > 50:
+                        text_to_analyze = experience_text[:self.MAX_ROLE_CHARS] if len(experience_text) > self.MAX_ROLE_CHARS else experience_text
+                        logger.info(
+                            f"✅ Using experience-based extraction fallback after validation failure ({len(text_to_analyze)} chars)",
+                            extra={
+                                "file_name": filename,
+                                "method": "experience_fallback_after_validation"
+                            }
+                        )
+                    else:
+                        text_to_analyze = resume_text[:self.MAX_ROLE_CHARS] if len(resume_text) > self.MAX_ROLE_CHARS else resume_text
+                        logger.info(
+                            f"⚠️ Using resume text fallback after validation failure ({len(text_to_analyze)} chars)",
+                            extra={
+                                "file_name": filename,
+                                "method": "resume_text_fallback_after_validation"
+                            }
+                        )
+                    
+                    if not text_to_analyze or not text_to_analyze.strip():
+                        logger.warning(
+                            f"No extractable text found for domain extraction",
+                            extra={"file_name": filename}
+                        )
+                        return None
+                    
+                    role_text_hash = hash(text_to_analyze[:500])
+                else:
+                    # Role-based path: Use latest role text (already truncated to MAX_ROLE_CHARS in _extract_latest_role)
+                    text_to_analyze = latest_role.text
+                    
+                    # Log role text hash for debugging (to detect if same role is being reused)
+                    role_text_hash = hash(text_to_analyze[:500])  # Hash first 500 chars for comparison
+                    
+                    logger.info(
+                        f"✅ Role isolation VALIDATED - using role-based extraction (role text: {len(text_to_analyze)} chars, "
+                        f"is_current: {latest_role.is_current}, end_year: {latest_role.end_year})",
+                        extra={
+                            "file_name": filename,
+                            "role_text_length": len(text_to_analyze),
+                            "is_current": latest_role.is_current,
+                            "end_year": latest_role.end_year,
+                            "start_year": latest_role.start_year,
+                            "validation_passed": True,
+                            "role_text_hash": role_text_hash,
+                            "role_text_preview": text_to_analyze[:150],  # First 150 chars for debugging
+                            "total_roles_found": len(roles)
+                        }
+                    )
+                    
+                    if not text_to_analyze or not text_to_analyze.strip():
+                        logger.warning(
+                            f"No extractable text found for domain extraction",
+                            extra={"file_name": filename}
+                        )
+                        return None
             
-            # Role-based path: Use latest role text (already truncated to MAX_ROLE_CHARS in _extract_latest_role)
-            text_to_analyze = latest_role.text
+            # ============================================================
+            # HYBRID APPROACH: LLM FIRST + VALIDATION
+            # ============================================================
             logger.info(
-                f"✅ Using role-based extraction (role text: {len(text_to_analyze)} chars, "
-                f"is_current: {latest_role.is_current}, end_year: {latest_role.end_year})",
-                extra={
-                    "file_name": filename,
-                    "role_text_length": len(text_to_analyze),
-                    "is_current": latest_role.is_current,
-                    "end_year": latest_role.end_year
-                }
+                f"📤 Calling LLM first (with validation layer)",
+                extra={"file_name": filename, "note": "LLM will be validated to prevent hallucinations"}
             )
             
-            if not text_to_analyze or not text_to_analyze.strip():
-                logger.warning(
-                    f"No extractable text found for domain extraction",
-                    extra={"file_name": filename}
-                )
-                return None
-            
-            # LLM extraction (only for role-based path)
+            # LLM extraction (call first)
             prompt = f"""{DOMAIN_PROMPT}
 
 IMPORTANT CONTEXT:
@@ -1989,29 +2548,141 @@ Output (JSON only, no other text, no explanations):"""
                 raw_output = str(result)
             
             parsed_data = self._extract_json(raw_output)
-            domain = parsed_data.get("domain")
+            llm_domain = parsed_data.get("domain")
             
             # Handle both None and string "null" cases
-            if domain is not None:
-                domain = str(domain).strip()
-                if not domain or domain.lower() in ["null", "none", "nil", ""]:
-                    domain = None
+            if llm_domain is not None:
+                llm_domain = str(llm_domain).strip()
+                if not llm_domain or llm_domain.lower() in ["null", "none", "nil", ""]:
+                    llm_domain = None
             else:
-                domain = None
+                llm_domain = None
             
-            # If LLM returns null, try keyword fallback as safety net (with strict validation)
-            # Keyword fallback only runs on role text and uses business-only terms
-            # This provides reliability while maintaining precision
-            if domain is None:
+            # Log LLM response for debugging (regardless of value)
+            logger.info(
+                f"🔍 LLM Response for {filename}",
+                extra={
+                    "file_name": filename,
+                    "llm_domain": llm_domain,
+                    "parsed_data": parsed_data,
+                    "raw_output_preview": raw_output[:200] if raw_output else None,
+                    "raw_output_length": len(raw_output) if raw_output else 0
+                }
+            )
+            
+            # ============================================================
+            # VALIDATE LLM RESULT (prevent hallucinations)
+            # ============================================================
+            domain = None
+            if llm_domain:
+                is_valid, validation_reason = self._validate_llm_domain(llm_domain, text_to_analyze)
+                if is_valid:
+                    # LLM domain is valid → ACCEPT
+                    domain = llm_domain
+                    logger.info(
+                        f"✅ LLM domain VALIDATED and ACCEPTED: {domain}",
+                        extra={
+                            "file_name": filename,
+                            "domain": domain,
+                            "validation_reason": validation_reason,
+                            "method": "llm_validated"
+                        }
+                    )
+                else:
+                    # LLM domain is invalid → REJECT (hallucination detected)
+                    logger.warning(
+                        f"⚠️ LLM domain REJECTED (hallucination detected): {llm_domain}",
+                        extra={
+                            "file_name": filename,
+                            "rejected_domain": llm_domain,
+                            "validation_reason": validation_reason,
+                            "note": "Falling back to deterministic rules"
+                        }
+                    )
+                    domain = None  # Reject LLM result
+            else:
+                # LLM returned null/None - log this for debugging
                 logger.info(
-                    f"ℹ️ LLM returned null - attempting keyword fallback as safety net",
+                    f"ℹ️ LLM returned null/None for {filename}",
                     extra={
                         "file_name": filename,
-                        "note": "Keyword fallback will use strict business-only validation"
+                        "llm_domain": llm_domain,
+                        "parsed_data": parsed_data,
+                        "note": "LLM could not determine domain - using fallback methods"
                     }
                 )
-                # Try keyword fallback only if we have role text
-                if text_to_analyze and latest_role:
+            
+            # ============================================================
+            # DETERMINISTIC RULES FALLBACK (if LLM failed or was rejected)
+            # ============================================================
+            if not domain:
+                logger.info(
+                    f"🔄 LLM failed or rejected - using deterministic rules as fallback",
+                    extra={
+                        "file_name": filename,
+                        "llm_domain": llm_domain,
+                        "note": "Deterministic rules will be used as fallback"
+                    }
+                )
+                
+                # STEP 1: Employer Domain Map (highest priority - deterministic)
+                domain = self._check_employer_domain_map(text_to_analyze)
+                if domain:
+                    logger.info(
+                        f"✅ Domain determined via employer map (fallback): {domain}",
+                        extra={"file_name": filename, "domain": domain, "method": "deterministic_employer_map_fallback"}
+                    )
+                    return domain
+                
+                # STEP 2: Industry Keyword Override (deterministic)
+                # Healthcare
+                domain = self._check_healthcare_keywords(text_to_analyze)
+                if domain:
+                    logger.info(
+                        f"✅ Domain determined via healthcare keywords (fallback): {domain}",
+                        extra={"file_name": filename, "domain": domain, "method": "deterministic_healthcare_fallback"}
+                    )
+                    return domain
+                
+                # Banking
+                domain = self._check_banking_keywords(text_to_analyze)
+                if domain:
+                    logger.info(
+                        f"✅ Domain determined via banking keywords (fallback): {domain}",
+                        extra={"file_name": filename, "domain": domain, "method": "deterministic_banking_fallback"}
+                    )
+                    return domain
+                
+                # Retail
+                domain = self._check_retail_keywords(text_to_analyze)
+                if domain:
+                    logger.info(
+                        f"✅ Domain determined via retail keywords (fallback): {domain}",
+                        extra={"file_name": filename, "domain": domain, "method": "deterministic_retail_fallback"}
+                    )
+                    return domain
+                
+                # STEP 3: Platform Domain Guard (deterministic - prevents hallucination)
+                domain = self._check_platform_domain_guard(text_to_analyze)
+                if domain:
+                    logger.info(
+                        f"✅ Domain determined via platform guard (fallback): {domain}",
+                        extra={"file_name": filename, "domain": domain, "method": "deterministic_platform_guard_fallback"}
+                    )
+                    return domain
+                
+                # ============================================================
+                # FINAL SAFETY NET: Keyword Fallback (only if all methods fail)
+                # ============================================================
+                logger.info(
+                    f"ℹ️ All deterministic rules exhausted - attempting keyword fallback as final safety net",
+                    extra={
+                        "file_name": filename,
+                        "note": "LLM and deterministic rules exhausted, trying keyword fallback"
+                    }
+                )
+                # Try keyword fallback if we have text to analyze (removed latest_role requirement)
+                if text_to_analyze:
                     keyword_domain = self._detect_domain_from_keywords(text_to_analyze, filename)
                     if keyword_domain:
                         logger.info(
@@ -2019,16 +2690,29 @@ Output (JSON only, no other text, no explanations):"""
                             extra={
                                 "file_name": filename,
                                 "detected_domain": keyword_domain,
-                                "method": "keyword_fallback_after_llm_null"
+                                "method": "keyword_fallback_final_safety_net"
                             }
                         )
                         return keyword_domain
                     else:
                         logger.info(
-                            f"ℹ️ Keyword fallback also returned null - domain unclear",
-                            extra={"file_name": filename}
+                            f"ℹ️ Keyword fallback found no domain for {filename}",
+                            extra={
+                                "file_name": filename,
+                                "text_analyzed_length": len(text_to_analyze) if text_to_analyze else 0,
+                                "note": "All methods exhausted - returning null"
+                            }
                         )
-                # If no role text or keyword fallback fails, return null
+                else:
+                    logger.warning(
+                        f"⚠️ No text available for keyword fallback: {filename}",
+                        extra={
+                            "file_name": filename,
+                            "has_text_to_analyze": bool(text_to_analyze),
+                            "has_latest_role": bool(latest_role)
+                        }
+                    )
+                # If no text or keyword fallback fails, return null
                 return None
             
             # Log the raw response for debugging (enhanced for troubleshooting)
@@ -2041,11 +2725,12 @@ Output (JSON only, no other text, no explanations):"""
                         "raw_output_hash": hash(raw_output[:1000]) if raw_output else None,
                         "raw_output_length": len(raw_output) if raw_output else 0,
                         "parsed_data": parsed_data,
-                        "extracted_domain": domain,
+                        "llm_domain": llm_domain,
+                        "final_domain": domain,
                         "resume_text_length": len(resume_text),
                         "text_sent_length": len(text_to_analyze),
                         "resume_text_hash": hash(resume_text[:1000]) if resume_text else None,
-                        "extraction_method": "role_based"
+                        "extraction_method": "hybrid_llm_first_with_validation"
                     }
                 )
                 
@@ -2055,13 +2740,14 @@ Output (JSON only, no other text, no explanations):"""
                         f"ℹ️ DOMAIN EXTRACTION RETURNED NULL for {filename} (acceptable - unclear domain)",
                         extra={
                             "file_name": filename,
+                            "llm_domain": llm_domain,
                             "resume_text_length": len(resume_text),
                             "text_analyzed_length": len(text_to_analyze),
                             "text_sent_length": len(text_to_analyze),
                             "raw_output_hash": hash(raw_output[:2000]) if raw_output else None,
                             "parsed_data": parsed_data,
                             "text_analyzed_hash": hash(text_to_analyze[:1000]) if text_to_analyze else None,
-                            "extraction_method": "role_based",
+                            "extraction_method": "hybrid_llm_first_with_validation",
                             "note": "Null is acceptable when domain is unclear (ATS-grade behavior)"
                         }
                     )
@@ -2071,6 +2757,7 @@ Output (JSON only, no other text, no explanations):"""
                 extra={
                     "file_name": filename,
                     "domain": domain,
+                    "llm_domain": llm_domain,
                     "status": "success" if domain else "not_found"
                 }
             )

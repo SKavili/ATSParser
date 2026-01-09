@@ -2,7 +2,7 @@
 # Script to test resume upload with multiple resume files from a folder
 
 # Resume folder path
-RESUME_FOLDER="/home/ananya-k/Downloads/2016-20 1/2016-20/2020/12"
+RESUME_FOLDER="/home/ananya-k/Desktop/ATSParser/Resumes"
 API_URL="http://localhost:8000/api/v1/upload-resume"
 
 # Function to process a single file
