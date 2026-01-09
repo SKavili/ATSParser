@@ -115,7 +115,7 @@ class ResumeRepository:
         valid_columns = {
             'mastercategory', 'category',
             'candidatename', 'jobrole', 'designation', 'experience', 'domain',
-            'mobile', 'email', 'education', 'filename', 'skillset', 'status'
+            'mobile', 'email', 'education', 'filename', 'skillset', 'status', 'resume_text'
         }
         
         # Filter out invalid keys and read-only columns
@@ -154,7 +154,7 @@ class ResumeRepository:
         # Additional defensive validation: ensure None values are only set for nullable columns
         nullable_columns = {
             'candidatename', 'jobrole', 'designation', 'experience', 'domain',
-            'mobile', 'email', 'education', 'skillset', 'status'
+            'mobile', 'email', 'education', 'skillset', 'status', 'resume_text'
         }
         
         for key, value in filtered_data.items():

@@ -24,6 +24,7 @@ class ResumeMetadata(Base):
     filename = Column(String(512), nullable=False)
     skillset = Column(Text, nullable=True)
     status = Column(String(50), nullable=True, server_default="pending")  # Processing status
+    resume_text = Column(Text, nullable=True)  # Full extracted resume text
     created_at = Column(TIMESTAMP, nullable=True, server_default=func.current_timestamp())
     updated_at = Column(
         TIMESTAMP,

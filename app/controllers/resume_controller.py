@@ -268,6 +268,7 @@ class ResumeController:
                     "filename": safe_filename,
                     "skillset": "",
                     "status": STATUS_PROCESSING,  # Set to processing when starting
+                    "resume_text": None,  # Will be stored after text extraction
                 }
                 
                 # STEP 1: Create new record in database (before text extraction for proper error handling)
@@ -293,6 +294,16 @@ class ResumeController:
                         "text_preview": resume_text[:500],  # First 500 chars
                         "full_text": resume_text  # Full text (be careful with large resumes)
                     }
+                )
+                
+                # Store resume text in database
+                await self.resume_repo.update(
+                    resume_id,
+                    {"resume_text": resume_text}
+                )
+                logger.info(
+                    f"✅ Stored resume text in database for resume ID {resume_id}",
+                    extra={"resume_id": resume_id, "text_length": len(resume_text)}
                 )
             except Exception as e:
                 # Update status to failed for extraction error
@@ -894,6 +905,16 @@ class ResumeController:
                     extra={"original_length": len(resume_text), "truncated_length": settings.max_resume_text_length}
                 )
                 resume_text = resume_text[:settings.max_resume_text_length]
+            
+            # Store resume text in database
+            await self.resume_repo.update(
+                resume_id,
+                {"resume_text": resume_text}
+            )
+            logger.info(
+                f"✅ Stored resume text in database for resume ID {resume_id} (retry)",
+                extra={"resume_id": resume_id, "text_length": len(resume_text)}
+            )
             
             # Parse extract_modules parameter
             modules_to_extract = self._parse_extract_modules(extract_modules)

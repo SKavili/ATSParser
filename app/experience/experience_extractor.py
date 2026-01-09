@@ -867,10 +867,15 @@ class ExperienceExtractor:
                     total_months += max(0, months)  # Ensure non-negative
                     logger.debug(f"Range: {start_date.strftime('%Y-%m')} to {end_date.strftime('%Y-%m')} = {months} months")
                 
-                # Convert to years (round down as per requirements)
+                # Convert to years using ATS-standard rounding
+                # If remaining months >= 6, increment year by 1
                 years_diff = total_months // 12
+                remaining_months = total_months % 12
                 
-                logger.debug(f"Total months: {total_months}, Years (rounded down): {years_diff}")
+                if remaining_months >= 6:
+                    years_diff += 1
+                
+                logger.debug(f"Total months: {total_months}, Remaining months: {remaining_months}, Years: {years_diff}")
                 
                 # Validate: should be between 0 and 50 years
                 if years_diff < 0:
@@ -929,8 +934,13 @@ class ExperienceExtractor:
         if most_recent_date.day < oldest_date.day:
             months_diff -= 1
         
-        # Round DOWN to nearest year (not round to nearest)
+        # Convert to years using ATS-standard rounding
+        # If remaining months >= 6, increment year by 1
         years_diff = months_diff // 12
+        remaining_months = months_diff % 12
+        
+        if remaining_months >= 6:
+            years_diff += 1
         
         if years_diff < 0:
             years_diff = 0
@@ -1100,6 +1110,32 @@ class ExperienceExtractor:
         # If no pattern matched, try a more aggressive search in the first 2000 chars
         logger.debug("No matches found with standard patterns, trying aggressive search in first 2000 chars")
         aggressive_text = cleaned_text[:2000].lower()
+        
+        # First, check for "X YEAR Y month" format in aggressive search
+        year_month_pattern = r'(\d+)\s+YEAR\s+(\d+)\s+months?'
+        match = re.search(year_month_pattern, aggressive_text, re.IGNORECASE)
+        if match:
+            # Check if "experience" is in context (within 150 chars before/after)
+            context_start = max(0, match.start() - 150)
+            context_end = min(len(aggressive_text), match.end() + 150)
+            context = aggressive_text[context_start:context_end]
+            
+            if 'experience' in context:
+                years = int(match.group(1))
+                months = int(match.group(2))
+                
+                # Apply rounding logic: if months >= 6, add 1 year
+                if months >= 6:
+                    years += 1
+                    logger.debug(f"Aggressive search - Year+month format: {match.group(1)} year(s) + {months} month(s) → rounded to {years} years (months >= 6)")
+                else:
+                    logger.debug(f"Aggressive search - Year+month format: {match.group(1)} year(s) + {months} month(s) → {years} years (months < 6)")
+                
+                # Validate: should be between 1 and 50 years
+                if 1 <= years <= 50:
+                    exp_str = f"{years} years"
+                    logger.info(f"✅ Aggressive search found year+month format: '{match.group(0)}' → '{exp_str}'")
+                    return exp_str
         
         # Look for any "X+ years" or "X years" near "experience" keyword
         aggressive_pattern = r'(\d+\+?\s*years?)'
@@ -1300,6 +1336,26 @@ class ExperienceExtractor:
                     exp_str = f"{years_num} years"
                     logger.info(f"✅ Found explicit fractional experience statement (normalized to integer): '{exp_str}'")
                     return exp_str
+        
+        # 1.5) Handle "X YEAR Y month" format (e.g., "1 YEAR 11 month" or "WORK EXPERIENCE ( 1 YEAR 11 month )")
+        year_month_pattern = r'(\d+)\s+YEAR\s+(\d+)\s+months?'
+        match = re.search(year_month_pattern, search_text, re.IGNORECASE)
+        if match:
+            years = int(match.group(1))
+            months = int(match.group(2))
+            
+            # Apply rounding logic: if months >= 6, add 1 year
+            if months >= 6:
+                years += 1
+                logger.debug(f"Year+month format: {match.group(1)} year(s) + {months} month(s) → rounded to {years} years (months >= 6)")
+            else:
+                logger.debug(f"Year+month format: {match.group(1)} year(s) + {months} month(s) → {years} years (months < 6)")
+            
+            # Validate: should be between 1 and 50 years
+            if 1 <= years <= 50:
+                exp_str = f"{years} years"
+                logger.info(f"✅ Found year+month format: '{match.group(0)}' → '{exp_str}'")
+                return exp_str
         
         # 2) Standard explicit experience statements
         explicit_patterns = [
@@ -1594,8 +1650,13 @@ class ExperienceExtractor:
                 months -= 1
             total_months += max(0, months)
         
-        # Convert to years (round down)
+        # Convert to years using ATS-standard rounding
+        # If remaining months >= 6, increment year by 1
         years_diff = total_months // 12
+        remaining_months = total_months % 12
+        
+        if remaining_months >= 6:
+            years_diff += 1
         
         # Validate
         if years_diff < 0:
