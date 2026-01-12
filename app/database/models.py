@@ -25,6 +25,7 @@ class ResumeMetadata(Base):
     skillset = Column(Text, nullable=True)
     status = Column(String(50), nullable=True, server_default="pending")  # Processing status
     resume_text = Column(Text, nullable=True)  # Full extracted resume text
+    pinecone_status = Column(Integer, nullable=True, server_default="0")  # Pinecone indexing status: 0 = not indexed, 1 = indexed
     created_at = Column(TIMESTAMP, nullable=True, server_default=func.current_timestamp())
     updated_at = Column(
         TIMESTAMP,

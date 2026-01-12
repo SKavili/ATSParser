@@ -24,10 +24,9 @@ if config.config_file_name is not None:
 
 # Override sqlalchemy.url with our settings
 # Use a synchronous driver (pymysql) for Alembic, since it runs in sync mode.
-config.set_main_option(
-    "sqlalchemy.url",
-    settings.mysql_url.replace("+aiomysql", "+pymysql")
-)
+# Escape % signs to prevent ConfigParser interpolation issues
+mysql_url = settings.mysql_url.replace("+aiomysql", "+pymysql").replace("%", "%%")
+config.set_main_option("sqlalchemy.url", mysql_url)
 
 # Import all models so that Base.metadata is fully populated.
 # IMPORTANT: This must import the module that defines *all* ORM models

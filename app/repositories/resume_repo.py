@@ -115,7 +115,7 @@ class ResumeRepository:
         valid_columns = {
             'mastercategory', 'category',
             'candidatename', 'jobrole', 'designation', 'experience', 'domain',
-            'mobile', 'email', 'education', 'filename', 'skillset', 'status', 'resume_text'
+            'mobile', 'email', 'education', 'filename', 'skillset', 'status', 'resume_text', 'pinecone_status'
         }
         
         # Filter out invalid keys and read-only columns
@@ -154,7 +154,7 @@ class ResumeRepository:
         # Additional defensive validation: ensure None values are only set for nullable columns
         nullable_columns = {
             'candidatename', 'jobrole', 'designation', 'experience', 'domain',
-            'mobile', 'email', 'education', 'skillset', 'status', 'resume_text'
+            'mobile', 'email', 'education', 'skillset', 'status', 'resume_text', 'pinecone_status'
         }
         
         for key, value in filtered_data.items():
@@ -326,4 +326,77 @@ class ResumeRepository:
             query = query.limit(limit)
         result = await self.session.execute(query)
         return list(result.scalars().all())
+    
+    async def get_pending_pinecone_resumes(
+        self, 
+        limit: Optional[int] = None,
+        resume_ids: Optional[List[int]] = None,
+        force: bool = False
+    ) -> List[ResumeMetadata]:
+        """
+        Get resumes that need to be indexed in Pinecone.
+        
+        Args:
+            limit: Optional limit on number of results
+            resume_ids: Optional list of specific resume IDs to process
+            force: If True, return resumes even if pinecone_status = 1 (for re-indexing)
+        
+        Returns:
+            List of ResumeMetadata records that need Pinecone indexing
+        """
+        query = select(ResumeMetadata)
+        
+        # Filter by pinecone_status
+        if force:
+            # Force re-index: get all resumes (or specific IDs)
+            if resume_ids:
+                query = query.where(ResumeMetadata.id.in_(resume_ids))
+        else:
+            # Normal: only get resumes where pinecone_status = 0 (not indexed)
+            if resume_ids:
+                query = query.where(
+                    (ResumeMetadata.pinecone_status == 0) | (ResumeMetadata.pinecone_status.is_(None)),
+                    ResumeMetadata.id.in_(resume_ids)
+                )
+            else:
+                query = query.where(
+                    (ResumeMetadata.pinecone_status == 0) | (ResumeMetadata.pinecone_status.is_(None))
+                )
+        
+        # Only get resumes with resume_text and mastercategory (required for indexing)
+        query = query.where(
+            ResumeMetadata.resume_text.isnot(None),
+            ResumeMetadata.mastercategory.isnot(None)
+        )
+        
+        if limit:
+            query = query.limit(limit)
+        
+        result = await self.session.execute(query)
+        return list(result.scalars().all())
+    
+    async def update_pinecone_status(self, resume_id: int, status: int) -> bool:
+        """
+        Update pinecone_status for a resume.
+        
+        Args:
+            resume_id: The ID of the resume to update
+            status: 0 = not indexed, 1 = indexed
+        
+        Returns:
+            True if update was successful, False otherwise
+        """
+        try:
+            await self.update(resume_id, {"pinecone_status": status})
+            logger.info(
+                f"Updated pinecone_status for resume {resume_id} to {status}",
+                extra={"resume_id": resume_id, "pinecone_status": status}
+            )
+            return True
+        except Exception as e:
+            logger.error(
+                f"Failed to update pinecone_status for resume {resume_id}: {e}",
+                extra={"resume_id": resume_id, "status": status, "error": str(e)}
+            )
+            return False
 

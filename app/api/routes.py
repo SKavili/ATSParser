@@ -1,7 +1,7 @@
 """API route definitions."""
-from fastapi import APIRouter, Depends, UploadFile, File, Form
+from fastapi import APIRouter, Depends, UploadFile, File, Form, Query, HTTPException
 from sqlalchemy.ext.asyncio import AsyncSession
-from typing import Optional
+from typing import Optional, List
 
 from app.controllers.resume_controller import ResumeController
 from app.controllers.job_controller import JobController
@@ -14,6 +14,7 @@ from app.repositories.prompt_repo import PromptRepository
 from app.database.connection import get_db_session
 from app.models.resume_models import ResumeUpload, ResumeUploadResponse
 from app.models.job_models import JobCreate, JobCreateResponse, MatchRequest, MatchResponse
+from app.services.resume_indexing_service import ResumeIndexingService
 from app.skills.skills_service import SkillsService
 from app.utils.logging import get_logger
 
@@ -150,6 +151,50 @@ async def retry_failed_resume(
             - Comma-separated: "1,2,3" or "designation,name,email" - Extract multiple modules
     """
     return await controller.retry_failed_resume_with_ocr(resume_id, extract_modules)
+
+
+@router.post("/index-pinecone")
+async def index_pinecone(
+    limit: Optional[int] = Query(None, description="Maximum number of resumes to process"),
+    resume_ids: Optional[List[int]] = Query(None, description="Specific resume IDs to process"),
+    force: bool = Query(False, description="Force re-indexing even if already indexed"),
+    session: AsyncSession = Depends(get_db_session)
+):
+    """
+    Index resumes to Pinecone with embeddings.
+    
+    This endpoint:
+    - Queries resumes where pinecone_status = 0 (not indexed)
+    - Generates chunked embeddings for each resume
+    - Stores embeddings in Pinecone (routed to IT/Non-IT index based on mastercategory)
+    - Updates pinecone_status = 1 only after successful storage
+    
+    Query Parameters:
+    - limit: Optional limit on number of resumes to process (default: all pending)
+    - resume_ids: Optional list of specific resume IDs to process
+    - force: If True, re-index resumes even if pinecone_status = 1 (default: False)
+    
+    Returns:
+    {
+        "indexed_count": 5,
+        "failed_count": 0,
+        "processed_ids": [1, 2, 3, 4, 5],
+        "failed_ids": [],
+        "skipped_ids": [],
+        "message": "Indexed 5 resumes into Pinecone. Failed: 0. Skipped: 0"
+    }
+    """
+    try:
+        indexing_service = ResumeIndexingService(session)
+        result = await indexing_service.index_resumes(
+            limit=limit,
+            resume_ids=resume_ids,
+            force=force
+        )
+        return result
+    except Exception as e:
+        logger.error(f"Error in index-pinecone endpoint: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=f"Failed to index resumes: {str(e)}")
 
 
 @router.get("/health")
