@@ -156,8 +156,8 @@ for file in "${RESUME_FOLDER}"/*.pdf "${RESUME_FOLDER}"/*.PDF; do
             ((FAILED_COUNT++))
         fi
         echo ""
-        echo "Waiting 2 seconds before processing next file..."
-        sleep 2
+        echo "Waiting 30 seconds before processing next file (for system cooling)..."
+        sleep 30
     fi
 done
 
@@ -172,8 +172,8 @@ for file in "${RESUME_FOLDER}"/*.doc "${RESUME_FOLDER}"/*.DOC; do
             ((FAILED_COUNT++))
         fi
         echo ""
-        echo "Waiting 2 seconds before processing next file..."
-        sleep 2
+        echo "Waiting 30 seconds before processing next file (for system cooling)..."
+        sleep 30
     fi
 done
 
@@ -188,8 +188,8 @@ for file in "${RESUME_FOLDER}"/*.docx "${RESUME_FOLDER}"/*.DOCX; do
             ((FAILED_COUNT++))
         fi
         echo ""
-        echo "Waiting 2 seconds before processing next file..."
-        sleep 2
+        echo "Waiting 30 seconds before processing next file (for system cooling)..."
+        sleep 30
     fi
 done
 

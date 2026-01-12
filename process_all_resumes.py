@@ -332,6 +332,12 @@ async def process_all_resumes():
             # Memory cleanup between files
             if settings.enable_memory_cleanup:
                 gc.collect()
+            
+            # Wait 30 seconds before processing next file (for system cooling)
+            # This prevents CPU/GPU overheating and ensures accurate LLM extractions
+            if file_number < total_files:  # Don't wait after the last file
+                print(f"\n⏳ Waiting 30 seconds before processing next file (for system cooling)...")
+                await asyncio.sleep(30)
         except Exception as e:
             print(f"\n❌ FATAL ERROR processing {file_path.name}: {e}")
             results.append({
@@ -344,6 +350,12 @@ async def process_all_resumes():
             # Cleanup on error too
             if settings.enable_memory_cleanup:
                 gc.collect()
+            
+            # Wait 30 seconds before processing next file (for system cooling)
+            # This prevents CPU/GPU overheating and ensures accurate LLM extractions
+            if file_number < total_files:  # Don't wait after the last file
+                print(f"\n⏳ Waiting 30 seconds before processing next file (for system cooling)...")
+                await asyncio.sleep(30)
     
     # Print summary
     print(f"\n{'='*80}")
