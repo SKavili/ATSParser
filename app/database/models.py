@@ -1,6 +1,6 @@
 """SQLAlchemy database models."""
 from datetime import datetime
-from sqlalchemy import Column, Integer, String, Text, TIMESTAMP
+from sqlalchemy import Column, Integer, String, Text, TIMESTAMP, BigInteger, ForeignKey, JSON
 from sqlalchemy.sql import func
 
 from app.database.connection import Base
@@ -56,4 +56,30 @@ class Prompt(Base):
     
     def __repr__(self) -> str:
         return f"<Prompt(id={self.id}, mastercategory={self.mastercategory}, category={self.category})>"
+
+
+class AISearchQuery(Base):
+    """Database model for AI search queries."""
+    __tablename__ = "ai_search_queries"
+    
+    id = Column(BigInteger, primary_key=True, autoincrement=True)
+    query_text = Column(Text, nullable=False)
+    created_at = Column(TIMESTAMP, nullable=True, server_default=func.current_timestamp())
+    user_id = Column(BigInteger, nullable=True)
+    
+    def __repr__(self) -> str:
+        return f"<AISearchQuery(id={self.id}, query_text={self.query_text[:50]}...)>"
+
+
+class AISearchResult(Base):
+    """Database model for AI search results."""
+    __tablename__ = "ai_search_results"
+    
+    id = Column(BigInteger, primary_key=True, autoincrement=True)
+    search_query_id = Column(BigInteger, ForeignKey('ai_search_queries.id'), nullable=False)
+    results_json = Column(JSON, nullable=False)
+    created_at = Column(TIMESTAMP, nullable=True, server_default=func.current_timestamp())
+    
+    def __repr__(self) -> str:
+        return f"<AISearchResult(id={self.id}, search_query_id={self.search_query_id})>"
 

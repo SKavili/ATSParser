@@ -14,8 +14,10 @@ from app.repositories.prompt_repo import PromptRepository
 from app.database.connection import get_db_session
 from app.models.resume_models import ResumeUpload, ResumeUploadResponse
 from app.models.job_models import JobCreate, JobCreateResponse, MatchRequest, MatchResponse
+from app.models.ai_search_models import AISearchRequest, AISearchResponse
 from app.services.resume_indexing_service import ResumeIndexingService
 from app.skills.skills_service import SkillsService
+from app.ai_search.ai_search_controller import AISearchController
 from app.utils.logging import get_logger
 
 logger = get_logger(__name__)
@@ -44,6 +46,16 @@ async def get_job_controller(
     embedding_service = EmbeddingService()
     resume_repo = ResumeRepository(session)
     return JobController(job_parser, embedding_service, vector_db, resume_repo)
+
+
+async def get_ai_search_controller(
+    session: AsyncSession = Depends(get_db_session),
+    vector_db: VectorDBService = Depends(get_vector_db_service)
+) -> AISearchController:
+    """Create AISearchController with dependencies."""
+    embedding_service = EmbeddingService()
+    resume_repo = ResumeRepository(session)
+    return AISearchController(session, embedding_service, vector_db, resume_repo)
 
 
 @router.post("/upload-resume", response_model=ResumeUploadResponse, status_code=200)
@@ -195,6 +207,52 @@ async def index_pinecone(
     except Exception as e:
         logger.error(f"Error in index-pinecone endpoint: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail=f"Failed to index resumes: {str(e)}")
+
+
+@router.post("/ai-search", response_model=AISearchResponse, status_code=200)
+async def ai_search(
+    request: AISearchRequest,
+    controller: AISearchController = Depends(get_ai_search_controller)
+):
+    """
+    AI-powered candidate search using natural language queries.
+    
+    This endpoint:
+    - Parses natural language queries to extract skills, experience, location, etc.
+    - Performs semantic search using Pinecone
+    - Enforces mandatory requirements strictly
+    - Ranks candidates by relevance
+    - Returns results categorized into fit tiers
+    
+    Request body:
+    - query: Natural language search query (e.g., "python developer with 5 years experience")
+    - user_id: Optional user ID for tracking
+    - top_k: Number of results to return (default: 20)
+    
+    Response:
+    - query: Original query
+    - total_results: Number of results found
+    - results: List of candidates with fit tiers
+    """
+    try:
+        return await controller.search(
+            query=request.query,
+            user_id=request.user_id,
+            top_k=request.top_k or 20
+        )
+    except RuntimeError as e:
+        # Query parsing failed
+        logger.error(f"AI search query parsing failed: {e}", extra={"error": str(e)})
+        raise HTTPException(
+            status_code=400,
+            detail=f"Query parsing failed: {str(e)}"
+        )
+    except Exception as e:
+        logger.error(f"AI search failed: {e}", extra={"error": str(e)}, exc_info=True)
+        raise HTTPException(
+            status_code=500,
+            detail=f"Search failed: {str(e)}"
+        )
 
 
 @router.get("/health")
