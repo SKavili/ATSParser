@@ -187,19 +187,40 @@ class ResumeIndexingService:
                 extra={"resume_id": resume.id, "text_length": len(resume.resume_text)}
             )
             
+            # Parse skillset string to array for filtering
+            skills_array = []
+            if resume.skillset:
+                skills_array = [s.strip().lower() for s in resume.skillset.split(",") if s.strip()]
+            
+            # Extract experience_years from experience string
+            experience_years = None
+            if resume.experience:
+                import re
+                match = re.search(r'(\d+(?:\.\d+)?)', resume.experience)
+                if match:
+                    experience_years = int(float(match.group(1)))
+            
             # Prepare base metadata with all resume fields
+            # Normalize designation and jobrole to lowercase for case-insensitive filtering
+            normalized_designation = (resume.designation or "").lower().strip()
+            normalized_jobrole = (resume.jobrole or "").lower().strip()
+            
             base_metadata = {
                 "resume_id": resume.id,
+                "candidate_id": f"C{resume.id}",  # Generate candidate_id
                 "filename": resume.filename or "unknown",
                 "candidate_name": resume.candidatename or "",
-                "jobrole": resume.jobrole or "",
-                "designation": resume.designation or "",
+                "name": resume.candidatename or "",  # Alias for compatibility
+                "jobrole": normalized_jobrole,  # Lowercase for case-insensitive filtering
+                "designation": normalized_designation,  # Lowercase for case-insensitive filtering
                 "experience": resume.experience or "",
+                "experience_years": experience_years,  # Numeric for filtering
                 "domain": resume.domain or "",
                 "mobile": resume.mobile or "",
                 "email": resume.email or "",
                 "education": resume.education or "",
-                "skillset": resume.skillset or "",
+                "skillset": resume.skillset or "",  # Keep original string
+                "skills": skills_array,  # Array for Pinecone filtering
             }
             
             chunk_embeddings = await self.embedding_service.generate_chunk_embeddings(

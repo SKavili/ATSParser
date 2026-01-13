@@ -6,7 +6,7 @@ from app.ai_search.ai_search_query_parser import AISearchQueryParser
 from app.ai_search.ai_search_service import AISearchService
 from app.ai_search.ai_search_repository import AISearchRepository
 from app.services.embedding_service import EmbeddingService
-from app.services.vector_db_service import VectorDBService
+from app.services.pinecone_automation import PineconeAutomation
 from app.repositories.resume_repo import ResumeRepository
 from app.utils.logging import get_logger
 
@@ -20,14 +20,14 @@ class AISearchController:
         self,
         session: AsyncSession,
         embedding_service: EmbeddingService,
-        vector_db: VectorDBService,
+        pinecone_automation: PineconeAutomation,
         resume_repo: ResumeRepository
     ):
         self.session = session
         self.query_parser = AISearchQueryParser()
         self.search_service = AISearchService(
             embedding_service=embedding_service,
-            vector_db=vector_db,
+            pinecone_automation=pinecone_automation,
             resume_repo=resume_repo
         )
         self.repository = AISearchRepository(session)
@@ -76,6 +76,16 @@ class AISearchController:
                         "search_type": parsed_query["search_type"]
                     }
                 )
+                # Log parsed query details for debugging
+                logger.info(
+                    f"Parsed query details: designation={parsed_query.get('filters', {}).get('designation')}, "
+                    f"must_have_all={parsed_query.get('filters', {}).get('must_have_all')}, "
+                    f"text_for_embedding={parsed_query.get('text_for_embedding', '')[:100]}",
+                    extra={
+                        "query_id": search_query_id,
+                        "parsed_query": parsed_query
+                    }
+                )
             except Exception as e:
                 logger.error(
                     f"Query parsing failed: {e}",
@@ -120,6 +130,8 @@ class AISearchController:
                     "name": result.get("name", ""),
                     "category": result.get("category", ""),
                     "mastercategory": result.get("mastercategory", ""),
+                    "designation": result.get("designation", ""),  # Add designation to response
+                    "jobrole": result.get("jobrole", ""),  # Add jobrole to response
                     "experience_years": result.get("experience_years"),
                     "skills": result.get("skills", []),
                     "location": result.get("location"),
@@ -146,6 +158,8 @@ class AISearchController:
             # Step 6: Return response
             response = {
                 "query": query,
+                "identified_mastercategory": parsed_query.get("mastercategory"),
+                "identified_category": parsed_query.get("category"),
                 "total_results": len(formatted_results),
                 "results": formatted_results
             }

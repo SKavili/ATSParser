@@ -49,13 +49,15 @@ async def get_job_controller(
 
 
 async def get_ai_search_controller(
-    session: AsyncSession = Depends(get_db_session),
-    vector_db: VectorDBService = Depends(get_vector_db_service)
+    session: AsyncSession = Depends(get_db_session)
 ) -> AISearchController:
     """Create AISearchController with dependencies."""
+    from app.services.pinecone_automation import PineconeAutomation
+    
     embedding_service = EmbeddingService()
+    pinecone_automation = PineconeAutomation()
     resume_repo = ResumeRepository(session)
-    return AISearchController(session, embedding_service, vector_db, resume_repo)
+    return AISearchController(session, embedding_service, pinecone_automation, resume_repo)
 
 
 @router.post("/upload-resume", response_model=ResumeUploadResponse, status_code=200)

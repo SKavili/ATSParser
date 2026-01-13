@@ -1,7 +1,8 @@
 """AI Search service implementing semantic search, filtering, and ranking."""
+import re
 from typing import Dict, List, Optional, Any
 from app.services.embedding_service import EmbeddingService
-from app.services.vector_db_service import VectorDBService
+from app.services.pinecone_automation import PineconeAutomation
 from app.repositories.resume_repo import ResumeRepository
 from app.utils.logging import get_logger
 
@@ -45,12 +46,48 @@ class AISearchService:
     def __init__(
         self,
         embedding_service: EmbeddingService,
-        vector_db: VectorDBService,
+        pinecone_automation: PineconeAutomation,
         resume_repo: ResumeRepository
     ):
         self.embedding_service = embedding_service
-        self.vector_db = vector_db
+        self.pinecone_automation = pinecone_automation
         self.resume_repo = resume_repo
+    
+    def _normalize_namespace(self, category: str) -> str:
+        """
+        Normalize category string to valid Pinecone namespace format.
+        
+        Namespace normalization rules (same as PineconeAutomation):
+        - Convert to lowercase
+        - Replace spaces, slashes, dots, parentheses with underscores
+        - Remove all characters except [a-z0-9_]
+        - Collapse multiple underscores into one
+        
+        Example:
+        "Full Stack Development (Java)" → "full_stack_development_java"
+        
+        Args:
+            category: Category string
+            
+        Returns:
+            Normalized namespace string
+        """
+        if not category or not category.strip():
+            return ""
+        
+        # Convert to lowercase
+        normalized = category.lower().strip()
+        
+        # Replace spaces, slashes, dots, parentheses, and all other special chars with underscores
+        normalized = re.sub(r'[^a-z0-9_]+', '_', normalized)
+        
+        # Collapse multiple consecutive underscores into one
+        normalized = re.sub(r'_+', '_', normalized)
+        
+        # Remove leading/trailing underscores
+        normalized = normalized.strip('_')
+        
+        return normalized
     
     def normalize_location(self, location: str) -> str:
         """Normalize location to lowercase and apply alias mapping."""
@@ -72,53 +109,82 @@ class AISearchService:
         pinecone_filter = {}
         
         # Handle must_have_all (mandatory skills - strict enforcement)
+        # Note: Pinecone doesn't support $all operator, so we use $and with multiple $in conditions
+        # Each skill must be present in the skills array
         must_have_all = filters.get("must_have_all", [])
         if must_have_all:
             # Normalize to lowercase
             normalized_skills = [s.lower().strip() for s in must_have_all if s]
             if normalized_skills:
-                pinecone_filter["skills"] = {"$all": normalized_skills}
+                if len(normalized_skills) == 1:
+                    # Single skill - use $in
+                    pinecone_filter["skills"] = {"$in": normalized_skills}
+                else:
+                    # Multiple skills - use $and to require all
+                    skill_conditions = [{"skills": {"$in": [skill]}} for skill in normalized_skills]
+                    pinecone_filter["$and"] = skill_conditions
         
         # Handle must_have_one_of_groups (OR groups)
         must_have_one_of_groups = filters.get("must_have_one_of_groups", [])
         if must_have_one_of_groups:
-            # If we have both AND and OR, combine with $or at top level
-            if "skills" in pinecone_filter:
-                # Both AND and OR exist - use $or to combine
-                or_conditions = []
-                # Add existing AND condition
-                or_conditions.append({"skills": pinecone_filter["skills"]})
-                # Add OR groups
-                for group in must_have_one_of_groups:
-                    if group:
-                        normalized_group = [s.lower().strip() for s in group if s]
-                        if normalized_group:
-                            or_conditions.append({"skills": {"$in": normalized_group}})
-                
-                if len(or_conditions) > 1:
-                    pinecone_filter = {"$or": or_conditions}
-                elif len(or_conditions) == 1:
-                    pinecone_filter = or_conditions[0]
-            else:
-                # Only OR groups exist
-                if len(must_have_one_of_groups) == 1:
-                    # Single OR group
-                    normalized_group = [s.lower().strip() for s in must_have_one_of_groups[0] if s]
+            # Build OR conditions for skills
+            or_skill_conditions = []
+            for group in must_have_one_of_groups:
+                if group:
+                    normalized_group = [s.lower().strip() for s in group if s]
                     if normalized_group:
-                        pinecone_filter["skills"] = {"$in": normalized_group}
+                        or_skill_conditions.append({"skills": {"$in": normalized_group}})
+            
+            if or_skill_conditions:
+                # If we already have skills filter ($and or single skill), combine with $and
+                if "$and" in pinecone_filter:
+                    # Add OR skills condition to existing $and
+                    if len(or_skill_conditions) == 1:
+                        pinecone_filter["$and"].append(or_skill_conditions[0])
+                    else:
+                        pinecone_filter["$and"].append({"$or": or_skill_conditions})
+                elif "skills" in pinecone_filter:
+                    # Single skill condition exists, combine with $and
+                    existing_skill_filter = {"skills": pinecone_filter.pop("skills")}
+                    if len(or_skill_conditions) == 1:
+                        pinecone_filter["$and"] = [existing_skill_filter, or_skill_conditions[0]]
+                    else:
+                        pinecone_filter["$and"] = [existing_skill_filter, {"$or": or_skill_conditions}]
                 else:
-                    # Multiple OR groups - combine with $or
-                    or_conditions = []
-                    for group in must_have_one_of_groups:
-                        if group:
-                            normalized_group = [s.lower().strip() for s in group if s]
-                            if normalized_group:
-                                or_conditions.append({"skills": {"$in": normalized_group}})
-                    if or_conditions:
-                        if len(or_conditions) == 1:
-                            pinecone_filter = or_conditions[0]
-                        else:
-                            pinecone_filter = {"$or": or_conditions}
+                    # No existing skills filter
+                    if len(or_skill_conditions) == 1:
+                        pinecone_filter["skills"] = or_skill_conditions[0]["skills"]
+                    else:
+                        # Multiple OR groups - use $or at top level
+                        pinecone_filter = {"$or": or_skill_conditions}
+        
+        # Handle designation/jobrole filtering (exact match)
+        designation = filters.get("designation")
+        if designation:
+            # Normalize to lowercase for case-insensitive matching
+            normalized_designation = designation.lower().strip()
+            if normalized_designation:
+                # Match either designation or jobrole field (case-insensitive)
+                designation_filter = {
+                    "$or": [
+                        {"designation": {"$eq": normalized_designation}},
+                        {"jobrole": {"$eq": normalized_designation}}
+                    ]
+                }
+                
+                # Combine with existing filters using $and
+                if pinecone_filter:
+                    if "$and" in pinecone_filter:
+                        pinecone_filter["$and"].append(designation_filter)
+                    else:
+                        # Wrap existing filter and designation filter in $and
+                        existing_filter = pinecone_filter.copy()
+                        pinecone_filter = {
+                            "$and": [existing_filter, designation_filter]
+                        }
+                else:
+                    # No existing filters, just use designation filter
+                    pinecone_filter = designation_filter
         
         # Handle min_experience (mandatory - strict)
         min_experience = filters.get("min_experience")
@@ -126,7 +192,16 @@ class AISearchService:
             try:
                 min_exp = int(min_experience)
                 if min_exp > 0:
-                    pinecone_filter["experience_years"] = {"$gte": min_exp}
+                    exp_filter = {"experience_years": {"$gte": min_exp}}
+                    # Combine with existing filters
+                    if pinecone_filter:
+                        if "$and" in pinecone_filter:
+                            pinecone_filter["$and"].append(exp_filter)
+                        else:
+                            existing_filter = pinecone_filter.copy()
+                            pinecone_filter = {"$and": [existing_filter, exp_filter]}
+                    else:
+                        pinecone_filter = exp_filter
             except (ValueError, TypeError):
                 logger.warning(f"Invalid min_experience value: {min_experience}")
         
@@ -134,7 +209,25 @@ class AISearchService:
         location = filters.get("location")
         if location:
             normalized_location = self.normalize_location(location)
-            pinecone_filter["location"] = {"$eq": normalized_location}
+            location_filter = {"location": {"$eq": normalized_location}}
+            # Combine with existing filters
+            if pinecone_filter:
+                if "$and" in pinecone_filter:
+                    pinecone_filter["$and"].append(location_filter)
+                else:
+                    existing_filter = pinecone_filter.copy()
+                    pinecone_filter = {"$and": [existing_filter, location_filter]}
+            else:
+                pinecone_filter = location_filter
+        
+        # Log the final Pinecone filter for debugging
+        if pinecone_filter:
+            logger.info(
+                f"Pinecone filter created: {pinecone_filter}",
+                extra={"pinecone_filter": pinecone_filter}
+            )
+        else:
+            logger.info("No Pinecone filter applied (semantic search only)")
         
         return pinecone_filter if pinecone_filter else None
     
@@ -155,7 +248,16 @@ class AISearchService:
         # Check must_have_all (mandatory skills)
         must_have_all = filters.get("must_have_all", [])
         if must_have_all:
-            candidate_skills = [s.lower() for s in candidate.get("skills", [])]
+            # Handle both array and string formats for skills
+            candidate_skills_raw = candidate.get("skills", [])
+            if isinstance(candidate_skills_raw, str):
+                # If skills is a string (comma-separated), parse it
+                candidate_skills = [s.strip().lower() for s in candidate_skills_raw.split(",") if s.strip()]
+            elif isinstance(candidate_skills_raw, list):
+                candidate_skills = [s.lower() if isinstance(s, str) else str(s).lower() for s in candidate_skills_raw]
+            else:
+                candidate_skills = []
+            
             required_skills = [s.lower().strip() for s in must_have_all if s]
             if not all(skill in candidate_skills for skill in required_skills):
                 return False
@@ -280,6 +382,7 @@ class AISearchService:
     ) -> List[Dict[str, Any]]:
         """
         Search candidates using semantic search with Pinecone.
+        Queries both IT and Non-IT indexes and merges results.
         Principles implemented:
         - Semantic understanding (not keyword matching)
         - Mandatory requirement enforcement
@@ -293,6 +396,11 @@ class AISearchService:
             List of candidate results with fit tiers
         """
         try:
+            # Initialize PineconeAutomation if not already done
+            if not self.pinecone_automation.pc:
+                await self.pinecone_automation.initialize_pinecone()
+                await self.pinecone_automation.create_indexes()
+            
             # Get text for embedding
             text_for_embedding = parsed_query.get("text_for_embedding", "")
             
@@ -310,28 +418,196 @@ class AISearchService:
             # Build Pinecone filter (mandatory requirements)
             pinecone_filter = self.build_pinecone_filter(parsed_query)
             
-            # Query Pinecone
-            raw_results = await self.vector_db.query_vectors(
-                query_vector=embedding,
-                top_k=top_k * 2,  # Get more results for filtering/ranking
-                filter_dict=pinecone_filter
+            # Log search parameters for debugging
+            logger.info(
+                f"Starting semantic search: text_for_embedding='{text_for_embedding[:100] if text_for_embedding else ''}', "
+                f"has_filter={pinecone_filter is not None}, top_k={top_k}",
+                extra={
+                    "text_for_embedding_preview": text_for_embedding[:100] if text_for_embedding else "",
+                    "has_filter": pinecone_filter is not None,
+                    "top_k": top_k,
+                    "pinecone_filter": pinecone_filter
+                }
             )
+            
+            # Query both IT and Non-IT indexes across all namespaces
+            # Get more results from each namespace to allow for filtering/ranking
+            per_namespace_k = max(10, top_k // 5)  # Get fewer per namespace, but from all namespaces
+            
+            # Check if category was identified from query
+            identified_mastercategory = parsed_query.get("mastercategory")
+            identified_category = parsed_query.get("category")
+            target_namespace = None
+            
+            if identified_category:
+                # Normalize category to namespace format (same as PineconeAutomation does)
+                target_namespace = self._normalize_namespace(identified_category)
+                logger.info(
+                    f"Category identified from query: {identified_category} → namespace: {target_namespace}",
+                    extra={
+                        "category": identified_category,
+                        "namespace": target_namespace,
+                        "mastercategory": identified_mastercategory
+                    }
+                )
+            
+            # Get all namespaces for IT index
+            it_namespaces = await self.pinecone_automation.get_all_namespaces("IT")
+            if not it_namespaces:
+                # Fallback: use default namespace if no namespaces found
+                it_namespaces = [""]
+                logger.warning("No namespaces found in IT index, querying default namespace")
+            
+            # Get all namespaces for Non-IT index
+            non_it_namespaces = await self.pinecone_automation.get_all_namespaces("NON_IT")
+            if not non_it_namespaces:
+                # Fallback: use default namespace if no namespaces found
+                non_it_namespaces = [""]
+                logger.warning("No namespaces found in Non-IT index, querying default namespace")
+            
+            # If category was identified, prioritize the target namespace
+            # Still query other namespaces but with lower priority (fewer results)
+            if target_namespace and identified_mastercategory:
+                target_index_name = "IT" if identified_mastercategory.upper() == "IT" else "NON_IT"
+                target_namespaces_list = it_namespaces if target_index_name == "IT" else non_it_namespaces
+                
+                if target_namespace in target_namespaces_list:
+                    # Move target namespace to front for priority querying
+                    target_namespaces_list.remove(target_namespace)
+                    target_namespaces_list.insert(0, target_namespace)
+                    logger.info(
+                        f"Prioritizing identified namespace '{target_namespace}' in {target_index_name} index",
+                        extra={"namespace": target_namespace, "index": target_index_name}
+                    )
+                else:
+                    logger.warning(
+                        f"Identified namespace '{target_namespace}' not found in {target_index_name} index, querying all namespaces",
+                        extra={"namespace": target_namespace, "index": target_index_name}
+                    )
+            
+            logger.info(
+                f"Querying {len(it_namespaces)} IT namespaces and {len(non_it_namespaces)} Non-IT namespaces",
+                extra={
+                    "it_namespace_count": len(it_namespaces),
+                    "non_it_namespace_count": len(non_it_namespaces),
+                    "identified_category": identified_category,
+                    "target_namespace": target_namespace,
+                    "identified_mastercategory": identified_mastercategory
+                }
+            )
+            
+            # Query IT index - all namespaces (prioritized if category identified)
+            it_results = []
+            for idx, namespace in enumerate(it_namespaces):
+                try:
+                    # If this is the prioritized namespace (first in list), get more results
+                    is_priority = (idx == 0 and target_namespace and 
+                                 identified_mastercategory and 
+                                 identified_mastercategory.upper() == "IT" and
+                                 namespace == target_namespace)
+                    namespace_k = per_namespace_k * 2 if is_priority else per_namespace_k
+                    
+                    namespace_results = await self.pinecone_automation.query_vectors(
+                        query_vector=embedding,
+                        mastercategory="IT",
+                        namespace=namespace if namespace else None,
+                        top_k=namespace_k,
+                        filter_dict=pinecone_filter
+                    )
+                    it_results.extend(namespace_results)
+                    
+                    if is_priority:
+                        logger.info(
+                            f"Priority query on IT namespace '{namespace}' returned {len(namespace_results)} results",
+                            extra={"namespace": namespace, "result_count": len(namespace_results)}
+                        )
+                except Exception as e:
+                    logger.warning(
+                        f"Failed to query IT index namespace '{namespace}': {e}",
+                        extra={"namespace": namespace, "error": str(e)}
+                    )
+            
+            logger.info(f"IT index query returned {len(it_results)} results from {len(it_namespaces)} namespaces")
+            
+            # Query Non-IT index - all namespaces (prioritized if category identified)
+            non_it_results = []
+            for idx, namespace in enumerate(non_it_namespaces):
+                try:
+                    # If this is the prioritized namespace (first in list), get more results
+                    is_priority = (idx == 0 and target_namespace and 
+                                 identified_mastercategory and 
+                                 identified_mastercategory.upper() == "NON_IT" and
+                                 namespace == target_namespace)
+                    namespace_k = per_namespace_k * 2 if is_priority else per_namespace_k
+                    
+                    namespace_results = await self.pinecone_automation.query_vectors(
+                        query_vector=embedding,
+                        mastercategory="NON_IT",
+                        namespace=namespace if namespace else None,
+                        top_k=namespace_k,
+                        filter_dict=pinecone_filter
+                    )
+                    non_it_results.extend(namespace_results)
+                    
+                    if is_priority:
+                        logger.info(
+                            f"Priority query on Non-IT namespace '{namespace}' returned {len(namespace_results)} results",
+                            extra={"namespace": namespace, "result_count": len(namespace_results)}
+                        )
+                except Exception as e:
+                    logger.warning(
+                        f"Failed to query Non-IT index namespace '{namespace}': {e}",
+                        extra={"namespace": namespace, "error": str(e)}
+                    )
+            
+            logger.info(f"Non-IT index query returned {len(non_it_results)} results from {len(non_it_namespaces)} namespaces")
+            
+            # Merge results from both indexes
+            all_results = it_results + non_it_results
             
             # Process and rank results
             processed_results = []
-            for match in raw_results:
+            seen_resume_ids = set()  # Deduplicate by resume_id
+            
+            for match in all_results:
                 metadata = match.get("metadata", {})
                 score = match.get("score", 0.0)
+                resume_id = metadata.get("resume_id")
+                
+                # Skip if we've already seen this resume (deduplicate)
+                if resume_id and resume_id in seen_resume_ids:
+                    continue
+                if resume_id:
+                    seen_resume_ids.add(resume_id)
+                
+                # Parse skills from skillset string if needed
+                skills = metadata.get("skills", [])
+                if isinstance(skills, str):
+                    # If skills is a string (comma-separated), parse it
+                    skills = [s.strip() for s in skills.split(",") if s.strip()]
+                elif not isinstance(skills, list):
+                    skills = []
+                
+                # Extract experience_years if not already in metadata
+                experience_years = metadata.get("experience_years")
+                if not experience_years and metadata.get("experience"):
+                    import re
+                    exp_str = str(metadata.get("experience", ""))
+                    match_exp = re.search(r'(\d+(?:\.\d+)?)', exp_str)
+                    if match_exp:
+                        experience_years = int(float(match_exp.group(1)))
                 
                 # Format candidate data
                 candidate = {
-                    "resume_id": metadata.get("resume_id"),
-                    "candidate_id": metadata.get("candidate_id", ""),
-                    "name": metadata.get("name", ""),
+                    "resume_id": resume_id,
+                    "candidate_id": metadata.get("candidate_id", f"C{resume_id}" if resume_id else ""),
+                    "name": metadata.get("candidate_name") or metadata.get("name", ""),
                     "category": metadata.get("category", ""),
                     "mastercategory": metadata.get("mastercategory", ""),
-                    "experience_years": metadata.get("experience_years"),
-                    "skills": metadata.get("skills", []),
+                    "designation": metadata.get("designation", ""),  # Add designation to response
+                    "jobrole": metadata.get("jobrole", ""),  # Add jobrole to response
+                    "experience_years": experience_years,
+                    "skills": skills,
                     "location": metadata.get("location"),
                     "score": score
                 }
@@ -340,8 +616,6 @@ class AISearchService:
                 fit_tier = self.categorize_fit_tier(candidate, parsed_query, score)
                 candidate["fit_tier"] = fit_tier
                 
-                # Only include if not "Low Match" (or include all and let client filter)
-                # For now, include all but mark Low Match
                 processed_results.append(candidate)
             
             # Rank by score (relevance)
@@ -351,8 +625,12 @@ class AISearchService:
             processed_results = processed_results[:top_k]
             
             logger.info(
-                f"Semantic search found {len(processed_results)} candidates",
-                extra={"result_count": len(processed_results)}
+                f"Semantic search found {len(processed_results)} candidates (IT: {len(it_results)}, Non-IT: {len(non_it_results)})",
+                extra={
+                    "result_count": len(processed_results),
+                    "it_results": len(it_results),
+                    "non_it_results": len(non_it_results)
+                }
             )
             
             return processed_results

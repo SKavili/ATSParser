@@ -722,6 +722,64 @@ class PineconeAutomation:
             traceback.print_exc()
             raise RuntimeError(f"Vector insertion failed: {e}")
     
+    async def get_all_namespaces(self, mastercategory: str) -> List[str]:
+        """
+        Get all namespaces from the specified index.
+        
+        Args:
+            mastercategory: "IT" or "NON_IT" to determine index
+            
+        Returns:
+            List of namespace names
+        """
+        try:
+            # Determine target index
+            index_name = self._determine_index_name(mastercategory)
+            target_index = self.it_index if index_name == IT_INDEX_NAME else self.non_it_index
+            
+            if not target_index:
+                # Initialize index connection if not already done
+                if index_name == IT_INDEX_NAME:
+                    self.it_index = self.pc.Index(IT_INDEX_NAME)
+                    target_index = self.it_index
+                else:
+                    self.non_it_index = self.pc.Index(NON_IT_INDEX_NAME)
+                    target_index = self.non_it_index
+            
+            # Get index stats which includes namespace information
+            loop = asyncio.get_event_loop()
+            stats = await loop.run_in_executor(None, lambda: target_index.describe_index_stats())
+            
+            # Extract namespaces from stats
+            namespaces = []
+            if stats and "namespaces" in stats:
+                namespaces = list(stats["namespaces"].keys())
+            
+            # Filter out placeholder namespaces (they don't have real data)
+            namespaces = [ns for ns in namespaces if not ns.startswith("_namespace_init_")]
+            
+            # Also check if default namespace has data
+            # Default namespace shows up as empty string "" or might be in total_vector_count
+            if stats and "total_vector_count" in stats:
+                total_count = stats.get("total_vector_count", 0)
+                # If there are vectors but no namespaces listed, they might be in default namespace
+                # But we'll rely on the namespaces dict which should include default if it has data
+            
+            logger.info(
+                f"Found {len(namespaces)} namespaces in index '{index_name}'",
+                extra={"index_name": index_name, "namespace_count": len(namespaces), "namespaces": namespaces[:10]}  # Log first 10
+            )
+            
+            return namespaces
+            
+        except Exception as e:
+            logger.error(
+                f"Failed to get namespaces: {e}",
+                extra={"mastercategory": mastercategory, "error": str(e)}
+            )
+            # Return empty list on error - search will still work with default namespace
+            return []
+    
     async def query_vectors(
         self,
         query_vector: List[float],

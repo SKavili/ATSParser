@@ -7,6 +7,7 @@ from httpx import Timeout
 
 from app.config import settings
 from app.utils.logging import get_logger
+from app.ai_search.query_category_identifier import QueryCategoryIdentifier
 
 logger = get_logger(__name__)
 
@@ -31,8 +32,10 @@ Convert the user's natural language search query into a structured search intent
 that can be used for candidate filtering and semantic search.
 
 INSTRUCTIONS:
-- Detect skills, boolean logic (AND / OR), experience, location, and person name.
-- Normalize skill names to lowercase.
+- Detect job role/designation (e.g., "QA Automation Engineer", "Software Engineer", "Business Analyst"), skills, boolean logic (AND / OR), experience, location, and person name.
+- If the query appears to be a job role/designation (job title), extract it as designation. Common patterns: "X Engineer", "X Developer", "X Manager", "X Analyst", etc.
+- If designation is detected, prioritize it over skills extraction. A designation query should have designation field populated, not skills.
+- Normalize skill names and designation to lowercase.
 - If a person name is detected, treat it as a name search.
 - If experience is mentioned, extract minimum experience in years.
 - If location is mentioned, extract city or place (normalize to lowercase).
@@ -52,12 +55,15 @@ OUTPUT FORMAT (STRICT JSON ONLY):
   "search_type": "semantic | name | hybrid",
   "text_for_embedding": "",
   "filters": {
+    "designation": null,
     "must_have_all": [],
     "must_have_one_of_groups": [],
     "min_experience": null,
     "location": null,
     "candidate_name": null
-  }
+  },
+  "mastercategory": null,
+  "category": null
 }
 
 DO NOT:
@@ -74,6 +80,7 @@ class AISearchQueryParser:
     def __init__(self):
         self.ollama_host = settings.ollama_host
         self.model = "llama3.1"
+        self.category_identifier = QueryCategoryIdentifier()
     
     async def _check_ollama_connection(self) -> tuple[bool, Optional[str]]:
         """Check if OLLAMA is accessible and running. Returns (is_connected, available_model)."""
@@ -139,6 +146,8 @@ class AISearchQueryParser:
         
         # Ensure filter fields exist
         filters = parsed["filters"]
+        if "designation" not in filters:
+            filters["designation"] = None
         if "must_have_all" not in filters:
             filters["must_have_all"] = []
         if "must_have_one_of_groups" not in filters:
@@ -149,6 +158,12 @@ class AISearchQueryParser:
             filters["location"] = None
         if "candidate_name" not in filters:
             filters["candidate_name"] = None
+        
+        # Ensure category fields exist
+        if "mastercategory" not in parsed:
+            parsed["mastercategory"] = None
+        if "category" not in parsed:
+            parsed["category"] = None
         
         # Normalize search_type
         search_type = parsed["search_type"].lower()
@@ -171,12 +186,15 @@ class AISearchQueryParser:
             "search_type": "semantic",
             "text_for_embedding": "",
             "filters": {
+                "designation": None,
                 "must_have_all": [],
                 "must_have_one_of_groups": [],
                 "min_experience": None,
                 "location": None,
                 "candidate_name": None
-            }
+            },
+            "mastercategory": None,
+            "category": None
         }
     
     async def parse_query(self, query: str) -> Dict:
@@ -313,11 +331,48 @@ class AISearchQueryParser:
             except:
                 pass
         
+        # Try to identify category from query (optional, non-blocking with timeout)
+        # Use asyncio.wait_for to prevent category identification from blocking too long
+        try:
+            import asyncio
+            # Set a timeout of 30 seconds for category identification
+            # If it takes longer, skip it and proceed without category
+            mastercategory, category = await asyncio.wait_for(
+                self.category_identifier.identify_category_from_query(query),
+                timeout=30.0
+            )
+            if mastercategory:
+                parsed_data["mastercategory"] = mastercategory
+                logger.info(
+                    f"Identified mastercategory from query: {mastercategory}",
+                    extra={"query": query, "mastercategory": mastercategory}
+                )
+            if category:
+                parsed_data["category"] = category
+                logger.info(
+                    f"Identified category from query: {category}",
+                    extra={"query": query, "mastercategory": mastercategory, "category": category}
+                )
+        except asyncio.TimeoutError:
+            # Category identification took too long, skip it
+            logger.warning(
+                f"Category identification timed out after 30 seconds, proceeding without category",
+                extra={"query": query}
+            )
+        except Exception as e:
+            # Category identification is optional, don't fail the whole query parsing
+            logger.warning(
+                f"Category identification failed (non-blocking): {e}",
+                extra={"query": query, "error": str(e)}
+            )
+        
         logger.info(
             f"Query parsed successfully: search_type={parsed_data['search_type']}",
             extra={
                 "search_type": parsed_data["search_type"],
-                "has_filters": bool(parsed_data["filters"])
+                "has_filters": bool(parsed_data["filters"]),
+                "mastercategory": parsed_data.get("mastercategory"),
+                "category": parsed_data.get("category")
             }
         )
         

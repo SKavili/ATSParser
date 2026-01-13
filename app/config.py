@@ -21,7 +21,7 @@ class Settings(BaseSettings):
     chunk_overlap: int = Field(200, alias="CHUNK_OVERLAP")
     top_k_results: int = Field(5, alias="TOP_K_RESULTS")
     similarity_threshold: float = Field(0.5, alias="SIMILARITY_THRESHOLD")
-    embedding_dimension: int = Field(1536, alias="EMBEDDING_DIMENSION")
+    embedding_dimension: int = Field(768, alias="EMBEDDING_DIMENSION")
     
     # Pinecone Configuration
     pinecone_api_key: Optional[str] = Field(None, alias="PINECONE_API_KEY")

@@ -17,6 +17,8 @@ class CandidateResult(BaseModel):
     name: str
     category: Optional[str] = None
     mastercategory: Optional[str] = None
+    designation: Optional[str] = Field(None, description="Candidate's current or most recent job title/designation")
+    jobrole: Optional[str] = Field(None, description="Candidate's job role")
     experience_years: Optional[int] = None
     skills: List[str] = []
     location: Optional[str] = None
@@ -27,5 +29,7 @@ class CandidateResult(BaseModel):
 class AISearchResponse(BaseModel):
     """Response model for AI search."""
     query: str
+    identified_mastercategory: Optional[str] = Field(None, description="Mastercategory (IT/NON_IT) identified from the search query")
+    identified_category: Optional[str] = Field(None, description="Specific category identified from the search query")
     total_results: int
     results: List[CandidateResult]
