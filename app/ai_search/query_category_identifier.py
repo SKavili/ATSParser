@@ -9,8 +9,8 @@ from app.config import settings
 from app.utils.logging import get_logger
 
 # Timeout settings for category identification
-MASTERCATEGORY_TIMEOUT = 15.0  # 15 seconds for mastercategory identification
-CATEGORY_TIMEOUT = 15.0  # 15 seconds for category identification
+MASTERCATEGORY_TIMEOUT = 600.0  # 600 seconds for mastercategory identification
+CATEGORY_TIMEOUT = 600.0  # 600 seconds for category identification
 
 logger = get_logger(__name__)
 

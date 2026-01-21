@@ -34,14 +34,21 @@ that can be used for candidate filtering and semantic search.
 INSTRUCTIONS:
 - Detect job role/designation (e.g., "QA Automation Engineer", "Software Engineer", "Business Analyst"), skills, boolean logic (AND / OR), experience, location, and person name.
 - If the query appears to be a job role/designation (job title), extract it as designation. Common patterns: "X Engineer", "X Developer", "X Manager", "X Analyst", etc.
-- If designation is detected, prioritize it over skills extraction. A designation query should have designation field populated, not skills.
+- Designation and skills can BOTH exist - they are not mutually exclusive.
 - Normalize skill names and designation to lowercase.
-- If a person name is detected, treat it as a name search.
-- If experience is mentioned, extract minimum experience in years.
+- If a person name is detected, treat it as a name search. If query contains only person-like tokens (2-3 words) and no skills/roles, classify as name search. Support partial names and phonetic variations.
+- If experience is mentioned, extract minimum experience in years. Support ranges like "5-7 years" → min_experience: 5, max_experience: 7.
 - If location is mentioned, extract city or place (normalize to lowercase).
 - Preserve logical intent.
 - If no filters are detected, use semantic-only search.
-- For embedding text: Remove extracted filters from the original query, keep all terms for semantic understanding.
+
+SEMANTIC TEXT (VERY IMPORTANT - CRITICAL):
+- ALWAYS include role, skills, AND experience in text_for_embedding.
+- If experience is mentioned, text_for_embedding MUST include it (e.g., "software engineer with 5 years experience").
+- NEVER return empty text_for_embedding.
+- Do NOT remove role, skills, or experience from semantic text - they help semantic search.
+- Keep the full query context for better semantic understanding.
+- Example: "Software Engineer with 5 years" → text_for_embedding: "software engineer with 5 years experience"
 
 BOOLEAN LOGIC HANDLING:
 - Parentheses group OR conditions: ("A" OR "B")
@@ -59,6 +66,7 @@ OUTPUT FORMAT (STRICT JSON ONLY):
     "must_have_all": [],
     "must_have_one_of_groups": [],
     "min_experience": null,
+    "max_experience": null,
     "location": null,
     "candidate_name": null
   },
@@ -154,6 +162,8 @@ class AISearchQueryParser:
             filters["must_have_one_of_groups"] = []
         if "min_experience" not in filters:
             filters["min_experience"] = None
+        if "max_experience" not in filters:
+            filters["max_experience"] = None
         if "location" not in filters:
             filters["location"] = None
         if "candidate_name" not in filters:
@@ -190,12 +200,84 @@ class AISearchQueryParser:
                 "must_have_all": [],
                 "must_have_one_of_groups": [],
                 "min_experience": None,
+                "max_experience": None,
                 "location": None,
                 "candidate_name": None
             },
             "mastercategory": None,
             "category": None
         }
+    
+    def _infer_mastercategory_from_query(self, query: str, parsed_data: Dict) -> Optional[str]:
+        """
+        Infer mastercategory from query when LLM identification fails.
+        Uses keyword-based heuristics for common IT/NON-IT indicators.
+        
+        Args:
+            query: Original search query
+            parsed_data: Parsed query data (may contain designation, skills, etc.)
+        
+        Returns:
+            "IT" or "NON_IT" or None if cannot infer
+        """
+        query_lower = query.lower()
+        designation = parsed_data.get("filters", {}).get("designation", "").lower()
+        text_for_embedding = parsed_data.get("text_for_embedding", "").lower()
+        
+        # Combine all text for analysis
+        combined_text = f"{query_lower} {designation} {text_for_embedding}".lower()
+        
+        # IT domain indicators (strong signals)
+        it_keywords = [
+            # Job titles
+            "engineer", "developer", "programmer", "architect", "qa", "automation",
+            "devops", "sre", "sdet", "sde", "data engineer", "data scientist",
+            "software", "backend", "frontend", "full stack", "fullstack",
+            # Technologies
+            "python", "java", "javascript", "typescript", "c#", "c++", "go", "rust",
+            "sql", "database", "api", "microservices", "kubernetes", "docker",
+            "aws", "azure", "gcp", "cloud", "ai", "ml", "machine learning",
+            "selenium", "testing", "test automation", "ci/cd", "jenkins", "git"
+        ]
+        
+        # NON-IT domain indicators (strong signals)
+        non_it_keywords = [
+            # Job titles (generic - check context)
+            "manager", "director", "executive", "consultant",
+            "sales", "marketing", "hr", "human resources", "recruiter",
+            "finance", "accounting", "accountant", "cfo", "controller",
+            "operations", "supply chain", "procurement", "vendor",
+            # Functions
+            "business development", "customer service", "support"
+        ]
+        
+        # Context-aware NON-IT keywords (only if IT context is weak)
+        if "it" not in combined_text and "software" not in combined_text:
+            # Add context-specific NON-IT keywords
+            if "business" in combined_text and "analyst" in combined_text:
+                non_it_keywords.append("business analyst")
+            if "project" in combined_text and "manager" in combined_text:
+                non_it_keywords.append("project manager")
+        
+        # Count IT indicators
+        it_count = sum(1 for keyword in it_keywords if keyword in combined_text)
+        
+        # Count NON-IT indicators (but exclude if IT indicators are strong)
+        non_it_count = 0
+        if it_count < 2:  # Only count NON-IT if IT signals are weak
+            non_it_count = sum(1 for keyword in non_it_keywords if keyword in combined_text)
+        
+        # Decision logic
+        if it_count >= 2:
+            return "IT"
+        elif non_it_count >= 2:
+            return "NON_IT"
+        elif it_count == 1:
+            # Single IT indicator - likely IT
+            return "IT"
+        else:
+            # Cannot infer - return None
+            return None
     
     async def parse_query(self, query: str) -> Dict:
         """
@@ -365,6 +447,60 @@ class AISearchQueryParser:
                 f"Category identification failed (non-blocking): {e}",
                 extra={"query": query, "error": str(e)}
             )
+        
+        # NEW APPROACH: Infer mastercategory from query if LLM failed
+        if not parsed_data.get("mastercategory"):
+            inferred_mastercategory = self._infer_mastercategory_from_query(query, parsed_data)
+            if inferred_mastercategory:
+                parsed_data["mastercategory"] = inferred_mastercategory
+                logger.info(
+                    f"Inferred mastercategory from query: {inferred_mastercategory}",
+                    extra={"query": query, "mastercategory": inferred_mastercategory, "source": "inferred"}
+                )
+        
+        # OPTIMIZATION: Hard keyword fallback for role-based queries (for 180k+ resumes)
+        # This ensures role queries never stay null, improving namespace targeting
+        if not parsed_data.get("mastercategory"):
+            query_l = query.lower()
+            designation = parsed_data.get("filters", {}).get("designation", "").lower()
+            combined_role_text = f"{query_l} {designation}".lower()
+            
+            # NON-IT roles (explicit list for common roles)
+            non_it_roles = [
+                "scrum master", "scrummaster", "agile scrum master",
+                "project manager", "program manager", "product owner",
+                "business analyst", "change manager", "organizational change manager",
+                "procurement manager", "vendor manager", "sourcing manager"
+            ]
+            
+            # IT roles (explicit list)
+            it_roles = [
+                "developer", "engineer", "programmer", "architect",
+                "qa", "automation", "selenium", "sdet", "test automation",
+                "devops", "sre", "data engineer", "data scientist",
+                "software", "backend", "frontend", "full stack", "fullstack"
+            ]
+            
+            # Check for explicit role matches first (fastest path)
+            if any(role in combined_role_text for role in non_it_roles):
+                parsed_data["mastercategory"] = "NON_IT"
+                # Set default category for common roles
+                if "scrum" in combined_role_text:
+                    parsed_data["category"] = "Business & Management"
+                elif "project" in combined_role_text or "program" in combined_role_text:
+                    parsed_data["category"] = "Project Management (Non-IT)"
+                elif "change" in combined_role_text:
+                    parsed_data["category"] = "Business & Management"
+                logger.info(
+                    f"Mastercategory inferred via role keyword: NON_IT",
+                    extra={"query": query, "role_match": "non_it_role", "source": "role_keyword"}
+                )
+            elif any(role in combined_role_text for role in it_roles):
+                parsed_data["mastercategory"] = "IT"
+                logger.info(
+                    f"Mastercategory inferred via role keyword: IT",
+                    extra={"query": query, "role_match": "it_role", "source": "role_keyword"}
+                )
         
         logger.info(
             f"Query parsed successfully: search_type={parsed_data['search_type']}",
