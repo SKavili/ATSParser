@@ -39,21 +39,33 @@ CONTEXT:
 
 IT DOMAIN indicators:
 - Job titles: Developer, Engineer, Architect, Data Scientist, DevOps Engineer, QA/Automation Engineer, etc.
+- IT abbreviations (ALWAYS IT): "QA" (Quality Assurance), "SDET" (Software Development Engineer in Test), "SDE" (Software Development Engineer), "QA Engineer", "Test Engineer", "Automation Engineer"
 - Technologies: Programming languages, frameworks, databases, cloud platforms, AI/ML, etc.
-- Examples: "Java Developer", "Python Engineer", "Data Analyst", "Cloud Architect", "QA Automation Engineer"
+- Examples: "Java Developer", "Python Engineer", "Data Analyst", "Cloud Architect", "QA Automation Engineer", "QA", "SDET"
 
 NON-IT DOMAIN indicators:
 - Job titles: Manager, Analyst (business), Consultant, Sales, HR, Finance, Operations, etc.
 - Functions: Business, Finance, Sales, Marketing, HR, Operations, etc.
-- Examples: "Business Analyst", "Sales Manager", "HR Executive", "Finance Analyst"
+- NON-IT Quality roles: "Quality Manager", "Quality Compliance", "Quality Audit", "Compliance Officer" (when NOT related to software testing)
+- Examples: "Business Analyst", "Sales Manager", "HR Executive", "Finance Analyst", "Quality Compliance & Audit"
+
+CRITICAL DISTINCTIONS:
+- "QA" alone → IT (Quality Assurance in software/testing context)
+- "QA Engineer", "QA Automation", "Test QA" → IT
+- "Quality Compliance", "Quality Audit", "Compliance & Audit" → NON-IT (regulatory/business compliance, NOT software testing)
+- "Data Analyst" → Usually IT (technical data analysis) unless explicitly "Business Data Analyst"
+- "Business Analyst" → NON-IT unless explicitly "IT Business Analyst"
 
 CLASSIFICATION RULES:
 1. If query contains IT technical terms (Developer, Engineer, Programmer, Architect, DevOps, etc.) → IT
-2. If query contains programming languages, frameworks, or technical platforms → IT
-3. If query is ambiguous but contains "Analyst" or "Manager" → Consider context
-   - "Data Analyst" → Could be IT (if technical) or NON-IT (if business)
-   - "Business Analyst" → Usually NON-IT unless explicitly "IT Business Analyst"
-4. If no clear IT indicators → NON_IT
+2. If query contains IT abbreviations ("QA", "SDET", "SDE", "QA Engineer", "Test Engineer") → IT
+3. If query contains programming languages, frameworks, or technical platforms → IT
+4. If query is ambiguous but contains "Analyst" or "Manager" → Consider context
+   - "Data Analyst" → IT (technical data analysis)
+   - "Business Analyst" → NON-IT unless explicitly "IT Business Analyst"
+   - "Quality Manager" → NON-IT (business quality management, NOT software QA)
+5. If query contains "Quality Compliance", "Quality Audit", "Compliance & Audit" → NON-IT
+6. If no clear IT indicators → NON_IT
 
 OUTPUT RULES (ABSOLUTE):
 - Output exactly ONE line

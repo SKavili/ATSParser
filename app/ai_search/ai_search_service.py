@@ -241,7 +241,7 @@ class AISearchService:
         Returns:
             Role family string ("qa", "software_engineer", "developer", etc.) or None
         """
-        designation = parsed_query.get("filters", {}).get("designation", "").lower()
+        designation = (parsed_query.get("filters", {}).get("designation") or "").lower()
         text_for_embedding = parsed_query.get("text_for_embedding", "").lower()
         query_text = f"{designation} {text_for_embedding}".lower()
         
@@ -425,7 +425,7 @@ class AISearchService:
         
         # FIX 5: Domain-specific skill boosts (QA/Automation)
         query_text = parsed_query.get("text_for_embedding", "").lower()
-        designation_filter = filters.get("designation", "").lower()
+        designation_filter = (filters.get("designation") or "").lower()
         
         qa_keywords = ["qa", "automation", "selenium", "webdriver", "test", "testing", "testng", "cucumber"]
         is_qa_query = any(kw in query_text or kw in designation_filter for kw in qa_keywords)
@@ -614,7 +614,7 @@ class AISearchService:
         
         # Check for student/intern roles when query wants professional
         filters = parsed_query.get("filters", {})
-        designation = filters.get("designation", "").lower()
+        designation = (filters.get("designation") or "").lower()
         candidate_designation = (candidate.get("designation") or "").lower()
         
         if designation and (
@@ -960,7 +960,7 @@ class AISearchService:
             
             # OPTIMIZATION for 180k+ resumes: Restrict namespaces for role queries
             # Role queries should only search relevant namespaces, not all 55
-            query_designation = parsed_query.get("filters", {}).get("designation", "").lower()
+            query_designation = (parsed_query.get("filters", {}).get("designation") or "").lower()
             
             # NEW APPROACH: Prioritize namespaces (category-based or role-family fallback)
             if identified_mastercategory:

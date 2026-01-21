@@ -180,13 +180,31 @@ class AISearchQueryParser:
         if search_type not in ["semantic", "name", "hybrid"]:
             parsed["search_type"] = "semantic"
         
+        # Normalize designation: convert list to string if needed, then lowercase
+        if filters["designation"]:
+            if isinstance(filters["designation"], list):
+                # If LLM returns a list, take the first element
+                filters["designation"] = filters["designation"][0] if filters["designation"] else None
+            if filters["designation"]:
+                filters["designation"] = str(filters["designation"]).lower().strip()
+                # Set to None if empty string after normalization
+                if not filters["designation"]:
+                    filters["designation"] = None
+        
         # Normalize location to lowercase if present
         if filters["location"]:
             filters["location"] = str(filters["location"]).lower().strip()
         
-        # Normalize candidate_name if present
+        # Normalize candidate_name: convert list to string if needed, then strip
         if filters["candidate_name"]:
-            filters["candidate_name"] = str(filters["candidate_name"]).strip()
+            if isinstance(filters["candidate_name"], list):
+                # If LLM returns a list, take the first element
+                filters["candidate_name"] = filters["candidate_name"][0] if filters["candidate_name"] else None
+            if filters["candidate_name"]:
+                filters["candidate_name"] = str(filters["candidate_name"]).strip()
+                # Set to None if empty string after normalization
+                if not filters["candidate_name"]:
+                    filters["candidate_name"] = None
         
         return parsed
     
@@ -221,7 +239,7 @@ class AISearchQueryParser:
             "IT" or "NON_IT" or None if cannot infer
         """
         query_lower = query.lower()
-        designation = parsed_data.get("filters", {}).get("designation", "").lower()
+        designation = (parsed_data.get("filters", {}).get("designation") or "").lower()
         text_for_embedding = parsed_data.get("text_for_embedding", "").lower()
         
         # Combine all text for analysis
@@ -462,7 +480,7 @@ class AISearchQueryParser:
         # This ensures role queries never stay null, improving namespace targeting
         if not parsed_data.get("mastercategory"):
             query_l = query.lower()
-            designation = parsed_data.get("filters", {}).get("designation", "").lower()
+            designation = (parsed_data.get("filters", {}).get("designation") or "").lower()
             combined_role_text = f"{query_l} {designation}".lower()
             
             # NON-IT roles (explicit list for common roles)
