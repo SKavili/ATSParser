@@ -182,6 +182,7 @@ async def index_pinecone(
     - Generates chunked embeddings for each resume
     - Stores embeddings in Pinecone (routed to IT/Non-IT index based on mastercategory)
     - Updates pinecone_status = 1 only after successful storage
+    - Normalizes skills to canonical forms (e.g., "react.js" → "react", "angularjs" → "angular")
     
     Query Parameters:
     - limit: Optional limit on number of resumes to process (default: all pending)
@@ -209,6 +210,69 @@ async def index_pinecone(
     except Exception as e:
         logger.error(f"Error in index-pinecone endpoint: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail=f"Failed to index resumes: {str(e)}")
+
+
+@router.post("/reindex-resumes")
+async def reindex_resumes(
+    limit: Optional[int] = Query(None, description="Maximum number of resumes to re-index"),
+    resume_ids: Optional[List[int]] = Query(None, description="Specific resume IDs to re-index"),
+    session: AsyncSession = Depends(get_db_session)
+):
+    """
+    Re-index resumes to Pinecone with skill normalization.
+    
+    This endpoint re-indexes resumes with the new skill normalization logic:
+    - Normalizes skills to canonical forms (e.g., "react.js" → "react", "angularjs" → "angular")
+    - Re-generates chunked embeddings for each resume
+    - Updates Pinecone vectors with normalized skills
+    - This is required after implementing skill normalization to update existing resumes
+    
+    Query Parameters:
+    - limit: Optional limit on number of resumes to re-index (default: all resumes)
+    - resume_ids: Optional list of specific resume IDs to re-index
+    
+    Examples:
+    - Re-index all resumes: POST /reindex-resumes
+    - Re-index first 100 resumes: POST /reindex-resumes?limit=100
+    - Re-index specific resumes: POST /reindex-resumes?resume_ids=1&resume_ids=2&resume_ids=3
+    
+    Returns:
+    {
+        "indexed_count": 5,
+        "failed_count": 0,
+        "processed_ids": [1, 2, 3, 4, 5],
+        "failed_ids": [],
+        "skipped_ids": [],
+        "message": "Re-indexed 5 resumes with skill normalization. Failed: 0. Skipped: 0"
+    }
+    """
+    try:
+        indexing_service = ResumeIndexingService(session)
+        # Force re-indexing to update with normalized skills
+        result = await indexing_service.index_resumes(
+            limit=limit,
+            resume_ids=resume_ids,
+            force=True  # Always force re-indexing for this endpoint
+        )
+        
+        # Update message to indicate re-indexing
+        if result.get("message"):
+            result["message"] = result["message"].replace("Indexed", "Re-indexed")
+            result["message"] += " with skill normalization"
+        
+        logger.info(
+            f"Re-indexing completed: {result.get('indexed_count', 0)} resumes processed",
+            extra={
+                "indexed_count": result.get("indexed_count", 0),
+                "failed_count": result.get("failed_count", 0),
+                "processed_ids": result.get("processed_ids", [])
+            }
+        )
+        
+        return result
+    except Exception as e:
+        logger.error(f"Error in reindex-resumes endpoint: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=f"Failed to re-index resumes: {str(e)}")
 
 
 @router.post("/ai-search", response_model=AISearchResponse, status_code=200)

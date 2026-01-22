@@ -6,6 +6,7 @@ from app.services.pinecone_automation import PineconeAutomation
 from app.repositories.resume_repo import ResumeRepository
 from app.utils.logging import get_logger
 from app.ai_search.designation_matcher import DesignationMatcher
+from app.utils.cleaning import normalize_skill_list
 
 logger = get_logger(__name__)
 
@@ -97,6 +98,9 @@ class AISearchService:
             "data_analysis_business_intelligence",
             "databases_data_technologies",
             "programming_scripting",
+            "cloud_platforms_aws",
+            "cloud_platforms_azure",
+            "cloud_platforms_gcp",
         ],
         "devops": [
             "devops_platform_engineering",
@@ -302,8 +306,8 @@ class AISearchService:
         # Each skill must be present in the skills array
         must_have_all = filters.get("must_have_all", [])
         if must_have_all:
-            # Normalize to lowercase
-            normalized_skills = [s.lower().strip() for s in must_have_all if s]
+            # Normalize skills to canonical forms (e.g., "react.js" → "react", "angularjs" → "angular")
+            normalized_skills = normalize_skill_list(must_have_all)
             if normalized_skills:
                 if len(normalized_skills) == 1:
                     # Single skill - use $in
@@ -320,7 +324,8 @@ class AISearchService:
             or_skill_conditions = []
             for group in must_have_one_of_groups:
                 if group:
-                    normalized_group = [s.lower().strip() for s in group if s]
+                    # Normalize skills to canonical forms (e.g., "react.js" → "react", "angularjs" → "angular")
+                    normalized_group = normalize_skill_list(group)
                     if normalized_group:
                         or_skill_conditions.append({"skills": {"$in": normalized_group}})
             
@@ -442,19 +447,21 @@ class AISearchService:
         score = 0.0
         filters = parsed_query.get("filters", {})
         
-        # Parse candidate skills
+        # Parse candidate skills and normalize to canonical forms
         candidate_skills_raw = candidate.get("skills", [])
         if isinstance(candidate_skills_raw, str):
-            candidate_skills = [s.strip().lower() for s in candidate_skills_raw.split(",") if s.strip()]
+            raw_skills = [s.strip() for s in candidate_skills_raw.split(",") if s.strip()]
+            candidate_skills = normalize_skill_list(raw_skills)
         elif isinstance(candidate_skills_raw, list):
-            candidate_skills = [s.lower() if isinstance(s, str) else str(s).lower() for s in candidate_skills_raw]
+            candidate_skills = normalize_skill_list([str(s) for s in candidate_skills_raw if s])
         else:
             candidate_skills = []
         
         # Score must_have_all skills (soft scoring - partial matches get partial score)
         must_have_all = filters.get("must_have_all", [])
         if must_have_all:
-            required_skills = [s.lower().strip() for s in must_have_all if s]
+            # Normalize required skills to canonical forms for matching
+            required_skills = normalize_skill_list(must_have_all)
             matched_skills = sum(1 for skill in required_skills if skill in candidate_skills)
             if matched_skills > 0:
                 # Partial match: score based on percentage of skills matched
@@ -468,7 +475,8 @@ class AISearchService:
             for group in must_have_one_of_groups:
                 if not group:
                     continue
-                group_skills = [s.lower().strip() if isinstance(s, str) else str(s).lower().strip() for s in group]
+                # Normalize group skills to canonical forms for matching
+                group_skills = normalize_skill_list([str(s) for s in group if s])
                 matched_in_group = sum(1 for skill in group_skills if skill in candidate_skills)
                 if matched_in_group > 0:
                     group_ratio = matched_in_group / len(group_skills)
@@ -726,19 +734,24 @@ class AISearchService:
         # NEW: Skill-based promotion - if required skills match, promote tier
         must_have_all = filters.get("must_have_all", [])
         must_have_one_of_groups = filters.get("must_have_one_of_groups", [])
-        candidate_skills = [s.lower().strip() if isinstance(s, str) else str(s).lower().strip() 
-                           for s in (candidate.get("skills", []) or [])]
+        # Normalize candidate skills to canonical forms
+        candidate_skills_raw = candidate.get("skills", []) or []
+        if isinstance(candidate_skills_raw, str):
+            raw_skills = [s.strip() for s in candidate_skills_raw.split(",") if s.strip()]
+            candidate_skills = normalize_skill_list(raw_skills)
+        elif isinstance(candidate_skills_raw, list):
+            candidate_skills = normalize_skill_list([str(s) for s in candidate_skills_raw if s])
+        else:
+            candidate_skills = []
         
         # Check if all required skills are present
         has_all_required_skills = True
         if must_have_all:
-            required_skills_lower = [s.lower().strip() for s in must_have_all if s]
-            for req_skill in required_skills_lower:
-                # Check if any candidate skill contains or matches the required skill
-                skill_found = any(
-                    req_skill in cand_skill or cand_skill in req_skill
-                    for cand_skill in candidate_skills
-                )
+            # Normalize required skills to canonical forms for matching
+            required_skills = normalize_skill_list(must_have_all)
+            for req_skill in required_skills:
+                # Check if any candidate skill matches the required skill (exact match after normalization)
+                skill_found = req_skill in candidate_skills
                 if not skill_found:
                     has_all_required_skills = False
                     break
@@ -750,12 +763,10 @@ class AISearchService:
             for group in must_have_one_of_groups:
                 if not group:
                     continue
-                group_skills_lower = [s.lower().strip() for s in group if s]
-                for req_skill in group_skills_lower:
-                    if any(
-                        req_skill in cand_skill or cand_skill in req_skill
-                        for cand_skill in candidate_skills
-                    ):
+                # Normalize group skills to canonical forms for matching
+                group_skills = normalize_skill_list([str(s) for s in group if s])
+                for req_skill in group_skills:
+                    if req_skill in candidate_skills:
                         has_one_of_skills = True
                         break
                 if has_one_of_skills:
@@ -1065,6 +1076,7 @@ class AISearchService:
             has_filters = bool(
                 filters.get("min_experience") or 
                 filters.get("must_have_all") or 
+                filters.get("must_have_one_of_groups") or
                 filters.get("designation")
             )
             
@@ -1455,6 +1467,71 @@ class AISearchService:
                         }
                     )
                     all_results = it_results_fallback + non_it_results_fallback
+                
+                # OPTION 5: Third-level fallback - Search ALL namespaces when filters exist
+                # This ensures no false negatives when filters are present (skills/designation)
+                # Filters make this efficient even with 180k+ resumes
+                if len(all_results) == 0 and has_filters and pinecone_filter:
+                    logger.info(
+                        "Role-family fallback returned 0 results but filters exist. "
+                        "Searching ALL namespaces with filters to ensure no false negatives.",
+                        extra={
+                            "filters": pinecone_filter,
+                            "designation": filters.get("designation"),
+                            "must_have_all": filters.get("must_have_all"),
+                            "must_have_one_of_groups": filters.get("must_have_one_of_groups")
+                        }
+                    )
+                    
+                    # Get all namespaces for comprehensive search
+                    all_it_namespaces = await self.pinecone_automation.get_all_namespaces("IT")
+                    all_non_it_namespaces = await self.pinecone_automation.get_all_namespaces("NON_IT")
+                    
+                    if not all_it_namespaces:
+                        all_it_namespaces = [""]
+                    if not all_non_it_namespaces:
+                        all_non_it_namespaces = [""]
+                    
+                    # Search all IT namespaces with filters (filters limit results, so it's efficient)
+                    it_results_all = []
+                    for namespace in (all_it_namespaces if identified_mastercategory and identified_mastercategory.upper() == "IT" else []):
+                        try:
+                            namespace_results = await self.pinecone_automation.query_vectors(
+                                query_vector=embedding,
+                                mastercategory="IT",
+                                namespace=namespace if namespace else None,
+                                top_k=per_namespace_k,  # Smaller k per namespace since we're searching all
+                                filter_dict=pinecone_filter
+                            )
+                            it_results_all.extend(namespace_results)
+                        except Exception as e:
+                            logger.warning(f"Failed to query IT namespace '{namespace}' (all-namespace fallback): {e}")
+                    
+                    # Search all Non-IT namespaces with filters
+                    non_it_results_all = []
+                    for namespace in (all_non_it_namespaces if identified_mastercategory and identified_mastercategory.upper() == "NON_IT" else []):
+                        try:
+                            namespace_results = await self.pinecone_automation.query_vectors(
+                                query_vector=embedding,
+                                mastercategory="NON_IT",
+                                namespace=namespace if namespace else None,
+                                top_k=per_namespace_k,
+                                filter_dict=pinecone_filter
+                            )
+                            non_it_results_all.extend(namespace_results)
+                        except Exception as e:
+                            logger.warning(f"Failed to query Non-IT namespace '{namespace}' (all-namespace fallback): {e}")
+                    
+                    if it_results_all or non_it_results_all:
+                        logger.info(
+                            f"All-namespace fallback (with filters) returned {len(it_results_all)} IT and {len(non_it_results_all)} Non-IT results",
+                            extra={
+                                "it_results": len(it_results_all),
+                                "non_it_results": len(non_it_results_all),
+                                "total_namespaces_searched": len(all_it_namespaces) + len(all_non_it_namespaces)
+                            }
+                        )
+                        all_results = it_results_all + non_it_results_all
             
             # FALLBACK STRATEGY: If semantic search returned 0 results but we have filters,
             # retry with a more generic embedding that better matches resume content

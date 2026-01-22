@@ -145,3 +145,259 @@ def remove_symbols_and_emojis(text: Optional[str]) -> Optional[str]:
     text = re.sub(r'\s+', ' ', text)
     
     return text.strip() if text.strip() else None
+
+
+# Skill alias mapping: maps variations to canonical skill names
+# All keys and values should be lowercase for consistency
+SKILL_ALIAS_MAP = {
+    # React variations
+    "react.js": "react",
+    "reactjs": "react",
+    "react js": "react",
+    "react.jsx": "react",
+    "reactjsx": "react",
+    
+    # Angular variations
+    "angularjs": "angular",
+    "angular.js": "angular",
+    "angular js": "angular",
+    "angular 2": "angular",
+    "angular 2+": "angular",
+    "angular 4": "angular",
+    "angular 5": "angular",
+    "angular 6": "angular",
+    "angular 7": "angular",
+    "angular 8": "angular",
+    "angular 9": "angular",
+    "angular 10": "angular",
+    "angular 11": "angular",
+    "angular 12": "angular",
+    "angular 13": "angular",
+    "angular 14": "angular",
+    "angular 15": "angular",
+    "angular 16": "angular",
+    "angular 17": "angular",
+    "angular 18": "angular",
+    "angularjs 1.x": "angular",
+    "angularjs 1.0": "angular",
+    
+    # Vue variations
+    "vue.js": "vue",
+    "vuejs": "vue",
+    "vue js": "vue",
+    "vue 2": "vue",
+    "vue 3": "vue",
+    
+    # Java variations
+    "java 8": "java",
+    "java 11": "java",
+    "java 17": "java",
+    "java 21": "java",
+    "j2ee": "java",
+    "j2se": "java",
+    "j2me": "java",
+    "java ee": "java",
+    "java se": "java",
+    "java me": "java",
+    "core java": "java",
+    "advanced java": "java",
+    
+    # Node.js variations
+    "node.js": "node",
+    "nodejs": "node",
+    "node js": "node",
+    
+    # Python variations
+    "python 2": "python",
+    "python 3": "python",
+    "python 2.7": "python",
+    "python 3.6": "python",
+    "python 3.7": "python",
+    "python 3.8": "python",
+    "python 3.9": "python",
+    "python 3.10": "python",
+    "python 3.11": "python",
+    "python 3.12": "python",
+    
+    # JavaScript variations
+    "javascript": "js",
+    "ecmascript": "js",
+    "es6": "js",
+    "es7": "js",
+    "es8": "js",
+    "es2015": "js",
+    "es2016": "js",
+    "es2017": "js",
+    "es2018": "js",
+    "es2019": "js",
+    "es2020": "js",
+    "es2021": "js",
+    "es2022": "js",
+    "es2023": "js",
+    "es2024": "js",
+    
+    # TypeScript variations
+    "typescript": "ts",
+    "tsx": "ts",
+    
+    # Spring variations
+    "spring boot": "spring",
+    "springboot": "spring",
+    "spring framework": "spring",
+    "spring mvc": "spring",
+    "spring core": "spring",
+    "spring security": "spring",
+    "spring data": "spring",
+    "spring cloud": "spring",
+    
+    # .NET variations
+    ".net": "dotnet",
+    "dot net": "dotnet",
+    "asp.net": "aspnet",
+    "asp net": "aspnet",
+    "c#": "csharp",
+    "c sharp": "csharp",
+    ".net core": "dotnet",
+    "dotnet core": "dotnet",
+    "asp.net core": "aspnet",
+    "asp net core": "aspnet",
+    
+    # Database variations
+    "postgresql": "postgres",
+    "postgres sql": "postgres",
+    "mssql": "sql server",
+    "sql server": "sql server",
+    "microsoft sql server": "sql server",
+    "mongodb": "mongo",
+    "mongo db": "mongo",
+    "oracle db": "oracle",
+    "oracle database": "oracle",
+    
+    # Cloud/AWS variations
+    "amazon web services": "aws",
+    "amazon aws": "aws",
+    "aws cloud": "aws",
+    "azure cloud": "azure",
+    "microsoft azure": "azure",
+    "google cloud platform": "gcp",
+    "google cloud": "gcp",
+    "gcp cloud": "gcp",
+    
+    # Docker/Kubernetes variations
+    "docker container": "docker",
+    "kubernetes": "k8s",
+    "kube": "k8s",
+    
+    # Testing framework variations
+    "selenium webdriver": "selenium",
+    "testng": "testng",
+    "test ng": "testng",
+    "junit": "junit",
+    "j unit": "junit",
+    "pytest": "pytest",
+    "py test": "pytest",
+    
+    # Build tools variations
+    "npm": "npm",
+    "yarn": "yarn",
+    
+    # Version control variations
+    "github": "git",
+    "gitlab": "git",
+    "bitbucket": "git",
+    "svn": "svn",
+    "subversion": "svn",
+    
+    # Other common variations
+    "html5": "html",
+    "html 5": "html",
+    "css3": "css",
+    "css 3": "css",
+    "rest api": "rest",
+    "restful api": "rest",
+    "restful": "rest",
+    "soap api": "soap",
+    "graphql": "graphql",
+    "graph ql": "graphql",
+    "microservices": "microservices",
+    "micro services": "microservices",
+    "ci/cd": "cicd",
+    "ci cd": "cicd",
+    "continuous integration": "cicd",
+    "continuous deployment": "cicd",
+    "devops": "devops",
+    "dev ops": "devops",
+}
+
+
+def normalize_skill(skill: str) -> str:
+    """
+    Normalize a skill name to its canonical form using alias mapping.
+    
+    This function handles common skill name variations like:
+    - "react.js" → "react"
+    - "angularjs" → "angular"
+    - "java 8" → "java"
+    - "node.js" → "node"
+    
+    Args:
+        skill: Skill name to normalize (case-insensitive)
+    
+    Returns:
+        Normalized skill name in lowercase
+    """
+    if not skill:
+        return ""
+    
+    # Normalize to lowercase and strip whitespace
+    skill_lower = skill.lower().strip()
+    
+    # Remove extra whitespace
+    skill_lower = re.sub(r'\s+', ' ', skill_lower)
+    
+    # Check if skill has a direct alias mapping
+    if skill_lower in SKILL_ALIAS_MAP:
+        return SKILL_ALIAS_MAP[skill_lower]
+    
+    # Try to match partial patterns (e.g., "react.js" should match "react.js" key)
+    # This handles cases where the skill might have extra characters
+    for alias, canonical in SKILL_ALIAS_MAP.items():
+        # Exact match (already handled above)
+        if skill_lower == alias:
+            return canonical
+        
+        # Check if skill contains the alias as a word boundary
+        # e.g., "react.js" should match "react.js" key
+        if skill_lower == alias or skill_lower.startswith(alias + ".") or skill_lower.startswith(alias + " "):
+            return canonical
+    
+    # If no alias found, return normalized skill as-is
+    return skill_lower
+
+
+def normalize_skill_list(skills: List[str]) -> List[str]:
+    """
+    Normalize a list of skills to their canonical forms.
+    
+    Args:
+        skills: List of skill names to normalize
+    
+    Returns:
+        List of normalized skill names (lowercase, deduplicated)
+    """
+    if not skills:
+        return []
+    
+    normalized = []
+    seen = set()
+    
+    for skill in skills:
+        if not skill:
+            continue
+        
+        normalized_skill = normalize_skill(skill)
+        if normalized_skill and normalized_skill not in seen:
+            normalized.append(normalized_skill)
+            seen.add(normalized_skill)
+    
+    return normalized

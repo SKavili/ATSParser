@@ -8,6 +8,7 @@ from app.repositories.resume_repo import ResumeRepository
 from app.database.models import ResumeMetadata
 from app.utils.logging import get_logger
 from app.utils.safe_logger import safe_extra
+from app.utils.cleaning import normalize_skill_list
 
 logger = get_logger(__name__)
 
@@ -188,9 +189,11 @@ class ResumeIndexingService:
             )
             
             # Parse skillset string to array for filtering
+            # Normalize skills to canonical forms (e.g., "react.js" → "react", "angularjs" → "angular")
             skills_array = []
             if resume.skillset:
-                skills_array = [s.strip().lower() for s in resume.skillset.split(",") if s.strip()]
+                raw_skills = [s.strip() for s in resume.skillset.split(",") if s.strip()]
+                skills_array = normalize_skill_list(raw_skills)
             
             # Extract experience_years from experience string
             experience_years = None
