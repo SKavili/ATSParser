@@ -87,6 +87,8 @@ Identify the MOST APPROPRIATE IT CATEGORY for the search query.
 CONTEXT:
 - The query has ALREADY been classified as IT.
 - Search queries are typically short (job titles or brief descriptions).
+- You may receive the job role/designation and required skills separately for better accuracy.
+- Use BOTH role and skills together to identify the most specific category.
 - Select the category that BEST matches the query intent.
 
 SAMPLE IT CATEGORIES:
@@ -114,11 +116,16 @@ SAMPLE IT CATEGORIES:
 22. IT Project / Program Management
 
 SELECTION RULES:
-1. Match job title to category (e.g., "QA Automation Engineer" → "Programming & Scripting" or "Web & Mobile Development")
-2. Match technologies mentioned to category (e.g., ".NET Developer" → "Full Stack Development (.NET)")
-3. Match domain to category (e.g., "Data Analyst" → "Data Analysis & Business Intelligence")
-4. If multiple categories fit, select the MOST SPECIFIC one.
-5. If unclear, select the most general applicable category.
+1. If role AND skills are provided, use BOTH together for most accurate category:
+   - Example: Role="QA tester" + Skills=["Selenium"] → "Full Stack Development (Selenium)" or "Programming & Scripting"
+   - Example: Role="Developer" + Skills=["Java", "Spring"] → "Full Stack Development (Java)"
+   - Example: Role="Data Engineer" + Skills=["Python", "Spark"] → "Data Science" or "Data Analysis & Business Intelligence"
+2. Match job title to category (e.g., "QA Automation Engineer" → "Programming & Scripting" or "Web & Mobile Development")
+3. Match technologies mentioned to category (e.g., ".NET Developer" → "Full Stack Development (.NET)")
+4. Match domain to category (e.g., "Data Analyst" → "Data Analysis & Business Intelligence")
+5. If multiple categories fit, select the MOST SPECIFIC one based on role + skills combination.
+6. If only role is provided (no skills), use role-based matching.
+7. If unclear, select the most general applicable category.
 
 OUTPUT RULES (ABSOLUTE):
 - Output exactly ONE line
@@ -137,6 +144,8 @@ Identify the MOST APPROPRIATE NON-IT CATEGORY for the search query.
 CONTEXT:
 - The query has ALREADY been classified as NON-IT.
 - Search queries are typically short (job titles or brief descriptions).
+- You may receive the job role/designation and required skills separately for better accuracy.
+- Use BOTH role and skills together to identify the most specific category.
 - Select the category that BEST matches the query intent.
 
 SAMPLE NON-IT CATEGORIES:
@@ -172,11 +181,15 @@ SAMPLE NON-IT CATEGORIES:
 30. Data, Analytics & Decision Sciences (Non-Technical)
 
 SELECTION RULES:
-1. Match job title to category (e.g., "Business Analyst" → "Business & Management")
-2. Match function to category (e.g., "HR Manager" → "Human Resources (HR)")
-3. Match industry to category (e.g., "Healthcare Analyst" → "Healthcare & Life Sciences")
-4. If multiple categories fit, select the MOST SPECIFIC one.
-5. If unclear, select the most general applicable category.
+1. If role AND skills are provided, use BOTH together for most accurate category:
+   - Example: Role="Business Analyst" + Skills=["SAP"] → "Business & Management" or "ERP Systems"
+   - Example: Role="Project Manager" + Skills=["Agile", "Scrum"] → "Project Management (Non-IT)"
+2. Match job title to category (e.g., "Business Analyst" → "Business & Management")
+3. Match function to category (e.g., "HR Manager" → "Human Resources (HR)")
+4. Match industry to category (e.g., "Healthcare Analyst" → "Healthcare & Life Sciences")
+5. If multiple categories fit, select the MOST SPECIFIC one based on role + skills combination.
+6. If only role is provided (no skills), use role-based matching.
+7. If unclear, select the most general applicable category.
 
 OUTPUT RULES (ABSOLUTE):
 - Output exactly ONE line
@@ -369,13 +382,22 @@ Output (one line only, IT or NON_IT):"""
             )
             return None
     
-    async def identify_category(self, query: str, mastercategory: str) -> Optional[str]:
+    async def identify_category(
+        self, 
+        query: str, 
+        mastercategory: str,
+        role: Optional[str] = None,
+        skills: Optional[list] = None
+    ) -> Optional[str]:
         """
         Identify specific category from search query based on mastercategory.
+        Uses role and skills if provided for more accurate category identification.
         
         Args:
-            query: Search query string
+            query: Search query string (original query for context)
             mastercategory: "IT" or "NON_IT"
+            role: Optional job role/designation extracted from query
+            skills: Optional list of skills extracted from query
             
         Returns:
             Category string or None if identification fails
@@ -401,9 +423,29 @@ Output (one line only, IT or NON_IT):"""
             else:
                 prompt_template = QUERY_CATEGORY_PROMPT_NON_IT
             
+            # Build enhanced input with role and skills if available
+            input_parts = [f"Input Query: {query}"]
+            
+            if role:
+                input_parts.append(f"Job Role/Designation: {role}")
+            
+            if skills and len(skills) > 0:
+                # Combine all skills (from must_have_all and must_have_one_of_groups)
+                all_skills = []
+                for skill in skills:
+                    if isinstance(skill, list):
+                        all_skills.extend(skill)
+                    else:
+                        all_skills.append(skill)
+                if all_skills:
+                    skills_str = ", ".join([str(s) for s in all_skills if s])
+                    input_parts.append(f"Required Skills: {skills_str}")
+            
+            input_text = "\n".join(input_parts)
+            
             prompt = f"""{prompt_template}
 
-Input Query: {query}
+{input_text}
 
 Output (one line only, category name only):"""
             
@@ -455,13 +497,28 @@ Output (one line only, category name only):"""
                         if e.response.status_code == 404:
                             # Try /api/chat endpoint
                             try:
+                                # Build user message with role and skills if available
+                                user_content = query
+                                if role:
+                                    user_content += f"\nJob Role/Designation: {role}"
+                                if skills and len(skills) > 0:
+                                    all_skills = []
+                                    for skill in skills:
+                                        if isinstance(skill, list):
+                                            all_skills.extend(skill)
+                                        else:
+                                            all_skills.append(skill)
+                                    if all_skills:
+                                        skills_str = ", ".join([str(s) for s in all_skills if s])
+                                        user_content += f"\nRequired Skills: {skills_str}"
+                                
                                 response = await client.post(
                                     f"{self.ollama_host}/api/chat",
                                     json={
                                         "model": model_to_use,
                                         "messages": [
                                             {"role": "system", "content": prompt_template},
-                                            {"role": "user", "content": query}
+                                            {"role": "user", "content": user_content}
                                         ],
                                         "stream": False,
                                         "options": {
@@ -490,7 +547,13 @@ Output (one line only, category name only):"""
             if category:
                 logger.info(
                     f"Identified category from query: {category}",
-                    extra={"query": query, "mastercategory": mastercategory, "category": category}
+                    extra={
+                        "query": query, 
+                        "mastercategory": mastercategory, 
+                        "category": category,
+                        "role": role,
+                        "skills": skills
+                    }
                 )
             
             return category
@@ -502,12 +565,20 @@ Output (one line only, category name only):"""
             )
             return None
     
-    async def identify_category_from_query(self, query: str) -> Tuple[Optional[str], Optional[str]]:
+    async def identify_category_from_query(
+        self, 
+        query: str,
+        role: Optional[str] = None,
+        skills: Optional[list] = None
+    ) -> Tuple[Optional[str], Optional[str]]:
         """
         Identify both mastercategory and category from search query.
+        Uses role and skills if provided for more accurate category identification.
         
         Args:
             query: Search query string
+            role: Optional job role/designation extracted from parsed query
+            skills: Optional list of skills extracted from parsed query (can include must_have_all and must_have_one_of_groups)
             
         Returns:
             Tuple of (mastercategory, category) or (None, None) if identification fails
@@ -520,15 +591,15 @@ Output (one line only, category name only):"""
                 logger.info("Could not identify mastercategory from query, skipping category identification")
                 return None, None
             
-            # Then identify specific category
-            category = await self.identify_category(query, mastercategory)
+            # Then identify specific category (with role and skills for better accuracy)
+            category = await self.identify_category(query, mastercategory, role=role, skills=skills)
             
             return mastercategory, category
             
         except Exception as e:
             logger.warning(
                 f"Failed to identify category from query: {e}",
-                extra={"query": query, "error": str(e)}
+                extra={"query": query, "role": role, "skills": skills, "error": str(e)}
             )
             return None, None
 

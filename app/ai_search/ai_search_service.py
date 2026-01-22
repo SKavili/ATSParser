@@ -120,6 +120,13 @@ class AISearchService:
             "software test automation engineer",
             "qa engineer – automation",
             "sdet",  # Software Development Engineer in Test
+            "tester",  # Generic tester role
+            "qa tester",
+            "test engineer",
+            "qa test engineer",
+            "quality assurance tester",
+            "qa engineer",
+            "quality assurance engineer",
         ],
         # Generic Software Engineer family
         "software_engineer": [
@@ -340,12 +347,58 @@ class AISearchService:
                         # Multiple OR groups - use $or at top level
                         pinecone_filter = {"$or": or_skill_conditions}
         
-        # NOTE: Designation and experience filters are now handled via soft scoring
-        # We don't apply them as hard filters in Pinecone to allow for better recall
-        # They will be scored in calculate_relevance_score() after retrieval
-        
+        # NOTE: Designation filters are handled via soft scoring (for better recall)
         # Designation filtering removed from Pinecone (now scored after retrieval)
-        # Experience filtering removed from Pinecone (now scored after retrieval)
+        
+        # Handle experience filtering (HARD FILTER: when min_experience is specified, enforce >= requirement)
+        min_experience = filters.get("min_experience")
+        if min_experience is not None:
+            try:
+                min_exp = int(min_experience)
+                # Add experience_years >= min_experience filter to Pinecone
+                experience_filter = {"experience_years": {"$gte": min_exp}}
+                
+                # Combine with existing filters
+                if pinecone_filter:
+                    if "$and" in pinecone_filter:
+                        pinecone_filter["$and"].append(experience_filter)
+                    else:
+                        existing_filter = pinecone_filter.copy()
+                        pinecone_filter = {"$and": [existing_filter, experience_filter]}
+                else:
+                    pinecone_filter = experience_filter
+                
+                logger.debug(
+                    f"Added experience filter: experience_years >= {min_exp}",
+                    extra={"min_experience": min_exp}
+                )
+            except (ValueError, TypeError):
+                logger.warning(f"Invalid min_experience value: {min_experience}")
+        
+        # Handle max_experience (for range queries like "5-7 years")
+        max_experience = filters.get("max_experience")
+        if max_experience is not None:
+            try:
+                max_exp = int(max_experience)
+                # Add experience_years <= max_experience filter to Pinecone
+                max_experience_filter = {"experience_years": {"$lte": max_exp}}
+                
+                # Combine with existing filters
+                if pinecone_filter:
+                    if "$and" in pinecone_filter:
+                        pinecone_filter["$and"].append(max_experience_filter)
+                    else:
+                        existing_filter = pinecone_filter.copy()
+                        pinecone_filter = {"$and": [existing_filter, max_experience_filter]}
+                else:
+                    pinecone_filter = max_experience_filter
+                
+                logger.debug(
+                    f"Added max experience filter: experience_years <= {max_exp}",
+                    extra={"max_experience": max_exp}
+                )
+            except (ValueError, TypeError):
+                logger.warning(f"Invalid max_experience value: {max_experience}")
         
         # Handle location (optional - preference, not requirement)
         location = filters.get("location")
@@ -670,6 +723,82 @@ class AISearchService:
                 # Exact role but weaker experience → Good Match
                 return "Good Match"
         
+        # NEW: Skill-based promotion - if required skills match, promote tier
+        must_have_all = filters.get("must_have_all", [])
+        must_have_one_of_groups = filters.get("must_have_one_of_groups", [])
+        candidate_skills = [s.lower().strip() if isinstance(s, str) else str(s).lower().strip() 
+                           for s in (candidate.get("skills", []) or [])]
+        
+        # Check if all required skills are present
+        has_all_required_skills = True
+        if must_have_all:
+            required_skills_lower = [s.lower().strip() for s in must_have_all if s]
+            for req_skill in required_skills_lower:
+                # Check if any candidate skill contains or matches the required skill
+                skill_found = any(
+                    req_skill in cand_skill or cand_skill in req_skill
+                    for cand_skill in candidate_skills
+                )
+                if not skill_found:
+                    has_all_required_skills = False
+                    break
+        
+        # Check if at least one skill from any group is present
+        has_one_of_skills = True
+        if must_have_one_of_groups:
+            has_one_of_skills = False
+            for group in must_have_one_of_groups:
+                if not group:
+                    continue
+                group_skills_lower = [s.lower().strip() for s in group if s]
+                for req_skill in group_skills_lower:
+                    if any(
+                        req_skill in cand_skill or cand_skill in req_skill
+                        for cand_skill in candidate_skills
+                    ):
+                        has_one_of_skills = True
+                        break
+                if has_one_of_skills:
+                    break
+        
+        # Apply skill-based promotion
+        skills_match = (not must_have_all or has_all_required_skills) and \
+                      (not must_have_one_of_groups or has_one_of_skills)
+        
+        if skills_match and (must_have_all or must_have_one_of_groups):
+            # Skills match + role is relevant (even if not exactly normalized) → promote tier
+            # Check if role is at least somewhat relevant (fuzzy match)
+            query_role_lower = (query_role or "").lower()
+            candidate_role_lower = candidate_role_raw.lower()
+            
+            # Simple relevance check: if query role keywords appear in candidate role
+            role_keywords = set(query_role_lower.split()) if query_role_lower else set()
+            candidate_role_words = set(candidate_role_lower.split())
+            role_relevant = False
+            
+            if role_keywords:
+                # Remove common stop words
+                stop_words = {"the", "a", "an", "and", "or", "of", "in", "on", "at", "to", "for", "with"}
+                role_keywords = {w for w in role_keywords if w not in stop_words and len(w) > 2}
+                candidate_role_words = {w for w in candidate_role_words if w not in stop_words and len(w) > 2}
+                
+                # If there's significant overlap, consider role relevant
+                if role_keywords and candidate_role_words:
+                    overlap = len(role_keywords.intersection(candidate_role_words))
+                    role_relevant = overlap > 0 and (overlap / len(role_keywords)) >= 0.3
+            
+            # Promote based on skills + role relevance
+            if role_relevant or not query_role:
+                # Skills match + role relevant (or no role specified) → promote
+                if normalized_score >= 0.40:  # Lower threshold when skills match
+                    if normalized_score >= 0.65:
+                        return "Good Match"
+                    else:
+                        return "Partial Match"
+                else:
+                    # Even with low score, if skills match, at least Partial Match
+                    return "Partial Match"
+        
         # Then apply score-based tiers
         if normalized_score >= 0.85:
             return "Perfect Match"
@@ -682,8 +811,8 @@ class AISearchService:
     
     async def search_name(self, candidate_name: str, session) -> List[Dict[str, Any]]:
         """
-        Search candidates by name using SQL with token-based matching and ranking.
-        Principle: "Never invent or assume" - exact/partial name match only
+        Search candidates by name using SQL with token-based matching, phonetic matching (Soundex), and ranking.
+        Principle: "Never invent or assume" - exact/partial/phonetic name match
         
         Args:
             candidate_name: Name to search for
@@ -704,29 +833,74 @@ class AISearchService:
                 logger.warning(f"Empty name tokens from query: '{candidate_name}'")
                 return []
             
-            # Build OR conditions for each token
+            # Build OR conditions for each token (substring matching)
             conditions = []
             for token in tokens:
                 conditions.append(
                     func.LOWER(ResumeMetadata.candidatename).like(f"%{token}%")
                 )
             
-            # Query with OR conditions (matches if any token is found)
+            # NEW: Add Soundex phonetic matching for the full query name
+            # MySQL SOUNDEX() converts names to phonetic codes (e.g., "sasha" -> "S200")
+            # This helps match similar-sounding names like "sasha" and "seshareddy"
+            normalized_query_name = candidate_name.strip()
+            if normalized_query_name:
+                # Soundex matching: match if Soundex codes are similar
+                # Using SOUNDEX() function from MySQL
+                soundex_condition = func.SOUNDEX(func.LOWER(ResumeMetadata.candidatename)) == func.SOUNDEX(func.LOWER(normalized_query_name))
+                conditions.append(soundex_condition)
+                
+                # Also try Soundex matching for individual tokens (for multi-word names)
+                # This helps with cases like "John Smith" where "John" might be "Jon"
+                for token in tokens:
+                    if len(token) > 2:  # Only use Soundex for tokens longer than 2 characters
+                        token_soundex = func.SOUNDEX(func.LOWER(ResumeMetadata.candidatename)) == func.SOUNDEX(token)
+                        conditions.append(token_soundex)
+            
+            # Query with OR conditions (matches if any token is found OR Soundex matches)
             query = select(ResumeMetadata).where(or_(*conditions))
             
             result = await session.execute(query)
             resumes = result.scalars().all()
             
-            # FIX 4: Rank results by match quality
+            # FIX 4: Rank results by match quality (exact > substring > token > Soundex)
             normalized_query = candidate_name.lower().strip()
             results_with_scores = []
+            
+            # Pre-compute Soundex code for query name (for comparison and scoring)
+            # Get Soundex code from database for the query name
+            query_soundex_code = None
+            try:
+                soundex_query_result = await session.execute(
+                    select(func.SOUNDEX(normalized_query_name))
+                )
+                query_soundex_code = soundex_query_result.scalar()
+            except Exception as e:
+                logger.warning(f"Failed to compute Soundex for query name: {e}")
+            
+            # Pre-compute Soundex codes for all candidate names (batch for efficiency)
+            candidate_soundex_map = {}
+            if query_soundex_code and resumes:
+                try:
+                    # Compute Soundex codes for all candidate names
+                    for resume in resumes:
+                        if resume.candidatename:
+                            try:
+                                soundex_result = await session.execute(
+                                    select(func.SOUNDEX(resume.candidatename))
+                                )
+                                candidate_soundex_map[resume.candidatename.lower()] = soundex_result.scalar()
+                            except Exception:
+                                pass
+                except Exception as e:
+                    logger.warning(f"Failed to compute Soundex codes for candidates: {e}")
             
             for resume in resumes:
                 candidate_name_lower = (resume.candidatename or "").lower()
                 
-                # Calculate match score based on match type
+                # Calculate match score based on match type (prioritize exact matches)
                 if candidate_name_lower == normalized_query:
-                    # Exact full name match
+                    # Exact full name match (highest priority)
                     match_score = 1.0
                     match_type = "exact"
                 elif normalized_query in candidate_name_lower or candidate_name_lower in normalized_query:
@@ -734,11 +908,35 @@ class AISearchService:
                     match_score = 0.8
                     match_type = "partial"
                 else:
-                    # Token-based match (at least one token matched)
+                    # Check token-based match
                     matched_tokens = sum(1 for token in tokens if token in candidate_name_lower)
-                    match_ratio = matched_tokens / len(tokens)
-                    match_score = 0.6 * match_ratio  # Base score for token match
-                    match_type = "token"
+                    if matched_tokens > 0:
+                        # Token-based match (at least one token matched)
+                        match_ratio = matched_tokens / len(tokens)
+                        match_score = 0.6 * match_ratio  # Base score for token match
+                        match_type = "token"
+                    else:
+                        # Likely a Soundex match (phonetic similarity)
+                        candidate_soundex_code = candidate_soundex_map.get(candidate_name_lower)
+                        
+                        # Compare Soundex codes
+                        if query_soundex_code and candidate_soundex_code:
+                            if query_soundex_code == candidate_soundex_code:
+                                # Exact Soundex match
+                                match_score = 0.5
+                                match_type = "soundex_exact"
+                            elif len(query_soundex_code) >= 2 and len(candidate_soundex_code) >= 2 and query_soundex_code[:2] == candidate_soundex_code[:2]:
+                                # Similar Soundex (first 2 chars match)
+                                match_score = 0.4
+                                match_type = "soundex_similar"
+                            else:
+                                # Weak Soundex match
+                                match_score = 0.3
+                                match_type = "soundex_weak"
+                        else:
+                            # Fallback: very low score if we can't compute Soundex
+                            match_score = 0.2
+                            match_type = "unknown"
                 
                 # Parse skillset (comma-separated) to array
                 skills = []
@@ -773,12 +971,17 @@ class AISearchService:
             # Remove match_type from final results (internal only)
             results = [{k: v for k, v in r.items() if k != "match_type"} for r in results_with_scores]
             
+            # Get match types for logging (before removing from results)
+            match_types_summary = [r.get("match_type", "unknown") for r in results_with_scores[:5]] if results_with_scores else []
+            
             logger.info(
-                f"Name search found {len(results)} candidates (tokens: {tokens})",
+                f"Name search found {len(results)} candidates (tokens: {tokens}, soundex: {query_soundex_code})",
                 extra={
                     "candidate_name": candidate_name,
                     "tokens": tokens,
-                    "result_count": len(results)
+                    "query_soundex_code": query_soundex_code,
+                    "result_count": len(results),
+                    "match_types": match_types_summary
                 }
             )
             
@@ -963,12 +1166,30 @@ class AISearchService:
             query_designation = (parsed_query.get("filters", {}).get("designation") or "").lower()
             
             # NEW APPROACH: Prioritize namespaces (category-based or role-family fallback)
+            # Track if we're restricting to category namespace
+            restricted_to_category_namespace = False
+            
             if identified_mastercategory:
                 target_index_name = "IT" if identified_mastercategory.upper() == "IT" else "NON_IT"
                 target_namespaces_list = it_namespaces if target_index_name == "IT" else non_it_namespaces
                 
-                # OPTIMIZATION: For role queries, restrict to 2-3 most relevant namespaces
-                if has_designation and query_designation:
+                # NEW: Restrict to identified category namespace when category is identified AND role exists
+                if target_namespace and target_namespace in target_namespaces_list and has_designation:
+                    # Restrict to ONLY the identified category namespace
+                    target_namespaces_list[:] = [target_namespace]
+                    restricted_to_category_namespace = True
+                    logger.info(
+                        f"Restricted to identified category namespace '{target_namespace}' (category identified + role present)",
+                        extra={
+                            "namespace": target_namespace,
+                            "index": target_index_name,
+                            "category": identified_category,
+                            "role": query_designation,
+                            "source": "category_restriction"
+                        }
+                    )
+                # OPTIMIZATION: For role queries without identified category, restrict to 2-3 most relevant namespaces
+                elif has_designation and query_designation:
                     # Map common roles to their most relevant namespaces
                     role_namespace_map = {
                         # NON-IT roles
@@ -1003,7 +1224,7 @@ class AISearchService:
                             }
                         )
                 
-                # Priority 1: Category-based namespace (if available)
+                # Priority 1: Category-based namespace (if available, but no role)
                 elif target_namespace and target_namespace in target_namespaces_list:
                     # Move target namespace to front for priority querying
                     target_namespaces_list.remove(target_namespace)
@@ -1041,85 +1262,199 @@ class AISearchService:
                         extra={"namespace": target_namespace, "index": target_index_name}
                     )
             
+            # Determine which indexes to query based on identified mastercategory
+            # Query IT index only if:
+            # 1. Mastercategory is IT (identified), OR
+            # 2. Mastercategory is not identified (fallback - query both), OR
+            # 3. Restricted to category namespace and it's IT
+            should_query_it = (
+                (identified_mastercategory and identified_mastercategory.upper() == "IT") or
+                (not identified_mastercategory) or
+                (restricted_to_category_namespace and identified_mastercategory and identified_mastercategory.upper() == "IT")
+            )
+            
+            # Query Non-IT index only if:
+            # 1. Mastercategory is NON_IT (identified), OR
+            # 2. Mastercategory is not identified (fallback - query both), OR
+            # 3. Restricted to category namespace and it's NON_IT
+            should_query_non_it = (
+                (identified_mastercategory and identified_mastercategory.upper() == "NON_IT") or
+                (not identified_mastercategory) or
+                (restricted_to_category_namespace and identified_mastercategory and identified_mastercategory.upper() == "NON_IT")
+            )
+            
+            # Log which indexes will be queried
+            indexes_to_query = []
+            if should_query_it:
+                indexes_to_query.append("IT")
+            if should_query_non_it:
+                indexes_to_query.append("Non-IT")
+            
             logger.info(
-                f"Querying {len(it_namespaces)} IT namespaces and {len(non_it_namespaces)} Non-IT namespaces",
+                f"Querying {len(it_namespaces) if should_query_it else 0} IT namespaces and {len(non_it_namespaces) if should_query_non_it else 0} Non-IT namespaces",
                 extra={
-                    "it_namespace_count": len(it_namespaces),
-                    "non_it_namespace_count": len(non_it_namespaces),
+                    "it_namespace_count": len(it_namespaces) if should_query_it else 0,
+                    "non_it_namespace_count": len(non_it_namespaces) if should_query_non_it else 0,
+                    "indexes_to_query": indexes_to_query,
                     "identified_category": identified_category,
                     "target_namespace": target_namespace,
-                    "identified_mastercategory": identified_mastercategory
+                    "identified_mastercategory": identified_mastercategory,
+                    "restricted_to_category": restricted_to_category_namespace
                 }
             )
             
-            # Query IT index - all namespaces (prioritized if category identified)
+            # Query IT index - all namespaces (or restricted if category identified + role present)
             it_results = []
-            for idx, namespace in enumerate(it_namespaces):
-                try:
-                    # If this is the prioritized namespace (first in list), get more results
-                    is_priority = (idx == 0 and target_namespace and 
-                                 identified_mastercategory and 
-                                 identified_mastercategory.upper() == "IT" and
-                                 namespace == target_namespace)
-                    namespace_k = per_namespace_k * 2 if is_priority else per_namespace_k
-                    
-                    namespace_results = await self.pinecone_automation.query_vectors(
-                        query_vector=embedding,
-                        mastercategory="IT",
-                        namespace=namespace if namespace else None,
-                        top_k=namespace_k,
-                        filter_dict=pinecone_filter
-                    )
-                    it_results.extend(namespace_results)
-                    
-                    if is_priority:
-                        logger.info(
-                            f"Priority query on IT namespace '{namespace}' returned {len(namespace_results)} results",
-                            extra={"namespace": namespace, "result_count": len(namespace_results)}
+            if should_query_it:
+                for idx, namespace in enumerate(it_namespaces):
+                    try:
+                        # If this is the prioritized namespace (first in list), get more results
+                        is_priority = (idx == 0 and target_namespace and 
+                                     identified_mastercategory and 
+                                     identified_mastercategory.upper() == "IT" and
+                                     namespace == target_namespace)
+                        namespace_k = per_namespace_k * 2 if is_priority else per_namespace_k
+                        
+                        namespace_results = await self.pinecone_automation.query_vectors(
+                            query_vector=embedding,
+                            mastercategory="IT",
+                            namespace=namespace if namespace else None,
+                            top_k=namespace_k,
+                            filter_dict=pinecone_filter
                         )
-                except Exception as e:
-                    logger.warning(
-                        f"Failed to query IT index namespace '{namespace}': {e}",
-                        extra={"namespace": namespace, "error": str(e)}
-                    )
+                        it_results.extend(namespace_results)
+                        
+                        if is_priority:
+                            logger.info(
+                                f"Priority query on IT namespace '{namespace}' returned {len(namespace_results)} results",
+                                extra={"namespace": namespace, "result_count": len(namespace_results)}
+                            )
+                    except Exception as e:
+                        logger.warning(
+                            f"Failed to query IT index namespace '{namespace}': {e}",
+                            extra={"namespace": namespace, "error": str(e)}
+                        )
             
             logger.info(f"IT index query returned {len(it_results)} results from {len(it_namespaces)} namespaces")
             
-            # Query Non-IT index - all namespaces (prioritized if category identified)
+            # Query Non-IT index - all namespaces (or restricted if category identified + role present)
             non_it_results = []
-            for idx, namespace in enumerate(non_it_namespaces):
-                try:
-                    # If this is the prioritized namespace (first in list), get more results
-                    is_priority = (idx == 0 and target_namespace and 
-                                 identified_mastercategory and 
-                                 identified_mastercategory.upper() == "NON_IT" and
-                                 namespace == target_namespace)
-                    namespace_k = per_namespace_k * 2 if is_priority else per_namespace_k
-                    
-                    namespace_results = await self.pinecone_automation.query_vectors(
-                        query_vector=embedding,
-                        mastercategory="NON_IT",
-                        namespace=namespace if namespace else None,
-                        top_k=namespace_k,
-                        filter_dict=pinecone_filter
-                    )
-                    non_it_results.extend(namespace_results)
-                    
-                    if is_priority:
-                        logger.info(
-                            f"Priority query on Non-IT namespace '{namespace}' returned {len(namespace_results)} results",
-                            extra={"namespace": namespace, "result_count": len(namespace_results)}
+            if should_query_non_it:
+                for idx, namespace in enumerate(non_it_namespaces):
+                    try:
+                        # If this is the prioritized namespace (first in list), get more results
+                        is_priority = (idx == 0 and target_namespace and 
+                                     identified_mastercategory and 
+                                     identified_mastercategory.upper() == "NON_IT" and
+                                     namespace == target_namespace)
+                        namespace_k = per_namespace_k * 2 if is_priority else per_namespace_k
+                        
+                        namespace_results = await self.pinecone_automation.query_vectors(
+                            query_vector=embedding,
+                            mastercategory="NON_IT",
+                            namespace=namespace if namespace else None,
+                            top_k=namespace_k,
+                            filter_dict=pinecone_filter
                         )
-                except Exception as e:
-                    logger.warning(
-                        f"Failed to query Non-IT index namespace '{namespace}': {e}",
-                        extra={"namespace": namespace, "error": str(e)}
-                    )
+                        non_it_results.extend(namespace_results)
+                        
+                        if is_priority:
+                            logger.info(
+                                f"Priority query on Non-IT namespace '{namespace}' returned {len(namespace_results)} results",
+                                extra={"namespace": namespace, "result_count": len(namespace_results)}
+                            )
+                    except Exception as e:
+                        logger.warning(
+                            f"Failed to query Non-IT index namespace '{namespace}': {e}",
+                            extra={"namespace": namespace, "error": str(e)}
+                        )
             
             logger.info(f"Non-IT index query returned {len(non_it_results)} results from {len(non_it_namespaces)} namespaces")
             
             # Merge results from both indexes
             all_results = it_results + non_it_results
+            
+            # FALLBACK: If we restricted to category namespace and got 0 results, broaden the search
+            was_restricted_to_category = (
+                restricted_to_category_namespace and
+                len(all_results) == 0
+            )
+            
+            if was_restricted_to_category:
+                logger.info(
+                    f"Restricted category namespace search returned 0 results. "
+                    f"Falling back to broader search (role-family namespaces or all namespaces).",
+                    extra={
+                        "restricted_namespace": target_namespace,
+                        "category": identified_category,
+                        "role": query_designation
+                    }
+                )
+                
+                # Get all namespaces again for fallback
+                it_namespaces_fallback = await self.pinecone_automation.get_all_namespaces("IT")
+                non_it_namespaces_fallback = await self.pinecone_automation.get_all_namespaces("NON_IT")
+                
+                if not it_namespaces_fallback:
+                    it_namespaces_fallback = [""]
+                if not non_it_namespaces_fallback:
+                    non_it_namespaces_fallback = [""]
+                
+                # Try role-family namespaces first as fallback
+                role_family = self._detect_role_family(parsed_query)
+                if role_family and role_family in self.ROLE_FAMILY_NAMESPACES:
+                    role_family_namespaces_fallback = self.ROLE_FAMILY_NAMESPACES[role_family]
+                    if identified_mastercategory:
+                        target_index_fallback = "IT" if identified_mastercategory.upper() == "IT" else "NON_IT"
+                        target_namespaces_fallback = it_namespaces_fallback if target_index_fallback == "IT" else non_it_namespaces_fallback
+                        
+                        # Filter to only role-family namespaces that exist
+                        fallback_namespaces = [ns for ns in role_family_namespaces_fallback if ns in target_namespaces_fallback]
+                        if fallback_namespaces:
+                            target_namespaces_fallback[:] = fallback_namespaces
+                            logger.info(
+                                f"Fallback: Using role-family namespaces: {fallback_namespaces}",
+                                extra={"role_family": role_family, "namespaces": fallback_namespaces}
+                            )
+                
+                # Query with fallback namespaces
+                it_results_fallback = []
+                for namespace in (it_namespaces_fallback if identified_mastercategory and identified_mastercategory.upper() == "IT" else []):
+                    try:
+                        namespace_results = await self.pinecone_automation.query_vectors(
+                            query_vector=embedding,
+                            mastercategory="IT",
+                            namespace=namespace if namespace else None,
+                            top_k=per_namespace_k * 2,  # Get more results in fallback
+                            filter_dict=pinecone_filter
+                        )
+                        it_results_fallback.extend(namespace_results)
+                    except Exception as e:
+                        logger.warning(f"Failed to query IT namespace '{namespace}' (fallback): {e}")
+                
+                non_it_results_fallback = []
+                for namespace in (non_it_namespaces_fallback if identified_mastercategory and identified_mastercategory.upper() == "NON_IT" else []):
+                    try:
+                        namespace_results = await self.pinecone_automation.query_vectors(
+                            query_vector=embedding,
+                            mastercategory="NON_IT",
+                            namespace=namespace if namespace else None,
+                            top_k=per_namespace_k * 2,  # Get more results in fallback
+                            filter_dict=pinecone_filter
+                        )
+                        non_it_results_fallback.extend(namespace_results)
+                    except Exception as e:
+                        logger.warning(f"Failed to query Non-IT namespace '{namespace}' (fallback): {e}")
+                
+                if it_results_fallback or non_it_results_fallback:
+                    logger.info(
+                        f"Fallback search returned {len(it_results_fallback)} IT and {len(non_it_results_fallback)} Non-IT results",
+                        extra={
+                            "it_results": len(it_results_fallback),
+                            "non_it_results": len(non_it_results_fallback)
+                        }
+                    )
+                    all_results = it_results_fallback + non_it_results_fallback
             
             # FALLBACK STRATEGY: If semantic search returned 0 results but we have filters,
             # retry with a more generic embedding that better matches resume content
@@ -1421,23 +1756,28 @@ class AISearchService:
             filters_for_post = parsed_query.get("filters", {})
 
             # 1) Prefer candidates that match the identified mastercategory (IT / NON_IT)
-            if identified_mastercategory:
+            # But don't filter out if we have very few results
+            if identified_mastercategory and len(processed_results) > 3:
                 preferred_by_mc = [
                     c
                     for c in processed_results
                     if (c.get("mastercategory") or "").upper() == identified_mastercategory.upper()
                 ]
-                # Only narrow if we still have at least one result
-                if preferred_by_mc:
+                # Only narrow if we still have at least 2 results (to avoid over-filtering)
+                if len(preferred_by_mc) >= 2:
+                    processed_results = preferred_by_mc
+                elif len(preferred_by_mc) == 1 and len(processed_results) <= 3:
+                    # If we only have a few results total, keep the mastercategory match
                     processed_results = preferred_by_mc
 
             # 2) If query specifies a recognizable role, prefer only that exact role
+            # But be less aggressive - only filter if we have many results
             query_role = filters_for_post.get("designation")
             normalized_query_role = (
                 self._normalize_role(query_role) if query_role else None
             )
 
-            if normalized_query_role:
+            if normalized_query_role and len(processed_results) > 5:
                 role_matched = []
                 for c in processed_results:
                     cand_role_raw = c.get("designation") or c.get("jobrole") or ""
@@ -1447,8 +1787,12 @@ class AISearchService:
                     if normalized_cand_role == normalized_query_role:
                         role_matched.append(c)
 
-                # Only narrow to exact-role candidates if we still have at least one
-                if role_matched:
+                # Only narrow to exact-role candidates if we still have at least 2 results
+                # This prevents over-filtering when we have few candidates
+                if len(role_matched) >= 2:
+                    processed_results = role_matched
+                elif len(role_matched) == 1 and len(processed_results) <= 5:
+                    # If we only have a few results total, keep the role match
                     processed_results = role_matched
             
             # OPTIMIZATION: Early termination if we have enough perfect matches

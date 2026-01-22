@@ -433,25 +433,64 @@ class AISearchQueryParser:
         
         # Try to identify category from query (optional, non-blocking with timeout)
         # Use asyncio.wait_for to prevent category identification from blocking too long
+        # IMPROVEMENT: Extract role and skills from parsed_data to improve category identification accuracy
         try:
             import asyncio
+            
+            # Extract role and skills from parsed query for better category identification
+            filters = parsed_data.get("filters", {})
+            role = filters.get("designation")
+            must_have_all = filters.get("must_have_all", [])
+            must_have_one_of_groups = filters.get("must_have_one_of_groups", [])
+            
+            # Combine all skills (must_have_all + all groups from must_have_one_of_groups)
+            all_skills = []
+            if must_have_all:
+                all_skills.extend(must_have_all)
+            if must_have_one_of_groups:
+                # Flatten all groups into a single list for category identification
+                for group in must_have_one_of_groups:
+                    if isinstance(group, list):
+                        all_skills.extend(group)
+                    else:
+                        all_skills.append(group)
+            
+            # Remove duplicates and empty values
+            all_skills = [s for s in all_skills if s]
+            skills_for_category = list(set(all_skills)) if all_skills else None
+            
             # Set a timeout of 30 seconds for category identification
             # If it takes longer, skip it and proceed without category
             mastercategory, category = await asyncio.wait_for(
-                self.category_identifier.identify_category_from_query(query),
+                self.category_identifier.identify_category_from_query(
+                    query=query,
+                    role=role,
+                    skills=skills_for_category
+                ),
                 timeout=30.0
             )
             if mastercategory:
                 parsed_data["mastercategory"] = mastercategory
                 logger.info(
                     f"Identified mastercategory from query: {mastercategory}",
-                    extra={"query": query, "mastercategory": mastercategory}
+                    extra={
+                        "query": query, 
+                        "mastercategory": mastercategory,
+                        "role": role,
+                        "skills": skills_for_category
+                    }
                 )
             if category:
                 parsed_data["category"] = category
                 logger.info(
                     f"Identified category from query: {category}",
-                    extra={"query": query, "mastercategory": mastercategory, "category": category}
+                    extra={
+                        "query": query, 
+                        "mastercategory": mastercategory, 
+                        "category": category,
+                        "role": role,
+                        "skills": skills_for_category
+                    }
                 )
         except asyncio.TimeoutError:
             # Category identification took too long, skip it

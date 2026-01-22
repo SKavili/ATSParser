@@ -294,8 +294,43 @@ class DesignationMatcher:
         except json.JSONDecodeError:
             pass
         
-        # 5) OPTIMIZATION: Safety parser - check for true/false in raw text (for malformed JSON)
+        # 5) Handle incomplete JSON fragments (e.g., '\n  "match"')
+        # Try to extract just the "match" key value if present
+        match_patterns = [
+            r'"match"\s*:\s*true',
+            r'"match"\s*:\s*false',
+            r'match"\s*:\s*true',
+            r'match"\s*:\s*false',
+            r'"match"',  # Just the key name (incomplete)
+        ]
         text_lower = text.lower()
+        for pattern in match_patterns:
+            match_found = re.search(pattern, text_lower, re.IGNORECASE)
+            if match_found:
+                # Try to extract confidence if present
+                confidence_match = re.search(r'"confidence"\s*:\s*([0-9.]+)', text_lower)
+                confidence = 0.8 if confidence_match else 0.7
+                if confidence_match:
+                    try:
+                        confidence = float(confidence_match.group(1))
+                        confidence = max(0.0, min(1.0, confidence))
+                    except (ValueError, TypeError):
+                        pass
+                
+                # Determine match value
+                if 'true' in match_found.group().lower():
+                    return {"match": True, "confidence": confidence, "reason": "Parsed from incomplete JSON fragment (true detected)"}
+                elif 'false' in match_found.group().lower():
+                    return {"match": False, "confidence": 0.0, "reason": "Parsed from incomplete JSON fragment (false detected)"}
+                else:
+                    # If we only found "match" key without value, try to infer from context
+                    # Check if there are any positive indicators
+                    if any(word in text_lower for word in ['yes', 'match', 'similar', 'related', 'same']):
+                        return {"match": True, "confidence": 0.6, "reason": "Inferred match from incomplete JSON with positive context"}
+                    else:
+                        return {"match": False, "confidence": 0.0, "reason": "Inferred no match from incomplete JSON"}
+
+        # 6) OPTIMIZATION: Safety parser - check for true/false in raw text (for malformed JSON)
         if '"match": true' in text_lower or '"match":true' in text_lower or 'match": true' in text_lower:
             return {"match": True, "confidence": 0.8, "reason": "Parsed from malformed JSON (true detected)"}
         if '"match": false' in text_lower or '"match":false' in text_lower or 'match": false' in text_lower:
