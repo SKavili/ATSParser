@@ -22,7 +22,7 @@ class CandidateResult(BaseModel):
     experience_years: Optional[int] = None
     skills: List[str] = []
     location: Optional[str] = None
-    score: float = Field(..., ge=0.0, le=1.0, description="Semantic similarity score")
+    score: float = Field(..., ge=0.0, le=100.0, description="Semantic similarity score as percentage (0-100)")
     fit_tier: str = Field(..., description="Fit tier: Perfect Match, Good Match, Partial Match, Low Match")
 
 

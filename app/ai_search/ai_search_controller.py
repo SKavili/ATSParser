@@ -124,6 +124,10 @@ class AISearchController:
             # Step 4: Format results
             formatted_results = []
             for result in results:
+                # Convert score from decimal (0.0-1.0) to percentage (0-100)
+                score_decimal = result.get("score", 0.0)
+                score_percentage = round(score_decimal * 100.0, 2)
+                
                 formatted_results.append({
                     "candidate_id": result.get("candidate_id", ""),
                     "resume_id": result.get("resume_id"),
@@ -135,7 +139,7 @@ class AISearchController:
                     "experience_years": result.get("experience_years"),
                     "skills": result.get("skills", []),
                     "location": result.get("location"),
-                    "score": result.get("score", 0.0),
+                    "score": score_percentage,  # Score as percentage (0-100)
                     "fit_tier": result.get("fit_tier", "Partial Match")
                 })
             
