@@ -6,6 +6,8 @@ from pydantic import BaseModel, Field
 class AISearchRequest(BaseModel):
     """Request model for AI search."""
     query: str = Field(..., description="Natural language search query")
+    mastercategory: Optional[str] = Field(None, description="Mastercategory (IT/NON_IT) - optional, if not provided will search all categories")
+    category: Optional[str] = Field(None, description="Category namespace - optional, if not provided will search all categories")
     user_id: Optional[int] = Field(None, description="Optional user ID for tracking")
     top_k: Optional[int] = Field(20, description="Number of results to return (default: 20)")
 
@@ -29,7 +31,7 @@ class CandidateResult(BaseModel):
 class AISearchResponse(BaseModel):
     """Response model for AI search."""
     query: str
-    identified_mastercategory: Optional[str] = Field(None, description="Mastercategory (IT/NON_IT) identified from the search query")
-    identified_category: Optional[str] = Field(None, description="Specific category identified from the search query")
+    mastercategory: Optional[str] = Field(None, description="Mastercategory (IT/NON_IT) used for search (None if broad search)")
+    category: Optional[str] = Field(None, description="Category namespace used for search (None if broad search)")
     total_results: int
     results: List[CandidateResult]

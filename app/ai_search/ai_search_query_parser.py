@@ -7,7 +7,7 @@ from httpx import Timeout
 
 from app.config import settings
 from app.utils.logging import get_logger
-from app.ai_search.query_category_identifier import QueryCategoryIdentifier
+# QueryCategoryIdentifier removed - category is now provided explicitly in payload
 
 logger = get_logger(__name__)
 
@@ -159,9 +159,7 @@ OUTPUT FORMAT (STRICT JSON ONLY):
     "max_experience": null,
     "location": null,
     "candidate_name": null
-  },
-  "mastercategory": null,
-  "category": null
+  }
 }
  
 DO NOT:
@@ -194,7 +192,7 @@ class AISearchQueryParser:
     def __init__(self):
         self.ollama_host = settings.ollama_host
         self.model = "llama3.1"
-        self.category_identifier = QueryCategoryIdentifier()
+        # QueryCategoryIdentifier removed - category is now provided explicitly in payload
     
     async def _check_ollama_connection(self) -> tuple[bool, Optional[str]]:
         """Check if OLLAMA is accessible and running. Returns (is_connected, available_model)."""
@@ -275,10 +273,9 @@ class AISearchQueryParser:
         if "candidate_name" not in filters:
             filters["candidate_name"] = None
         
-        # Ensure category fields exist
-        if "mastercategory" not in parsed:
+        # Category fields are not part of LLM output - they are provided explicitly in payload
+        # Set to None (will be overridden by controller with explicit values)
             parsed["mastercategory"] = None
-        if "category" not in parsed:
             parsed["category"] = None
         
         # Normalize search_type
@@ -328,6 +325,7 @@ class AISearchQueryParser:
                 "location": None,
                 "candidate_name": None
             },
+            # Category fields are not part of LLM output - set to None (will be overridden by controller)
             "mastercategory": None,
             "category": None
         }
@@ -403,12 +401,13 @@ class AISearchQueryParser:
             # Cannot infer - return None
             return None
     
-    async def parse_query(self, query: str) -> Dict:
+    async def parse_query(self, query: str, skip_category_inference: bool = False) -> Dict:
         """
         Parse natural language search query into structured format.
         
         Args:
             query: Natural language search query
+            skip_category_inference: If True, skip category identification (use explicit category from payload)
         
         Returns:
             Dict with structured search intent
@@ -537,141 +536,23 @@ class AISearchQueryParser:
             except:
                 pass
         
-        # Try to identify category from query (optional, non-blocking with timeout)
-        # Use asyncio.wait_for to prevent category identification from blocking too long
-        # IMPROVEMENT: Extract role and skills from parsed_data to improve category identification accuracy
-        try:
-            import asyncio
-            
-            # Extract role and skills from parsed query for better category identification
-            filters = parsed_data.get("filters", {})
-            role = filters.get("designation")
-            must_have_all = filters.get("must_have_all", [])
-            must_have_one_of_groups = filters.get("must_have_one_of_groups", [])
-            
-            # Combine all skills (must_have_all + all groups from must_have_one_of_groups)
-            all_skills = []
-            if must_have_all:
-                all_skills.extend(must_have_all)
-            if must_have_one_of_groups:
-                # Flatten all groups into a single list for category identification
-                for group in must_have_one_of_groups:
-                    if isinstance(group, list):
-                        all_skills.extend(group)
-                    else:
-                        all_skills.append(group)
-            
-            # Remove duplicates and empty values
-            all_skills = [s for s in all_skills if s]
-            skills_for_category = list(set(all_skills)) if all_skills else None
-            
-            # Set a timeout of 30 seconds for category identification
-            # If it takes longer, skip it and proceed without category
-            mastercategory, category = await asyncio.wait_for(
-                self.category_identifier.identify_category_from_query(
-                    query=query,
-                    role=role,
-                    skills=skills_for_category
-                ),
-                timeout=30.0
-            )
-            if mastercategory:
-                parsed_data["mastercategory"] = mastercategory
-                logger.info(
-                    f"Identified mastercategory from query: {mastercategory}",
-                    extra={
-                        "query": query, 
-                        "mastercategory": mastercategory,
-                        "role": role,
-                        "skills": skills_for_category
-                    }
-                )
-            if category:
-                parsed_data["category"] = category
-                logger.info(
-                    f"Identified category from query: {category}",
-                    extra={
-                        "query": query, 
-                        "mastercategory": mastercategory, 
-                        "category": category,
-                        "role": role,
-                        "skills": skills_for_category
-                    }
-                )
-        except asyncio.TimeoutError:
-            # Category identification took too long, skip it
-            logger.warning(
-                f"Category identification timed out after 30 seconds, proceeding without category",
-                extra={"query": query}
-            )
-        except Exception as e:
-            # Category identification is optional, don't fail the whole query parsing
-            logger.warning(
-                f"Category identification failed (non-blocking): {e}",
-                extra={"query": query, "error": str(e)}
-            )
+        # Skip category identification if flag is set (explicit category provided in payload)
+        if skip_category_inference:
+            logger.debug("Skipping category inference (explicit category provided in payload)")
+        else:
+            # Category identification removed - always use explicit category from payload
+            logger.debug("Category inference is disabled - using explicit category from payload")
         
-        # NEW APPROACH: Infer mastercategory from query if LLM failed
-        if not parsed_data.get("mastercategory"):
-            inferred_mastercategory = self._infer_mastercategory_from_query(query, parsed_data)
-            if inferred_mastercategory:
-                parsed_data["mastercategory"] = inferred_mastercategory
-                logger.info(
-                    f"Inferred mastercategory from query: {inferred_mastercategory}",
-                    extra={"query": query, "mastercategory": inferred_mastercategory, "source": "inferred"}
-                )
-        
-        # OPTIMIZATION: Hard keyword fallback for role-based queries (for 180k+ resumes)
-        # This ensures role queries never stay null, improving namespace targeting
-        if not parsed_data.get("mastercategory"):
-            query_l = query.lower()
-            designation = (parsed_data.get("filters", {}).get("designation") or "").lower()
-            combined_role_text = f"{query_l} {designation}".lower()
-            
-            # NON-IT roles (explicit list for common roles)
-            non_it_roles = [
-                "scrum master", "scrummaster", "agile scrum master",
-                "project manager", "program manager", "product owner",
-                "business analyst", "change manager", "organizational change manager",
-                "procurement manager", "vendor manager", "sourcing manager"
-            ]
-            
-            # IT roles (explicit list)
-            it_roles = [
-                "developer", "engineer", "programmer", "architect",
-                "qa", "automation", "selenium", "sdet", "test automation",
-                "devops", "sre", "data engineer", "data scientist",
-                "software", "backend", "frontend", "full stack", "fullstack"
-            ]
-            
-            # Check for explicit role matches first (fastest path)
-            if any(role in combined_role_text for role in non_it_roles):
-                parsed_data["mastercategory"] = "NON_IT"
-                # Set default category for common roles
-                if "scrum" in combined_role_text:
-                    parsed_data["category"] = "Business & Management"
-                elif "project" in combined_role_text or "program" in combined_role_text:
-                    parsed_data["category"] = "Project Management (Non-IT)"
-                elif "change" in combined_role_text:
-                    parsed_data["category"] = "Business & Management"
-                logger.info(
-                    f"Mastercategory inferred via role keyword: NON_IT",
-                    extra={"query": query, "role_match": "non_it_role", "source": "role_keyword"}
-                )
-            elif any(role in combined_role_text for role in it_roles):
-                parsed_data["mastercategory"] = "IT"
-                logger.info(
-                    f"Mastercategory inferred via role keyword: IT",
-                    extra={"query": query, "role_match": "it_role", "source": "role_keyword"}
-                )
+        # Do not set mastercategory or category - they will be provided from payload
+        parsed_data["mastercategory"] = None
+        parsed_data["category"] = None
         
         logger.info(
             f"Query parsed successfully: search_type={parsed_data['search_type']}",
             extra={
                 "search_type": parsed_data["search_type"],
                 "has_filters": bool(parsed_data["filters"]),
-                "mastercategory": parsed_data.get("mastercategory"),
-                "category": parsed_data.get("category")
+                "skip_category_inference": skip_category_inference
             }
         )
         

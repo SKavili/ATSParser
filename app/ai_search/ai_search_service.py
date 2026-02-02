@@ -431,21 +431,52 @@ class AISearchService:
         
         return pinecone_filter if pinecone_filter else None
     
-    async def calculate_relevance_score(self, candidate: Dict, parsed_query: Dict) -> float:
+    async def calculate_relevance_score(
+        self, 
+        candidate: Dict, 
+        parsed_query: Dict,
+        strict_mastercategory: Optional[str] = None,
+        strict_category: Optional[str] = None
+    ) -> float:
         """
         Calculate relevance score for a candidate based on query filters.
-        Principle: "Soft scoring and ranking, not hard exclusion"
-        Uses LLM for intelligent designation matching.
+        Uses strict matching when explicit category is provided.
         
         Args:
             candidate: Candidate metadata from Pinecone
             parsed_query: Parsed query with filters
+            strict_mastercategory: If provided, enforce strict mastercategory matching
+            strict_category: If provided, enforce strict category matching
         
         Returns:
             Relevance score (0.0 to 100.0) - higher is better
         """
         score = 0.0
         filters = parsed_query.get("filters", {})
+        
+        # Strict mastercategory enforcement (when explicit category provided)
+        if strict_mastercategory:
+            candidate_mastercategory = candidate.get("mastercategory", "")
+            if candidate_mastercategory.upper() != strict_mastercategory.upper():
+                # Hard exclusion for explicit category mode
+                logger.debug(
+                    f"Mastercategory mismatch: expected={strict_mastercategory}, "
+                    f"got={candidate_mastercategory}, excluding candidate"
+                )
+                return -100.0  # Return very low score (will be filtered out)
+        
+        # Strict category enforcement (when explicit category provided)
+        if strict_category:
+            candidate_category = candidate.get("category", "")
+            normalized_candidate_category = self._normalize_namespace(candidate_category)
+            normalized_strict_category = self._normalize_namespace(strict_category)
+            if normalized_candidate_category != normalized_strict_category:
+                # Heavy penalty for category mismatch
+                score -= 30.0
+                logger.debug(
+                    f"Category mismatch penalty: expected={normalized_strict_category}, "
+                    f"got={normalized_candidate_category}, penalty=-30"
+                )
         
         # Parse candidate skills and normalize to canonical forms
         candidate_skills_raw = candidate.get("skills", [])
@@ -621,24 +652,26 @@ class AISearchService:
             except (ValueError, TypeError):
                 pass
         
-        # FIX 3: Enforce mastercategory alignment
-        identified_mastercategory = parsed_query.get("mastercategory")
-        candidate_mastercategory = candidate.get("mastercategory", "")
-        
-        if identified_mastercategory and candidate_mastercategory:
-            if candidate_mastercategory.upper() != identified_mastercategory.upper():
-                # Strong penalty for wrong mastercategory
-                score -= 50.0  # Heavy penalty
-                logger.debug(
-                    f"Mastercategory mismatch: query={identified_mastercategory}, "
-                    f"candidate={candidate_mastercategory}, penalty=-50"
-                )
-            else:
-                # Boost for correct mastercategory
-                score += 10.0  # Small boost for alignment
-                logger.debug(
-                    f"Mastercategory match: {identified_mastercategory}, boost=+10"
-                )
+        # Mastercategory alignment (only if not using strict matching)
+        # Strict matching is handled at the beginning of the function
+        if not strict_mastercategory:
+            identified_mastercategory = parsed_query.get("mastercategory")
+            candidate_mastercategory = candidate.get("mastercategory", "")
+            
+            if identified_mastercategory and candidate_mastercategory:
+                if candidate_mastercategory.upper() != identified_mastercategory.upper():
+                    # Strong penalty for wrong mastercategory
+                    score -= 50.0  # Heavy penalty
+                    logger.debug(
+                        f"Mastercategory mismatch: query={identified_mastercategory}, "
+                        f"candidate={candidate_mastercategory}, penalty=-50"
+                    )
+                else:
+                    # Boost for correct mastercategory
+                    score += 10.0  # Small boost for alignment
+                    logger.debug(
+                        f"Mastercategory match: {identified_mastercategory}, boost=+10"
+                    )
         
         return score
     
@@ -834,7 +867,7 @@ class AISearchService:
         """
         try:
             # FIX 1: Token-based name search - split name and use OR conditions
-            from sqlalchemy import select, func, or_
+            from sqlalchemy import select, func, or_, and_
             from app.database.models import ResumeMetadata
             
             # Split name into tokens (normalize and remove empty strings)
@@ -844,9 +877,58 @@ class AISearchService:
                 logger.warning(f"Empty name tokens from query: '{candidate_name}'")
                 return []
             
-            # Build OR conditions for each token (substring matching)
+            # DEBUG: Check sample database values before querying
+            try:
+                sample_query = select(ResumeMetadata).where(
+                    ResumeMetadata.candidatename.isnot(None)
+                ).limit(10)
+                sample_result = await session.execute(sample_query)
+                sample_resumes = sample_result.scalars().all()
+                sample_names = [
+                    {
+                        "id": r.id,
+                        "name": r.candidatename,
+                        "name_lower": r.candidatename.lower() if r.candidatename else None,
+                        "name_length": len(r.candidatename) if r.candidatename else 0,
+                        "name_repr": repr(r.candidatename) if r.candidatename else None
+                    }
+                    for r in sample_resumes[:5]
+                ]
+                logger.info(
+                    f"DEBUG: Sample database names (first 5 non-null): {sample_names}",
+                    extra={
+                        "candidate_name": candidate_name,
+                        "sample_names": sample_names
+                    }
+                )
+                
+                # DEBUG: Check if record id=15 exists (the one mentioned by user)
+                test_record_query = select(ResumeMetadata).where(ResumeMetadata.id == 15)
+                test_result = await session.execute(test_record_query)
+                test_record = test_result.scalar_one_or_none()
+                if test_record:
+                    logger.info(
+                        f"DEBUG: Record id=15 found",
+                        extra={
+                            "id": test_record.id,
+                            "candidatename": test_record.candidatename,
+                            "candidatename_repr": repr(test_record.candidatename),
+                            "candidatename_lower": test_record.candidatename.lower() if test_record.candidatename else None,
+                            "candidatename_length": len(test_record.candidatename) if test_record.candidatename else 0,
+                            "candidatename_is_none": test_record.candidatename is None,
+                            "candidatename_is_empty": test_record.candidatename == "" if test_record.candidatename else None,
+                            "contains_andrey": "andrey" in test_record.candidatename.lower() if test_record.candidatename else False
+                        }
+                    )
+                else:
+                    logger.warning("DEBUG: Record id=15 NOT FOUND in database")
+            except Exception as e:
+                logger.warning(f"DEBUG: Failed to fetch sample names: {e}")
+            
+            # Build OR conditions for each token (substring matching - simplified for better compatibility)
             conditions = []
             for token in tokens:
+                # Use LOWER with LIKE for case-insensitive matching (more reliable than TRIM)
                 conditions.append(
                     func.LOWER(ResumeMetadata.candidatename).like(f"%{token}%")
                 )
@@ -854,11 +936,11 @@ class AISearchService:
             # NEW: Add Soundex phonetic matching for the full query name
             # MySQL SOUNDEX() converts names to phonetic codes (e.g., "sasha" -> "S200")
             # This helps match similar-sounding names like "sasha" and "seshareddy"
-            normalized_query_name = candidate_name.strip()
+            normalized_query_name = candidate_name.strip().lower()
             if normalized_query_name:
                 # Soundex matching: match if Soundex codes are similar
                 # Using SOUNDEX() function from MySQL
-                soundex_condition = func.SOUNDEX(func.LOWER(ResumeMetadata.candidatename)) == func.SOUNDEX(func.LOWER(normalized_query_name))
+                soundex_condition = func.SOUNDEX(func.LOWER(ResumeMetadata.candidatename)) == func.SOUNDEX(normalized_query_name)
                 conditions.append(soundex_condition)
                 
                 # Also try Soundex matching for individual tokens (for multi-word names)
@@ -868,11 +950,88 @@ class AISearchService:
                         token_soundex = func.SOUNDEX(func.LOWER(ResumeMetadata.candidatename)) == func.SOUNDEX(token)
                         conditions.append(token_soundex)
             
-            # Query with OR conditions (matches if any token is found OR Soundex matches)
-            query = select(ResumeMetadata).where(or_(*conditions))
+            # DEBUG: Log the conditions being built
+            logger.info(
+                f"DEBUG: Name search conditions built",
+                extra={
+                    "candidate_name": candidate_name,
+                    "tokens": tokens,
+                    "normalized_query_name": normalized_query_name,
+                    "condition_count": len(conditions),
+                    "condition_types": [
+                        "LIKE" if "like" in str(c).lower() else "SOUNDEX" if "soundex" in str(c).lower() else "OTHER"
+                        for c in conditions
+                    ]
+                }
+            )
+            
+            # Query with NULL/empty filtering and OR conditions (matches if any token is found OR Soundex matches)
+            query = select(ResumeMetadata).where(
+                and_(
+                    ResumeMetadata.candidatename.isnot(None),
+                    ResumeMetadata.candidatename != "",
+                    or_(*conditions)
+                )
+            )
+            
+            # DEBUG: Compile and log the actual SQL query
+            try:
+                from sqlalchemy.dialects import mysql
+                compiled_query = query.compile(dialect=mysql.dialect(), compile_kwargs={"literal_binds": False})
+                sql_str = str(compiled_query)
+                params = compiled_query.params if hasattr(compiled_query, 'params') else {}
+                logger.info(
+                    f"DEBUG: Generated SQL query for name search",
+                    extra={
+                        "candidate_name": candidate_name,
+                        "sql_query": sql_str,
+                        "sql_params": params,
+                        "query_repr": repr(query)
+                    }
+                )
+            except Exception as e:
+                logger.warning(f"DEBUG: Failed to compile SQL query: {e}")
             
             result = await session.execute(query)
             resumes = result.scalars().all()
+            
+            # DEBUG: Test with a simple LIKE query to verify database connection
+            try:
+                simple_test_query = select(ResumeMetadata).where(
+                    ResumeMetadata.candidatename.like(f"%{normalized_query_name}%")
+                ).limit(5)
+                simple_test_result = await session.execute(simple_test_query)
+                simple_test_resumes = simple_test_result.scalars().all()
+                logger.info(
+                    f"DEBUG: Simple LIKE test query (case-sensitive): found {len(simple_test_resumes)} results",
+                    extra={
+                        "candidate_name": candidate_name,
+                        "test_pattern": f"%{normalized_query_name}%",
+                        "test_results": [
+                            {
+                                "id": r.id,
+                                "name": r.candidatename,
+                                "name_lower": r.candidatename.lower() if r.candidatename else None
+                            }
+                            for r in simple_test_resumes
+                        ]
+                    }
+                )
+            except Exception as e:
+                logger.warning(f"DEBUG: Simple LIKE test query failed: {e}")
+            
+            # Debug logging to help diagnose issues (using INFO level so it's visible)
+            logger.info(
+                f"Name search query executed: found {len(resumes)} raw results",
+                extra={
+                    "candidate_name": candidate_name,
+                    "query_tokens": tokens,
+                    "normalized_query_name": normalized_query_name,
+                    "raw_result_count": len(resumes),
+                    "sample_names": [r.candidatename for r in resumes[:5]] if resumes else [],
+                    "all_result_ids": [r.id for r in resumes[:10]] if resumes else []
+                }
+            )
             
             # FIX 4: Rank results by match quality (exact > substring > token > Soundex)
             normalized_query = candidate_name.lower().strip()
@@ -1027,19 +1186,16 @@ class AISearchService:
     async def search_semantic(
         self,
         parsed_query: Dict,
-        top_k: int
+        top_k: int,
+        explicit_category_mode: bool = False
     ) -> List[Dict[str, Any]]:
         """
         Search candidates using semantic search with Pinecone.
-        Queries both IT and Non-IT indexes and merges results.
-        Principles implemented:
-        - Semantic understanding (not keyword matching)
-        - Mandatory requirement enforcement
-        - Ranking by relevance
         
         Args:
             parsed_query: Parsed query with filters
             top_k: Number of results to return
+            explicit_category_mode: If True, use ONLY the provided category (no inference, no fallbacks)
         
         Returns:
             List of candidate results with fit tiers
@@ -1050,8 +1206,187 @@ class AISearchService:
                 await self.pinecone_automation.initialize_pinecone()
                 await self.pinecone_automation.create_indexes()
             
-            # Get text for embedding
-            text_for_embedding = parsed_query.get("text_for_embedding", "")
+            # EXPLICIT CATEGORY MODE: Hard-constrained search
+            if explicit_category_mode:
+                mastercategory = parsed_query.get("mastercategory")
+                category = parsed_query.get("category")
+                
+                if not mastercategory or not category:
+                    logger.error("explicit_category_mode=True but mastercategory/category missing in parsed_query")
+                    return []
+                
+                # Choose index STRICTLY from payload
+                target_index_name = "IT" if mastercategory.upper() == "IT" else "NON_IT"
+                
+                # Normalize category to namespace format
+                target_namespace = self._normalize_namespace(category)
+                
+                logger.info(
+                    f"Explicit category mode: index={target_index_name}, namespace={target_namespace}",
+                    extra={
+                        "mastercategory": mastercategory,
+                        "category": category,
+                        "normalized_namespace": target_namespace
+                    }
+                )
+                
+                # Get text for embedding
+                text_for_embedding = parsed_query.get("text_for_embedding", "")
+                if not text_for_embedding or not text_for_embedding.strip():
+                    # Fallback to query if text_for_embedding is empty
+                    filters = parsed_query.get("filters", {})
+                    filter_parts = []
+                    if filters.get("designation"):
+                        filter_parts.append(filters.get("designation"))
+                    if filters.get("must_have_all"):
+                        filter_parts.extend(filters.get("must_have_all", []))
+                    if filter_parts:
+                        text_for_embedding = " ".join(filter_parts)
+                    else:
+                        text_for_embedding = "candidate resume"
+                
+                # Generate embedding
+                embedding = await self.embedding_service.generate_embedding(text_for_embedding)
+                
+                # Build Pinecone filter
+                pinecone_filter = self.build_pinecone_filter(parsed_query)
+                
+                # Query ONLY the specified namespace (NO fallbacks)
+                all_results = []
+                try:
+                    namespace_results = await self.pinecone_automation.query_vectors(
+                        query_vector=embedding,
+                        mastercategory=target_index_name,
+                        namespace=target_namespace if target_namespace else None,
+                        top_k=top_k,
+                        filter_dict=pinecone_filter
+                    )
+                    all_results.extend(namespace_results)
+                    logger.info(
+                        f"Explicit category search returned {len(all_results)} results from namespace '{target_namespace}'",
+                        extra={
+                            "namespace": target_namespace,
+                            "index": target_index_name,
+                            "result_count": len(all_results)
+                        }
+                    )
+                except Exception as e:
+                    logger.error(
+                        f"Failed to query explicit namespace '{target_namespace}': {e}",
+                        extra={"namespace": target_namespace, "error": str(e)}
+                    )
+                
+                if len(all_results) == 0:
+                    logger.warning(
+                        f"Explicit category search returned 0 results. "
+                        f"Namespace: {target_namespace}, Index: {target_index_name}",
+                        extra={
+                            "namespace": target_namespace,
+                            "index": target_index_name,
+                            "mastercategory": mastercategory,
+                            "category": category
+                        }
+                    )
+                    # Return empty (no fallback to other namespaces)
+                
+                # Process and rank results
+                processed_results = []
+                seen_resume_ids = set()
+                
+                for match in all_results:
+                    metadata = match.get("metadata", {})
+                    score = match.get("score", 0.0)
+                    resume_id = metadata.get("resume_id")
+                    
+                    # Skip if we've already seen this resume (deduplicate)
+                    if resume_id and resume_id in seen_resume_ids:
+                        continue
+                    if resume_id:
+                        seen_resume_ids.add(resume_id)
+                    
+                    # Parse skills from skillset string if needed
+                    skills = metadata.get("skills", [])
+                    if isinstance(skills, str):
+                        skills = [s.strip() for s in skills.split(",") if s.strip()]
+                    elif not isinstance(skills, list):
+                        skills = []
+                    
+                    # Extract experience_years if not already in metadata
+                    experience_years = metadata.get("experience_years")
+                    if not experience_years and metadata.get("experience"):
+                        import re
+                        exp_str = str(metadata.get("experience", ""))
+                        match_exp = re.search(r'(\d+(?:\.\d+)?)', exp_str)
+                        if match_exp:
+                            experience_years = int(float(match_exp.group(1)))
+                    
+                    # Format candidate data
+                    candidate = {
+                        "resume_id": resume_id,
+                        "candidate_id": metadata.get("candidate_id", f"C{resume_id}" if resume_id else ""),
+                        "name": metadata.get("candidate_name") or metadata.get("name", ""),
+                        "category": metadata.get("category", ""),
+                        "mastercategory": metadata.get("mastercategory", ""),
+                        "designation": metadata.get("designation", ""),
+                        "jobrole": metadata.get("jobrole", ""),
+                        "experience_years": experience_years,
+                        "skills": skills,
+                        "location": metadata.get("location"),
+                        "score": score
+                    }
+                    
+                    # Calculate relevance score with strict matching
+                    relevance_score = await self.calculate_relevance_score(
+                        candidate,
+                        parsed_query,
+                        strict_mastercategory=mastercategory,
+                        strict_category=category
+                    )
+                    
+                    # Combine semantic score (0-1) with relevance score (0-100)
+                    semantic_score_normalized = score * 100.0
+                    combined_score = semantic_score_normalized + relevance_score
+                    
+                    # Normalize combined score to 0-1 range
+                    normalized_score = max(0.0, min(1.0, combined_score / 200.0))
+                    
+                    candidate["score"] = normalized_score
+                    candidate["semantic_score"] = score
+                    candidate["relevance_score"] = relevance_score
+                    
+                    # Filter out invalid candidates
+                    if not candidate.get("candidate_id") or not candidate.get("candidate_id").strip():
+                        continue
+                    if not candidate.get("resume_id"):
+                        continue
+                    if not candidate.get("name") or not candidate.get("name").strip():
+                        continue
+                    
+                    # Categorize fit tier
+                    fit_tier = self.categorize_fit_tier(candidate, parsed_query, combined_score)
+                    candidate["fit_tier"] = fit_tier
+                    
+                    processed_results.append(candidate)
+                
+                # Sort by final combined score
+                processed_results.sort(key=lambda x: x["score"], reverse=True)
+                
+                # Limit to top_k
+                processed_results = processed_results[:top_k]
+                
+                logger.info(
+                    f"Explicit category search completed: {len(processed_results)} results",
+                    extra={
+                        "result_count": len(processed_results),
+                        "namespace": target_namespace,
+                        "index": target_index_name
+                    }
+                )
+                
+                return processed_results
+            
+            # BROAD SEARCH MODE: Smart filtering when category not provided
+            return await self._search_broad_mode(parsed_query, top_k)
             
             # If empty, use original query as fallback (better than empty or just skills)
             if not text_for_embedding or not text_for_embedding.strip():
@@ -1898,3 +2233,381 @@ class AISearchService:
         except Exception as e:
             logger.error(f"Semantic search failed: {e}", extra={"error": str(e)})
             raise
+    
+    async def _search_broad_mode(
+        self,
+        parsed_query: Dict,
+        top_k: int
+    ) -> List[Dict[str, Any]]:
+        """
+        Broad search mode: Smart filtering when category/mastercategory not provided.
+        Uses role-based and skill-based filtering to reduce namespace queries.
+        
+        Args:
+            parsed_query: Parsed query with filters
+            top_k: Number of results to return
+        
+        Returns:
+            List of candidate results with fit tiers
+        """
+        import asyncio
+        
+        try:
+            # Get text for embedding
+            text_for_embedding = parsed_query.get("text_for_embedding", "")
+            if not text_for_embedding or not text_for_embedding.strip():
+                filters = parsed_query.get("filters", {})
+                filter_parts = []
+                if filters.get("designation"):
+                    filter_parts.append(filters.get("designation"))
+                if filters.get("must_have_all"):
+                    filter_parts.extend(filters.get("must_have_all", []))
+                if filter_parts:
+                    text_for_embedding = " ".join(filter_parts)
+                else:
+                    text_for_embedding = "candidate resume"
+            
+            # Generate embedding
+            embedding = await self.embedding_service.generate_embedding(text_for_embedding)
+            
+            # Build Pinecone filter (only query filters, no category)
+            pinecone_filter = self.build_pinecone_filter(parsed_query)
+            
+            # Smart namespace filtering
+            namespaces_to_query = self._get_smart_namespaces(parsed_query)
+            
+            logger.info(
+                f"Broad search mode: querying {len(namespaces_to_query)} namespaces using smart filtering",
+                extra={
+                    "namespace_count": len(namespaces_to_query),
+                    "namespaces": namespaces_to_query[:10]  # Log first 10
+                }
+            )
+            
+            # Query namespaces in parallel with timeout
+            try:
+                results = await asyncio.wait_for(
+                    self._query_namespaces_parallel(
+                        namespaces_to_query,
+                        embedding,
+                        pinecone_filter,
+                        top_k
+                    ),
+                    timeout=10.0  # 10 second timeout
+                )
+            except asyncio.TimeoutError:
+                logger.warning(
+                    "Broad search timed out, returning partial results",
+                    extra={"namespaces_queried": len(namespaces_to_query)}
+                )
+                results = []
+            
+            # Process, deduplicate, and rank results
+            processed_results = self._process_broad_search_results(results, parsed_query, top_k)
+            
+            logger.info(
+                f"Broad search completed: {len(processed_results)} results from {len(namespaces_to_query)} namespaces",
+                extra={
+                    "result_count": len(processed_results),
+                    "namespace_count": len(namespaces_to_query)
+                }
+            )
+            
+            return processed_results
+            
+        except Exception as e:
+            logger.error(f"Broad search mode failed: {e}", extra={"error": str(e)})
+            raise
+    
+    def _get_smart_namespaces(self, parsed_query: Dict) -> List[tuple]:
+        """
+        Get namespaces to query using smart filtering.
+        Returns list of (mastercategory, namespace) tuples.
+        
+        Strategy:
+        1. Role-based filtering (if designation present)
+        2. Skill-based mastercategory inference (if skills present)
+        3. Fallback: top 10 most common namespaces
+        """
+        filters = parsed_query.get("filters", {})
+        designation = filters.get("designation", "").lower() if filters.get("designation") else ""
+        skills = filters.get("must_have_all", [])
+        
+        # Get all categories
+        it_categories = self.pinecone_automation._get_all_it_categories()
+        non_it_categories = self.pinecone_automation._get_all_non_it_categories()
+        
+        namespaces = []
+        
+        # Strategy 1: Role-based namespace filtering
+        if designation:
+            for role_key, role_namespaces in self.ROLE_FAMILY_NAMESPACES.items():
+                if role_key in designation:
+                    # Map role namespaces to (mastercategory, namespace) tuples
+                    for ns in role_namespaces:
+                        # Determine mastercategory from namespace
+                        normalized_ns = self._normalize_namespace(ns)
+                        # Check if it's IT or NON_IT namespace
+                        it_normalized = [self._normalize_namespace(c) for c in it_categories]
+                        if normalized_ns in it_normalized:
+                            namespaces.append(("IT", normalized_ns))
+                        else:
+                            non_it_normalized = [self._normalize_namespace(c) for c in non_it_categories]
+                            if normalized_ns in non_it_normalized:
+                                namespaces.append(("NON_IT", normalized_ns))
+                    
+                    if namespaces:
+                        # Deduplicate
+                        namespaces = list(set(namespaces))
+                        logger.info(
+                            f"Role-based filtering: found {len(namespaces)} namespaces for role '{designation}'",
+                            extra={"role": designation, "namespaces": namespaces}
+                        )
+                        return namespaces
+        
+        # Strategy 2: Skill-based mastercategory inference
+        if skills:
+            likely_mastercategory = self._infer_mastercategory_from_skills(skills)
+            if likely_mastercategory:
+                categories = it_categories if likely_mastercategory == "IT" else non_it_categories
+                # Limit to top 10 most relevant namespaces
+                for category in categories[:10]:
+                    namespace = self._normalize_namespace(category)
+                    namespaces.append((likely_mastercategory, namespace))
+                
+                logger.info(
+                    f"Skill-based filtering: querying {likely_mastercategory} index ({len(namespaces)} namespaces)",
+                    extra={"mastercategory": likely_mastercategory, "skills": skills}
+                )
+                return namespaces
+        
+        # Strategy 3: Fallback - query top 5 IT + top 5 NON_IT namespaces
+        for category in it_categories[:5]:
+            namespace = self._normalize_namespace(category)
+            namespaces.append(("IT", namespace))
+        
+        for category in non_it_categories[:5]:
+            namespace = self._normalize_namespace(category)
+            namespaces.append(("NON_IT", namespace))
+        
+        logger.info(
+            f"Fallback filtering: querying top 10 namespaces (5 IT + 5 NON_IT)",
+            extra={"namespaces": namespaces}
+        )
+        
+        return namespaces
+    
+    def _infer_mastercategory_from_skills(self, skills: List[str]) -> Optional[str]:
+        """
+        Infer mastercategory (IT/NON_IT) from skills list.
+        Returns "IT", "NON_IT", or None if ambiguous.
+        """
+        it_keywords = [
+            "python", "java", "javascript", "react", "angular", "node", "sql", "database",
+            "aws", "azure", "gcp", "docker", "kubernetes", "devops", "ci/cd", "git",
+            "machine learning", "ai", "data science", "tensorflow", "pytorch",
+            "spring", "django", "flask", "express", "mongodb", "postgresql", "mysql"
+        ]
+        
+        non_it_keywords = [
+            "accounting", "finance", "hr", "human resources", "marketing", "sales",
+            "project management", "business analysis", "scrum", "agile", "pmp"
+        ]
+        
+        skills_lower = [s.lower() for s in skills]
+        
+        it_score = sum(1 for skill in skills_lower if any(kw in skill for kw in it_keywords))
+        non_it_score = sum(1 for skill in skills_lower if any(kw in skill for kw in non_it_keywords))
+        
+        if it_score > non_it_score and it_score > 0:
+            return "IT"
+        elif non_it_score > it_score and non_it_score > 0:
+            return "NON_IT"
+        else:
+            return None
+    
+    async def _query_namespaces_parallel(
+        self,
+        namespaces: List[tuple],
+        embedding: List[float],
+        filter_dict: Dict,
+        top_k: int
+    ) -> List[Dict[str, Any]]:
+        """
+        Query multiple namespaces in parallel.
+        
+        Args:
+            namespaces: List of (mastercategory, namespace) tuples
+            embedding: Query embedding vector
+            filter_dict: Pinecone filter dictionary
+            top_k: Total results needed (distributed across namespaces)
+        
+        Returns:
+            Combined results from all namespaces
+        """
+        import asyncio
+        
+        # Distribute top_k across namespaces
+        top_k_per_namespace = max(1, top_k // len(namespaces)) if namespaces else top_k
+        
+        # Create tasks for parallel execution
+        tasks = []
+        for mastercategory, namespace in namespaces:
+            task = self.pinecone_automation.query_vectors(
+                query_vector=embedding,
+                mastercategory=mastercategory,
+                namespace=namespace,
+                top_k=top_k_per_namespace,
+                filter_dict=filter_dict
+            )
+            tasks.append(task)
+        
+        # Execute all queries in parallel
+        results_list = await asyncio.gather(*tasks, return_exceptions=True)
+        
+        # Combine results and handle exceptions
+        all_results = []
+        for i, result in enumerate(results_list):
+            if isinstance(result, Exception):
+                logger.warning(
+                    f"Namespace query failed: {result}",
+                    extra={"namespace": namespaces[i], "error": str(result)}
+                )
+            elif isinstance(result, list):
+                all_results.extend(result)
+        
+        return all_results
+    
+    def _process_broad_search_results(
+        self,
+        all_results: List[Dict[str, Any]],
+        parsed_query: Dict,
+        top_k: int
+    ) -> List[Dict[str, Any]]:
+        """
+        Process, deduplicate, and rank results from broad search.
+        """
+        # Deduplicate by resume_id
+        seen_resume_ids = set()
+        unique_results = []
+        
+        for match in all_results:
+            metadata = match.get("metadata", {})
+            score = match.get("score", 0.0)
+            resume_id = metadata.get("resume_id")
+            
+            if not resume_id or resume_id in seen_resume_ids:
+                continue
+            
+            seen_resume_ids.add(resume_id)
+            
+            # Parse skills
+            skills = metadata.get("skills", [])
+            if isinstance(skills, str):
+                skills = [s.strip() for s in skills.split(",") if s.strip()]
+            elif not isinstance(skills, list):
+                skills = []
+            
+            # Extract experience_years
+            experience_years = metadata.get("experience_years")
+            if not experience_years and metadata.get("experience"):
+                import re
+                exp_str = str(metadata.get("experience", ""))
+                match_exp = re.search(r'(\d+(?:\.\d+)?)', exp_str)
+                if match_exp:
+                    experience_years = int(float(match_exp.group(1)))
+            
+            # Format candidate data
+            candidate = {
+                "resume_id": resume_id,
+                "candidate_id": metadata.get("candidate_id", f"C{resume_id}" if resume_id else ""),
+                "name": metadata.get("candidate_name") or metadata.get("name", ""),
+                "category": metadata.get("category", ""),
+                "mastercategory": metadata.get("mastercategory", ""),
+                "designation": metadata.get("designation", ""),
+                "jobrole": metadata.get("jobrole", ""),
+                "experience_years": experience_years,
+                "skills": skills,
+                "location": metadata.get("location"),
+                "score": score
+            }
+            
+            # Calculate relevance score (no strict category matching in broad mode)
+            relevance_score = self._calculate_relevance_score_sync(
+                candidate,
+                parsed_query
+            )
+            
+            # Combine semantic score with relevance score
+            semantic_score_normalized = score * 100.0
+            combined_score = semantic_score_normalized + relevance_score
+            normalized_score = max(0.0, min(1.0, combined_score / 200.0))
+            
+            candidate["score"] = normalized_score
+            candidate["semantic_score"] = score
+            candidate["relevance_score"] = relevance_score
+            
+            # Filter invalid candidates
+            if not candidate.get("candidate_id") or not candidate.get("candidate_id").strip():
+                continue
+            if not candidate.get("resume_id"):
+                continue
+            if not candidate.get("name") or not candidate.get("name").strip():
+                continue
+            
+            # Categorize fit tier
+            fit_tier = self.categorize_fit_tier(candidate, parsed_query, combined_score)
+            candidate["fit_tier"] = fit_tier
+            
+            unique_results.append(candidate)
+        
+        # Sort by final combined score
+        unique_results.sort(key=lambda x: x["score"], reverse=True)
+        
+        # Limit to top_k
+        return unique_results[:top_k]
+    
+    def _calculate_relevance_score_sync(
+        self,
+        candidate: Dict,
+        parsed_query: Dict
+    ) -> float:
+        """
+        Synchronous version of calculate_relevance_score for broad search.
+        Simplified version without strict category matching.
+        """
+        score = 0.0
+        filters = parsed_query.get("filters", {})
+        
+        # Skills matching (same as before)
+        must_have_all = filters.get("must_have_all", [])
+        if must_have_all:
+            candidate_skills = [s.lower() for s in candidate.get("skills", [])]
+            matched_skills = sum(1 for skill in must_have_all if skill.lower() in " ".join(candidate_skills))
+            if matched_skills > 0:
+                skill_match_ratio = matched_skills / len(must_have_all)
+                score += 30.0 * skill_match_ratio
+        
+        # Experience matching (same as before)
+        min_exp = filters.get("min_experience")
+        max_exp = filters.get("max_experience")
+        candidate_exp = candidate.get("experience_years")
+        
+        if candidate_exp is not None:
+            if min_exp and candidate_exp >= min_exp:
+                score += 20.0
+            elif min_exp and candidate_exp >= min_exp - 1:
+                score += 10.0
+            
+            if max_exp and candidate_exp <= max_exp:
+                score += 10.0
+        
+        # Designation matching (soft, no strict penalty)
+        query_designation = filters.get("designation", "").lower() if filters.get("designation") else ""
+        candidate_designation = candidate.get("designation", "").lower() if candidate.get("designation") else ""
+        
+        if query_designation and candidate_designation:
+            if query_designation in candidate_designation or candidate_designation in query_designation:
+                score += 15.0
+        
+        return min(100.0, max(0.0, score))

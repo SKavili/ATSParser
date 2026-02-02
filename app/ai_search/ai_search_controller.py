@@ -35,14 +35,22 @@ class AISearchController:
     async def search(
         self,
         query: str,
+        mastercategory: Optional[str] = None,
+        category: Optional[str] = None,
         user_id: Optional[int] = None,
         top_k: int = 20
     ) -> Dict[str, Any]:
         """
         Perform AI-powered search for candidates.
         
+        Supports two modes:
+        1. Explicit mode: If mastercategory and category are provided, searches only that namespace
+        2. Broad mode: If not provided, uses smart filtering to search relevant namespaces
+        
         Args:
             query: Natural language search query
+            mastercategory: Mastercategory (IT/NON_IT) - optional
+            category: Category namespace - optional
             user_id: Optional user ID for tracking
             top_k: Number of results to return (default: 20)
         
@@ -61,21 +69,71 @@ class AISearchController:
             )
             search_query_id = search_query.id
             
+            # Determine search mode
+            explicit_mode = bool(mastercategory and category)
+            
             logger.info(
-                f"Starting AI search: query_id={search_query_id}",
-                extra={"query_id": search_query_id, "query": query[:100]}
+                f"Starting AI search: query_id={search_query_id}, mode={'explicit' if explicit_mode else 'broad'}",
+                extra={
+                    "query_id": search_query_id,
+                    "query": query[:100],
+                    "mastercategory": mastercategory,
+                    "category": category,
+                    "mode": "explicit" if explicit_mode else "broad"
+                }
             )
             
-            # Step 2: Parse query using OLLAMA
+            # Step 2: Parse query using OLLAMA (skip category inference)
             try:
-                parsed_query = await self.query_parser.parse_query(query)
-                logger.info(
-                    f"Query parsed successfully: search_type={parsed_query['search_type']}",
-                    extra={
-                        "query_id": search_query_id,
-                        "search_type": parsed_query["search_type"]
-                    }
+                parsed_query = await self.query_parser.parse_query(
+                    query,
+                    skip_category_inference=True
                 )
+                
+                if explicit_mode:
+                    # Explicit mode: use provided category
+                    parsed_query["mastercategory"] = mastercategory
+                    parsed_query["category"] = category
+                    
+                    # Override: If category/mastercategory provided, force semantic search (skip name detection)
+                    original_search_type = parsed_query.get("search_type", "semantic")
+                    if original_search_type == "name":
+                        parsed_query["search_type"] = "semantic"
+                        # Clear candidate_name from filters since we're doing semantic search
+                        if "filters" in parsed_query and "candidate_name" in parsed_query["filters"]:
+                            parsed_query["filters"]["candidate_name"] = None
+                        logger.info(
+                            f"Category provided, forcing semantic search (overriding name detection). "
+                            f"Original search_type: {original_search_type} → semantic",
+                            extra={
+                                "query_id": search_query_id,
+                                "original_search_type": original_search_type,
+                                "override_reason": "category_provided"
+                            }
+                        )
+                    
+                    logger.info(
+                        f"Query parsed successfully: search_type={parsed_query['search_type']}, "
+                        f"using explicit category: mastercategory={mastercategory}, category={category}",
+                        extra={
+                            "query_id": search_query_id,
+                            "search_type": parsed_query["search_type"],
+                            "mastercategory": mastercategory,
+                            "category": category
+                        }
+                    )
+                else:
+                    # Broad mode: no category filtering
+                    parsed_query["mastercategory"] = None
+                    parsed_query["category"] = None
+                    logger.info(
+                        f"Query parsed successfully: search_type={parsed_query['search_type']}, "
+                        f"using broad search mode (no category filtering)",
+                        extra={
+                            "query_id": search_query_id,
+                            "search_type": parsed_query["search_type"]
+                        }
+                    )
                 # Log parsed query details for debugging
                 logger.info(
                     f"Parsed query details: designation={parsed_query.get('filters', {}).get('designation')}, "
@@ -106,11 +164,12 @@ class AISearchController:
                     results = await self.search_service.search_name(candidate_name, self.session)
             
             elif search_type in ["semantic", "hybrid"]:
-                # Semantic search - Pinecone
+                # Semantic search - Pinecone with mode based on category presence
                 # Note: "hybrid" is treated as semantic (Pinecone only)
                 results = await self.search_service.search_semantic(
                     parsed_query=parsed_query,
-                    top_k=top_k
+                    top_k=top_k,
+                    explicit_category_mode=explicit_mode
                 )
             
             else:
@@ -118,14 +177,17 @@ class AISearchController:
                 logger.warning(f"Unknown search_type: {search_type}, defaulting to semantic")
                 results = await self.search_service.search_semantic(
                     parsed_query=parsed_query,
-                    top_k=top_k
+                    top_k=top_k,
+                    explicit_category_mode=explicit_mode
                 )
             
-            # Step 4: Format results
+            # Step 4: Format results (exclude profiles with score 0.0 or below)
             formatted_results = []
             for result in results:
                 # Convert score from decimal (0.0-1.0) to percentage (0-100)
                 score_decimal = result.get("score", 0.0)
+                if score_decimal <= 0.0:
+                    continue  # Do not return profiles with minimal/zero score
                 score_percentage = round(score_decimal * 100.0, 2)
                 
                 formatted_results.append({
@@ -162,8 +224,8 @@ class AISearchController:
             # Step 6: Return response
             response = {
                 "query": query,
-                "identified_mastercategory": parsed_query.get("mastercategory"),
-                "identified_category": parsed_query.get("category"),
+                "mastercategory": mastercategory if explicit_mode else None,
+                "category": category if explicit_mode else None,
                 "total_results": len(formatted_results),
                 "results": formatted_results
             }

@@ -292,17 +292,26 @@ async def ai_search(
     
     Request body:
     - query: Natural language search query (e.g., "python developer with 5 years experience")
+    - mastercategory: Mastercategory (IT/NON_IT) - optional, if provided searches only that category
+    - category: Category namespace - optional, if provided searches only that namespace
     - user_id: Optional user ID for tracking
     - top_k: Number of results to return (default: 20)
     
+    Note: If both mastercategory and category are provided, searches only that specific namespace.
+          If not provided, performs broad search across relevant namespaces using smart filtering.
+    
     Response:
     - query: Original query
+    - mastercategory: Mastercategory used for search (None if broad search)
+    - category: Category namespace used for search (None if broad search)
     - total_results: Number of results found
     - results: List of candidates with fit tiers
     """
     try:
         return await controller.search(
             query=request.query,
+            mastercategory=request.mastercategory,
+            category=request.category,
             user_id=request.user_id,
             top_k=request.top_k or 20
         )
