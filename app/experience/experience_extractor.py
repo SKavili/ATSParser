@@ -8,6 +8,7 @@ from httpx import Timeout
 
 from app.config import settings
 from app.utils.logging import get_logger
+from app.services.llm_service import use_openai, generate as openai_generate
 
 logger = get_logger(__name__)
 
@@ -1873,37 +1874,55 @@ Input resume text:
 
 Output (JSON only):"""
 
-                    async with httpx.AsyncClient(timeout=Timeout(1200.0)) as client:
-                        response = await client.post(
-                            f"{self.ollama_host}/api/generate",
-                            json={
-                                "model": model_to_use,
-                                "prompt": prompt,
-                                "stream": False,
-                                "options": {
-                                    "temperature": 0.1,
-                                    "top_p": 0.9
-                                }
-                            }
-                        )
-                        response.raise_for_status()
-                        result = response.json()
-
-                    # Extract raw output
                     raw_output = ""
-                    if isinstance(result, dict):
-                        if "response" in result:
-                            raw_output = str(result["response"])
-                        elif "text" in result:
-                            raw_output = str(result["text"])
-                        elif "content" in result:
-                            raw_output = str(result["content"])
-                        elif "message" in result and isinstance(result.get("message"), dict):
-                            raw_output = str(result["message"].get("content", ""))
-                    else:
-                        raw_output = str(result)
+                    if use_openai() and getattr(settings, "openai_api_key", None) and str(settings.openai_api_key).strip():
+                        try:
+                            raw_output = await openai_generate(
+                                prompt=prompt,
+                                system_prompt=EXPERIENCE_PROMPT[:1000],
+                                temperature=0.1,
+                                timeout_seconds=300.0,
+                            )
+                        except Exception as e:
+                            # When LLM_MODEL=OpenAI we do NOT fallback to OLLAMA for resume parsing.
+                            logger.error(
+                                "OpenAI experience extraction failed and OLLAMA fallback is disabled when LLM_MODEL=OpenAI",
+                                extra={"error": str(e)},
+                            )
+                            raise
 
-                    # Parse JSON
+                    if not raw_output or not raw_output.strip():
+                        # If OpenAI is configured, do not attempt OLLAMA fallback – propagate an error instead.
+                        if use_openai() and getattr(settings, "openai_api_key", None) and str(settings.openai_api_key).strip():
+                            raise RuntimeError(
+                                "OpenAI experience extraction returned empty response and "
+                                "OLLAMA fallback is disabled when LLM_MODEL=OpenAI"
+                            )
+
+                        async with httpx.AsyncClient(timeout=Timeout(1200.0)) as client:
+                            response = await client.post(
+                                f"{self.ollama_host}/api/generate",
+                                json={
+                                    "model": model_to_use,
+                                    "prompt": prompt,
+                                    "stream": False,
+                                    "options": {"temperature": 0.1, "top_p": 0.9}
+                                }
+                            )
+                            response.raise_for_status()
+                            result = response.json()
+                        if isinstance(result, dict):
+                            if "response" in result:
+                                raw_output = str(result["response"])
+                            elif "text" in result:
+                                raw_output = str(result["text"])
+                            elif "content" in result:
+                                raw_output = str(result["content"])
+                            elif "message" in result and isinstance(result.get("message"), dict):
+                                raw_output = str(result["message"].get("content", ""))
+                        else:
+                            raw_output = str(result)
+
                     parsed_data = self._extract_json(raw_output)
 
                     # STEP 1A: Check explicit summary experience from LLM

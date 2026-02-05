@@ -7,6 +7,7 @@ from httpx import Timeout
 
 from app.config import settings
 from app.utils.logging import get_logger
+from app.services.llm_service import use_openai, generate as openai_generate
 
 logger = get_logger(__name__)
 
@@ -47,45 +48,27 @@ class JobParser:
     async def parse_job(self, title: str, description: str, job_id: Optional[str] = None) -> Dict:
         """Parse job description and return structured data with embedding summary."""
         try:
-            # Check OLLAMA connection first
-            if not await self._check_ollama_connection():
-                raise RuntimeError(
-                    f"OLLAMA is not accessible at {self.ollama_host}. "
-                    "Please ensure OLLAMA is running. Start it with: ollama serve"
-                )
-            
-            # Prepare prompt
             prompt = f"{JOB_PROMPT}\n\nTitle: {title}\nDescription: {description}\n\nOutput:"
-            
-            # Call OLLAMA API - create fresh client for each request
-            async with httpx.AsyncClient(timeout=Timeout(600.0)) as client:
-                # Try /api/generate first (older OLLAMA versions)
+            raw_output = ""
+            if use_openai() and getattr(settings, "openai_api_key", None) and str(settings.openai_api_key).strip():
                 try:
-                    response = await client.post(
-                        f"{self.ollama_host}/api/generate",
-                        json={
-                            "model": self.model,
-                            "prompt": prompt,
-                            "stream": False,
-                            "options": {
-                                "temperature": 0.1,
-                                "top_p": 0.9,
-                            }
-                        }
+                    logger.info("Using OpenAI for job parsing")
+                    raw_output = await openai_generate(prompt=prompt, system_prompt=JOB_PROMPT, temperature=0.1, timeout_seconds=120.0)
+                except Exception as e:
+                    logger.warning(f"OpenAI job parsing failed, falling back to OLLAMA: {e}")
+            if not raw_output or not raw_output.strip():
+                if not await self._check_ollama_connection():
+                    raise RuntimeError(
+                        f"OLLAMA is not accessible at {self.ollama_host}. "
+                        "Please ensure OLLAMA is running. Start it with: ollama serve"
                     )
-                    response.raise_for_status()
-                    result = response.json()
-                except httpx.HTTPStatusError as e:
-                    if e.response.status_code == 404:
-                        # Try /api/chat endpoint (newer OLLAMA versions)
-                        logger.warning("OLLAMA /api/generate not found, trying /api/chat endpoint")
+                async with httpx.AsyncClient(timeout=Timeout(600.0)) as client:
+                    try:
                         response = await client.post(
-                            f"{self.ollama_host}/api/chat",
+                            f"{self.ollama_host}/api/generate",
                             json={
                                 "model": self.model,
-                                "messages": [
-                                    {"role": "user", "content": prompt}
-                                ],
+                                "prompt": prompt,
                                 "stream": False,
                                 "options": {
                                     "temperature": 0.1,
@@ -95,43 +78,51 @@ class JobParser:
                         )
                         response.raise_for_status()
                         result = response.json()
-                        # Extract response from chat format
-                        if "message" in result and "content" in result["message"]:
-                            result = {"response": result["message"]["content"]}
+                    except httpx.HTTPStatusError as e:
+                        if e.response.status_code == 404:
+                            logger.warning("OLLAMA /api/generate not found, trying /api/chat endpoint")
+                            response = await client.post(
+                                f"{self.ollama_host}/api/chat",
+                                json={
+                                    "model": self.model,
+                                    "messages": [
+                                        {"role": "user", "content": prompt}
+                                    ],
+                                    "stream": False,
+                                    "options": {
+                                        "temperature": 0.1,
+                                        "top_p": 0.9,
+                                    }
+                                }
+                            )
+                            response.raise_for_status()
+                            result = response.json()
+                            if "message" in result and "content" in result["message"]:
+                                result = {"response": result["message"]["content"]}
+                            else:
+                                raise ValueError("Unexpected response format from OLLAMA chat API")
                         else:
-                            raise ValueError("Unexpected response format from OLLAMA chat API")
-                    else:
-                        raise
-                except httpx.ConnectError:
-                    raise RuntimeError(
-                        f"Cannot connect to OLLAMA at {self.ollama_host}. "
-                        "Please ensure OLLAMA is running. Start it with: ollama serve"
-                    )
-                
-                # Extract JSON from response
-                raw_output = result.get("response", "")
-                parsed_data = self._extract_json(raw_output)
-                
-                # Override job_id if provided
-                if job_id:
-                    parsed_data["job_id"] = job_id
-                
-                # Ensure job_id exists
-                if not parsed_data.get("job_id"):
-                    import uuid
-                    parsed_data["job_id"] = f"job_{uuid.uuid4().hex[:12]}"
-                
-                # Ensure summary_for_embedding exists
-                if not parsed_data.get("summary_for_embedding"):
-                    parsed_data["summary_for_embedding"] = f"{title}. {description[:200]}"
-                
-                logger.info(
-                    f"Parsed job: {parsed_data.get('job_id')}",
-                    extra={"job_id": parsed_data.get("job_id"), "title": title}
-                )
-                
-                return parsed_data
-                
+                            raise
+                    except httpx.ConnectError:
+                        raise RuntimeError(
+                            f"Cannot connect to OLLAMA at {self.ollama_host}. "
+                            "Please ensure OLLAMA is running. Start it with: ollama serve"
+                        )
+                    raw_output = result.get("response", "")
+            
+            parsed_data = self._extract_json(raw_output)
+            if job_id:
+                parsed_data["job_id"] = job_id
+            if not parsed_data.get("job_id"):
+                import uuid
+                parsed_data["job_id"] = f"job_{uuid.uuid4().hex[:12]}"
+            if not parsed_data.get("summary_for_embedding"):
+                parsed_data["summary_for_embedding"] = f"{title}. {description[:200]}"
+            logger.info(
+                f"Parsed job: {parsed_data.get('job_id')}",
+                extra={"job_id": parsed_data.get("job_id"), "title": title}
+            )
+            return parsed_data
         except httpx.HTTPError as e:
             logger.error(f"HTTP error calling OLLAMA: {e}", extra={"error": str(e)})
             raise RuntimeError(f"Failed to parse job with LLM: {e}")

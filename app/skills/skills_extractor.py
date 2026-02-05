@@ -7,6 +7,7 @@ from httpx import Timeout
 
 from app.config import settings
 from app.utils.logging import get_logger
+from app.services.llm_service import use_openai, generate as openai_generate
 
 logger = get_logger(__name__)
 
@@ -248,154 +249,175 @@ class SkillsExtractor:
 
 Output (JSON only, no other text, no explanations):"""
             
-            logger.info(
-                f"📤 CALLING OLLAMA API for skills extraction",
-                extra={
-                    "file_name": filename,
-                    "model": model_to_use,
-                    "ollama_host": self.ollama_host,
-                    "resume_text_length": len(resume_text),
-                }
-            )
-            
-            result = None
-            last_error = None
-            
-            async with httpx.AsyncClient(timeout=Timeout(3600.0)) as client:
+            raw_output = ""
+            if use_openai() and getattr(settings, "openai_api_key", None) and str(settings.openai_api_key).strip():
                 try:
-                    response = await client.post(
-                        f"{self.ollama_host}/api/generate",
-                        json={
-                            "model": model_to_use,
-                            "prompt": prompt,
-                            "stream": False,
-                            "options": {
-                                "temperature": 0.1,
-                                "top_p": 0.9,
-                            }
-                        }
+                    logger.info("Using OpenAI for skills extraction", extra={"file_name": filename})
+                    raw_output = await openai_generate(
+                        prompt=prompt,
+                        system_prompt="You are a resume skills extraction agent. Return only valid JSON.",
+                        temperature=0.1,
+                        timeout_seconds=300.0,
                     )
-                    response.raise_for_status()
-                    result = response.json()
-                    response_text = result.get("response", "") or result.get("text", "")
-                    if not response_text and "message" in result:
-                        response_text = result.get("message", {}).get("content", "")
-                    result = {"response": response_text}
-                    logger.info("✅ Successfully used /api/generate endpoint for skills extraction")
-                except httpx.HTTPStatusError as e:
-                    if e.response.status_code != 404:
-                        logger.error(
-                            f"❌ SKILLS EXTRACTION FAILED: OLLAMA /api/generate returned error status",
-                            extra={
-                                "file_name": filename,
-                                "status_code": e.response.status_code,
-                                "error_message": str(e),
-                                "response_text": e.response.text[:500] if hasattr(e.response, 'text') else None,
-                                "failure_reason": f"api_generate_http_error_{e.response.status_code}"
-                            }
-                        )
-                        raise
-                    last_error = e
-                    logger.warning(
-                        "OLLAMA /api/generate returned 404, trying /api/chat endpoint",
-                        extra={
-                            "file_name": filename,
-                            "failure_reason": "api_generate_404_fallback_to_chat"
-                        }
+                except Exception as e:
+                    # When LLM_MODEL=OpenAI we do NOT fallback to OLLAMA for resume parsing.
+                    logger.error(
+                        "OpenAI skills extraction failed and OLLAMA fallback is disabled when LLM_MODEL=OpenAI",
+                        extra={"file_name": filename, "error": str(e)},
                     )
-                
-                if result is None:
+                    raise
+
+            if not raw_output or not raw_output.strip():
+                # If OpenAI is configured, do not attempt OLLAMA fallback – propagate an error instead.
+                if use_openai() and getattr(settings, "openai_api_key", None) and str(settings.openai_api_key).strip():
+                    raise RuntimeError(
+                        "OpenAI skills extraction returned empty response and "
+                        "OLLAMA fallback is disabled when LLM_MODEL=OpenAI"
+                    )
+
+            if not raw_output:
+                logger.info(
+                    f"📤 CALLING OLLAMA API for skills extraction",
+                    extra={
+                        "file_name": filename,
+                        "model": model_to_use,
+                        "ollama_host": self.ollama_host,
+                        "resume_text_length": len(resume_text),
+                    }
+                )
+                result = None
+                last_error = None
+                async with httpx.AsyncClient(timeout=Timeout(3600.0)) as client:
                     try:
-                        # Use /api/chat with fresh conversation (no history)
-                        # System message ensures complete session isolation
                         response = await client.post(
-                            f"{self.ollama_host}/api/chat",
+                            f"{self.ollama_host}/api/generate",
                             json={
                                 "model": model_to_use,
-                                "messages": [
-                                    {"role": "system", "content": "You are a fresh, isolated extraction agent. This is a new, independent task with no previous context. Ignore any previous conversations."},
-                                    {"role": "user", "content": prompt}
-                                ],
+                                "prompt": prompt,
                                 "stream": False,
                                 "options": {
                                     "temperature": 0.1,
                                     "top_p": 0.9,
-                                    "num_predict": 500,  # Limit response length for isolation
                                 }
                             }
                         )
                         response.raise_for_status()
                         result = response.json()
-                        if "message" in result and "content" in result["message"]:
-                            result = {"response": result["message"]["content"]}
-                        else:
-                            raise ValueError("Unexpected response format from OLLAMA chat API")
-                        logger.info("Successfully used /api/chat endpoint for skills extraction")
-                    except httpx.HTTPStatusError as e2:
-                        last_error = e2
-                        logger.error(
-                            f"❌ SKILLS EXTRACTION FAILED: OLLAMA /api/chat returned error status",
+                        response_text = result.get("response", "") or result.get("text", "")
+                        if not response_text and "message" in result:
+                            response_text = result.get("message", {}).get("content", "")
+                        result = {"response": response_text}
+                        logger.info("✅ Successfully used /api/generate endpoint for skills extraction")
+                    except httpx.HTTPStatusError as e:
+                        if e.response.status_code != 404:
+                            logger.error(
+                                f"❌ SKILLS EXTRACTION FAILED: OLLAMA /api/generate returned error status",
+                                extra={
+                                    "file_name": filename,
+                                    "status_code": e.response.status_code,
+                                    "error_message": str(e),
+                                    "response_text": e.response.text[:500] if hasattr(e.response, 'text') else None,
+                                    "failure_reason": f"api_generate_http_error_{e.response.status_code}"
+                                }
+                            )
+                            raise
+                        last_error = e
+                        logger.warning(
+                            "OLLAMA /api/generate returned 404, trying /api/chat endpoint",
                             extra={
                                 "file_name": filename,
-                                "status_code": e2.response.status_code if hasattr(e2, 'response') else None,
-                                "error_message": str(e2),
-                                "response_text": e2.response.text[:500] if hasattr(e2, 'response') and hasattr(e2.response, 'text') else None,
-                                "failure_reason": f"api_chat_http_error_{e2.response.status_code if hasattr(e2, 'response') else 'unknown'}"
+                                "failure_reason": "api_generate_404_fallback_to_chat"
                             }
                         )
-                    except Exception as e2:
-                        last_error = e2
+                    
+                    if result is None:
+                        try:
+                            response = await client.post(
+                                f"{self.ollama_host}/api/chat",
+                                json={
+                                    "model": model_to_use,
+                                    "messages": [
+                                        {"role": "system", "content": "You are a fresh, isolated extraction agent. This is a new, independent task with no previous context. Ignore any previous conversations."},
+                                        {"role": "user", "content": prompt}
+                                    ],
+                                    "stream": False,
+                                    "options": {
+                                        "temperature": 0.1,
+                                        "top_p": 0.9,
+                                        "num_predict": 500,
+                                    }
+                                }
+                            )
+                            response.raise_for_status()
+                            result = response.json()
+                            if "message" in result and "content" in result["message"]:
+                                result = {"response": result["message"]["content"]}
+                            else:
+                                raise ValueError("Unexpected response format from OLLAMA chat API")
+                            logger.info("Successfully used /api/chat endpoint for skills extraction")
+                        except httpx.HTTPStatusError as e2:
+                            last_error = e2
+                            logger.error(
+                                f"❌ SKILLS EXTRACTION FAILED: OLLAMA /api/chat returned error status",
+                                extra={
+                                    "file_name": filename,
+                                    "status_code": e2.response.status_code if hasattr(e2, 'response') else None,
+                                    "error_message": str(e2),
+                                    "response_text": e2.response.text[:500] if hasattr(e2, 'response') and hasattr(e2.response, 'text') else None,
+                                    "failure_reason": f"api_chat_http_error_{e2.response.status_code if hasattr(e2, 'response') else 'unknown'}"
+                                }
+                            )
+                        except Exception as e2:
+                            last_error = e2
+                            logger.error(
+                                f"❌ SKILLS EXTRACTION FAILED: OLLAMA /api/chat failed with exception",
+                                extra={
+                                    "file_name": filename,
+                                    "error": str(e2),
+                                    "error_type": type(e2).__name__,
+                                    "failure_reason": "api_chat_exception"
+                                }
+                            )
+                    
+                    if result is None:
                         logger.error(
-                            f"❌ SKILLS EXTRACTION FAILED: OLLAMA /api/chat failed with exception",
+                            f"❌ SKILLS EXTRACTION FAILED: All OLLAMA API endpoints failed",
                             extra={
                                 "file_name": filename,
-                                "error": str(e2),
-                                "error_type": type(e2).__name__,
-                                "failure_reason": "api_chat_exception"
+                                "ollama_host": self.ollama_host,
+                                "model": model_to_use,
+                                "last_error": str(last_error) if last_error else None,
+                                "last_error_type": type(last_error).__name__ if last_error else None,
+                                "failure_reason": "all_api_endpoints_failed"
                             }
                         )
-                
-                if result is None:
-                    logger.error(
-                        f"❌ SKILLS EXTRACTION FAILED: All OLLAMA API endpoints failed",
-                        extra={
-                            "file_name": filename,
-                            "ollama_host": self.ollama_host,
-                            "model": model_to_use,
-                            "last_error": str(last_error) if last_error else None,
-                            "last_error_type": type(last_error).__name__ if last_error else None,
-                            "failure_reason": "all_api_endpoints_failed"
-                        }
-                    )
-                    raise RuntimeError(
-                        f"All OLLAMA API endpoints failed. "
-                        f"OLLAMA is running at {self.ollama_host} but endpoints return errors. "
-                        f"Last error: {last_error}"
-                    )
-            
-            raw_output = ""
-            if isinstance(result, dict):
-                if "response" in result:
-                    raw_output = str(result["response"])
-                elif "text" in result:
-                    raw_output = str(result["text"])
-                elif "content" in result:
-                    raw_output = str(result["content"])
-                elif "message" in result and isinstance(result.get("message"), dict):
-                    raw_output = str(result["message"].get("content", ""))
+                        raise RuntimeError(
+                            f"All OLLAMA API endpoints failed. "
+                            f"OLLAMA is running at {self.ollama_host} but endpoints return errors. "
+                            f"Last error: {last_error}"
+                        )
+                if isinstance(result, dict):
+                    if "response" in result:
+                        raw_output = str(result["response"])
+                    elif "text" in result:
+                        raw_output = str(result["text"])
+                    elif "content" in result:
+                        raw_output = str(result["content"])
+                    elif "message" in result and isinstance(result.get("message"), dict):
+                        raw_output = str(result["message"].get("content", ""))
+                    else:
+                        logger.error(
+                            f"❌ SKILLS EXTRACTION FAILED: Unexpected response structure from OLLAMA",
+                            extra={
+                                "file_name": filename,
+                                "result_keys": list(result.keys()) if isinstance(result, dict) else None,
+                                "result_type": type(result).__name__,
+                                "result_preview": str(result)[:500],
+                                "failure_reason": "unexpected_response_structure"
+                            }
+                        )
                 else:
-                    logger.error(
-                        f"❌ SKILLS EXTRACTION FAILED: Unexpected response structure from OLLAMA",
-                        extra={
-                            "file_name": filename,
-                            "result_keys": list(result.keys()) if isinstance(result, dict) else None,
-                            "result_type": type(result).__name__,
-                            "result_preview": str(result)[:500],
-                            "failure_reason": "unexpected_response_structure"
-                        }
-                    )
-            else:
-                raw_output = str(result)
+                    raw_output = str(result)
             
             # Log if raw_output is empty
             if not raw_output or not raw_output.strip():

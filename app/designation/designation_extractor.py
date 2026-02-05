@@ -7,6 +7,7 @@ from httpx import Timeout
 
 from app.config import settings
 from app.utils.logging import get_logger
+from app.services.llm_service import use_openai, generate as openai_generate
 
 logger = get_logger(__name__)
 
@@ -170,25 +171,7 @@ class DesignationExtractor:
             The extracted designation string or None if not found
         """
         try:
-            # Check OLLAMA connection first
-            is_connected, available_model = await self._check_ollama_connection()
-            if not is_connected:
-                raise RuntimeError(
-                    f"OLLAMA is not accessible at {self.ollama_host}. "
-                    "Please ensure OLLAMA is running. Start it with: ollama serve"
-                )
-            
-            # Use available model if llama3.1 not found
-            model_to_use = self.model
-            if available_model and "llama3.1" not in available_model.lower():
-                logger.warning(
-                    f"llama3.1 not found, using available model: {available_model}",
-                    extra={"available_model": available_model}
-                )
-                model_to_use = available_model
-            
-            # Prepare prompt - be very explicit about JSON-only output
-            # Add explicit context clearing to ensure no session bleeding
+            model_to_use = self.model  # for error logging
             prompt = f"""{DESIGNATION_PROMPT}
 
 Input resume text:
@@ -196,133 +179,111 @@ Input resume text:
 
 Output (JSON only, no other text, no explanations):"""
             
-            # Clear any potential context by using a fresh, isolated request
-            # Each extraction is completely independent
-            
-            logger.info(
-                f"📤 CALLING OLLAMA API for designation extraction",
-                extra={
-                    "file_name": filename,  # Use file_name instead of filename (reserved in LogRecord)
-                    "model": model_to_use,
-                    "ollama_host": self.ollama_host,
-                    "resume_text_length": len(resume_text),
-                    "prompt_length": len(prompt)
-                }
-            )
-            print(f"\n📤 CALLING OLLAMA API")
-            print(f"   Model: {model_to_use}")
-            print(f"   Host: {self.ollama_host}")
-            print(f"   Resume text length: {len(resume_text)} characters")
-            print(f"   Prompt length: {len(prompt)} characters")
-            
-            result = None
-            last_error = None
-            
-            # Use HTTP API directly (more reliable than Python client)
-            # Try /api/generate endpoint first
-            async with httpx.AsyncClient(timeout=Timeout(600.0)) as client:
-                # Try /api/generate endpoint
+            raw_output = ""
+            if use_openai() and getattr(settings, "openai_api_key", None) and str(settings.openai_api_key).strip():
                 try:
-                    logger.debug(f"Sending request to {self.ollama_host}/api/generate")
-                    response = await client.post(
-                        f"{self.ollama_host}/api/generate",
-                        json={
-                            "model": model_to_use,
-                            "prompt": prompt,
-                            "stream": False,
-                            "options": {
-                                "temperature": 0.1,
-                                "top_p": 0.9,
-                            }
-                        }
+                    logger.info("Using OpenAI for designation extraction", extra={"file_name": filename})
+                    raw_output = await openai_generate(
+                        prompt=prompt,
+                        system_prompt=DESIGNATION_PROMPT[:800],
+                        temperature=0.1,
+                        timeout_seconds=120.0,
                     )
-                    response.raise_for_status()
-                    result = response.json()
-                    # Extract response text from /api/generate format
-                    # OLLAMA /api/generate returns response in "response" field
-                    response_text = result.get("response", "")
-                    if not response_text:
-                        # Sometimes it's in a different format
-                        response_text = result.get("text", "")
-                    if not response_text and "message" in result:
-                        response_text = result.get("message", {}).get("content", "")
-                    
-                    logger.info(
-                        f"📥 OLLAMA API RESPONSE RECEIVED",
-                        extra={
-                            "result_keys": list(result.keys()), 
-                            "has_response": "response" in result,
-                            "response_text_length": len(response_text),
-                            "response_preview": response_text[:200]
-                        }
+                except Exception as e:
+                    # When LLM_MODEL=OpenAI we do NOT fallback to OLLAMA for resume parsing.
+                    logger.error(
+                        "OpenAI designation extraction failed and OLLAMA fallback is disabled when LLM_MODEL=OpenAI",
+                        extra={"file_name": filename, "error": str(e)},
                     )
-                    print(f"📥 OLLAMA API RESPONSE RECEIVED")
-                    print(f"   Response keys: {list(result.keys())}")
-                    print(f"   Response text length: {len(response_text)} characters")
-                    print(f"   Response preview: {response_text[:150]}...")
-                    
-                    result = {"response": response_text}
-                    logger.info("✅ Successfully used /api/generate endpoint for designation extraction")
-                except httpx.HTTPStatusError as e:
-                    if e.response.status_code != 404:
-                        raise
-                    last_error = e
-                    logger.warning("OLLAMA /api/generate returned 404, trying /api/chat endpoint")
-                
-                # Try /api/chat endpoint
-                if result is None:
+                    raise
+
+            if not raw_output or not raw_output.strip():
+                # If OpenAI is configured, do not attempt OLLAMA fallback – propagate an error instead.
+                if use_openai() and getattr(settings, "openai_api_key", None) and str(settings.openai_api_key).strip():
+                    raise RuntimeError(
+                        "OpenAI designation extraction returned empty response and "
+                        "OLLAMA fallback is disabled when LLM_MODEL=OpenAI"
+                    )
+
+                is_connected, available_model = await self._check_ollama_connection()
+                if not is_connected:
+                    raise RuntimeError(
+                        f"OLLAMA is not accessible at {self.ollama_host}. "
+                        "Please ensure OLLAMA is running. Start it with: ollama serve"
+                    )
+                model_to_use = self.model
+                if available_model and "llama3.1" not in available_model.lower():
+                    model_to_use = available_model
+                logger.info(
+                    f"📤 CALLING OLLAMA API for designation extraction",
+                    extra={"file_name": filename, "model": model_to_use, "ollama_host": self.ollama_host, "resume_text_length": len(resume_text), "prompt_length": len(prompt)}
+                )
+                result = None
+                last_error = None
+                async with httpx.AsyncClient(timeout=Timeout(600.0)) as client:
                     try:
-                        # Use /api/chat with fresh conversation (no history)
-                        # This ensures complete session isolation
                         response = await client.post(
+                            f"{self.ollama_host}/api/generate",
+                            json={
+                                "model": model_to_use,
+                                "prompt": prompt,
+                                "stream": False,
+                                "options": {"temperature": 0.1, "top_p": 0.9}
+                            }
+                        )
+                        response.raise_for_status()
+                        result = response.json()
+                        response_text = result.get("response", "") or result.get("text", "")
+                        if not response_text and "message" in result:
+                            response_text = result.get("message", {}).get("content", "")
+                        result = {"response": response_text}
+                        logger.info("✅ Successfully used /api/generate endpoint for designation extraction")
+                    except httpx.HTTPStatusError as e:
+                        if e.response.status_code != 404:
+                            raise
+                        last_error = e
+                        logger.warning("OLLAMA /api/generate returned 404, trying /api/chat endpoint")
+                    if result is None:
+                        try:
+                            response = await client.post(
                                 f"{self.ollama_host}/api/chat",
                                 json={
                                     "model": model_to_use,
                                     "messages": [
-                                        {"role": "system", "content": "You are a fresh, isolated extraction agent. This is a new task with no previous context."},
+                                        {"role": "system", "content": "You are a fresh, isolated extraction agent."},
                                         {"role": "user", "content": prompt}
                                     ],
                                     "stream": False,
-                                    "options": {
-                                        "temperature": 0.1,
-                                        "top_p": 0.9,
-                                        "num_predict": 500,  # Limit response length
-                                    }
+                                    "options": {"temperature": 0.1, "top_p": 0.9, "num_predict": 500}
                                 }
                             )
-                        response.raise_for_status()
-                        result = response.json()
-                        # Extract response from chat format
-                        if "message" in result and "content" in result["message"]:
-                            result = {"response": result["message"]["content"]}
-                        else:
-                            raise ValueError("Unexpected response format from OLLAMA chat API")
-                        logger.info("Successfully used /api/chat endpoint for designation extraction")
-                    except Exception as e2:
-                        last_error = e2
-                        logger.error(f"OLLAMA /api/chat also failed: {e2}", extra={"error": str(e2)})
-                
-                if result is None:
-                    raise RuntimeError(
-                        f"All OLLAMA API endpoints failed. "
-                        f"OLLAMA is running at {self.ollama_host} but endpoints return errors. "
-                        f"Last error: {last_error}"
-                    )
-            
-            # Extract JSON from response - handle different OLLAMA response formats
-            raw_output = ""
-            if isinstance(result, dict):
-                # Directly get response - check keys explicitly to avoid issues with 'or' chain
-                if "response" in result:
-                    raw_output = str(result["response"])
-                elif "text" in result:
-                    raw_output = str(result["text"])
-                elif "content" in result:
-                    raw_output = str(result["content"])
-                elif "message" in result and isinstance(result.get("message"), dict):
-                    raw_output = str(result["message"].get("content", ""))
-            else:
-                raw_output = str(result)
+                            response.raise_for_status()
+                            result = response.json()
+                            if "message" in result and "content" in result["message"]:
+                                result = {"response": result["message"]["content"]}
+                            else:
+                                raise ValueError("Unexpected response format from OLLAMA chat API")
+                            logger.info("Successfully used /api/chat endpoint for designation extraction")
+                        except Exception as e2:
+                            last_error = e2
+                            logger.error(f"OLLAMA /api/chat also failed: {e2}", extra={"error": str(e2)})
+                    if result is None:
+                        raise RuntimeError(
+                            f"All OLLAMA API endpoints failed. "
+                            f"OLLAMA is running at {self.ollama_host} but endpoints return errors. "
+                            f"Last error: {last_error}"
+                        )
+                if isinstance(result, dict):
+                    if "response" in result:
+                        raw_output = str(result["response"])
+                    elif "text" in result:
+                        raw_output = str(result["text"])
+                    elif "content" in result:
+                        raw_output = str(result["content"])
+                    elif "message" in result and isinstance(result.get("message"), dict):
+                        raw_output = str(result["message"].get("content", ""))
+                else:
+                    raw_output = str(result)
             
             # Log raw output for debugging
             logger.info(

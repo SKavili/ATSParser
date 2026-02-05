@@ -8,6 +8,7 @@ from httpx import Timeout
 from app.config import settings
 from app.utils.logging import get_logger
 from app.utils.cleaning import normalize_email, remove_symbols_and_emojis
+from app.services.llm_service import use_openai, generate as openai_generate
 
 logger = get_logger(__name__)
 
@@ -975,54 +976,48 @@ class EmailExtractor:
                 )
             
             # Step 4: Try LLM extraction as additional source (non-blocking, optional)
-            # The enhanced prompt explicitly instructs LLM to extract ALL emails
             try:
-                # Use a shorter text for LLM (first 5000 chars) to avoid token limits
                 llm_text = resume_text[:5000] if len(resume_text) > 5000 else resume_text
                 prompt = f"{EMAIL_PROMPT}\n\nRESUME TEXT:\n{llm_text}\n\nExtract ALL email addresses found in the resume text above."
-                
-                # Try LLM extraction (but don't fail if it errors)
-                async with httpx.AsyncClient(timeout=30.0) as client:
+                raw_output = ""
+                if use_openai() and getattr(settings, "openai_api_key", None) and str(settings.openai_api_key).strip():
                     try:
-                        response = await client.post(
-                            f"{self.ollama_host}/api/generate",
-                            json={
-                                "model": self.model,
-                                "prompt": prompt,
-                                "stream": False,
-                                "options": {
-                                    "temperature": 0.1,
-                                    "top_p": 0.9,
-                                    "num_predict": 500,
+                        raw_output = await openai_generate(prompt=prompt, system_prompt=EMAIL_PROMPT[:500], temperature=0.1, timeout_seconds=60.0)
+                    except Exception:
+                        pass
+                if not raw_output or not raw_output.strip():
+                    async with httpx.AsyncClient(timeout=30.0) as client:
+                        try:
+                            response = await client.post(
+                                f"{self.ollama_host}/api/generate",
+                                json={
+                                    "model": self.model,
+                                    "prompt": prompt,
+                                    "stream": False,
+                                    "options": {"temperature": 0.1, "top_p": 0.9, "num_predict": 500}
                                 }
-                            }
-                        )
-                        response.raise_for_status()
-                        result = response.json()
-                        raw_output = result.get("response", "")
-                        
-                        # Extract JSON from LLM response using helper method
-                        if raw_output:
-                            parsed = self._extract_json(raw_output)
-                            if isinstance(parsed, dict):
-                                llm_all_emails = parsed.get("all_emails")
-                                if llm_all_emails:
-                                    # Parse comma-separated emails from LLM
-                                    llm_email_list = [e.strip() for e in str(llm_all_emails).split(',') if e.strip()]
-                                    for llm_email in llm_email_list:
-                                        # Normalize and validate
-                                        normalized = normalize_email(llm_email)
-                                        if normalized and '@' in normalized:
-                                            username, domain = normalized.split('@', 1)
-                                            if len(username) >= 2 and len(domain) >= 4:
-                                                all_emails_found.add(normalized)
-                                    logger.debug(
-                                        f"Step 4 (LLM): Found {len(llm_email_list)} emails from LLM for {filename}",
-                                        extra={"emails": llm_email_list[:5]}
-                                    )
-                    except Exception as llm_error:
-                        # Don't fail if LLM extraction fails - regex is primary method
-                        logger.debug(f"LLM extraction failed (non-critical) for {filename}: {llm_error}")
+                            )
+                            response.raise_for_status()
+                            result = response.json()
+                            raw_output = result.get("response", "") or result.get("text", "") or (result.get("message", {}) or {}).get("content", "")
+                        except Exception:
+                            raw_output = ""
+                if raw_output:
+                    parsed = self._extract_json(raw_output)
+                    if isinstance(parsed, dict):
+                        llm_all_emails = parsed.get("all_emails")
+                        if llm_all_emails:
+                            llm_email_list = [e.strip() for e in str(llm_all_emails).split(',') if e.strip()]
+                            for llm_email in llm_email_list:
+                                normalized = normalize_email(llm_email)
+                                if normalized and '@' in normalized:
+                                    username, domain = normalized.split('@', 1)
+                                    if len(username) >= 2 and len(domain) >= 4:
+                                        all_emails_found.add(normalized)
+                            logger.debug(
+                                f"Step 4 (LLM): Found {len(llm_email_list)} emails from LLM for {filename}",
+                                extra={"emails": llm_email_list[:5]}
+                            )
             except Exception as e:
                 logger.debug(f"LLM extraction step failed (non-critical) for {filename}: {e}")
             
@@ -1344,116 +1339,115 @@ class EmailExtractor:
         
         # Step 4: Try LLM extraction if regex didn't find anything
         try:
-            is_connected, available_model = await self._check_ollama_connection()
-            if not is_connected:
-                logger.warning(f"OLLAMA not accessible for {filename}, skipping LLM extraction")
-                return None
-            
-            model_to_use = self.model
-            if available_model and "llama3.1" not in available_model.lower():
-                logger.warning(
-                    f"llama3.1 not found, using available model: {available_model}",
-                    extra={"available_model": available_model}
-                )
-                model_to_use = available_model
-            
             prompt = f"""{EMAIL_PROMPT}
 
 Input resume text:
 {resume_text[:10000]}
 
 Output (JSON only, no other text, no explanations):"""
-            
-            logger.info(
-                f"📤 CALLING OLLAMA API for email extraction",
-                extra={
-                    "file_name": filename,
-                    "model": model_to_use,
-                    "ollama_host": self.ollama_host,
-                }
-            )
-            
-            result = None
-            last_error = None
-            
-            # Reduced timeout from 600s to 60s for faster processing
-            async with httpx.AsyncClient(timeout=Timeout(60.0)) as client:
+            raw_output = ""
+            if use_openai() and getattr(settings, "openai_api_key", None) and str(settings.openai_api_key).strip():
                 try:
-                    response = await client.post(
-                        f"{self.ollama_host}/api/generate",
-                        json={
-                            "model": model_to_use,
-                            "prompt": prompt,
-                            "stream": False,
-                            "options": {
-                                "temperature": 0.1,
-                                "top_p": 0.9,
-                            }
-                        }
+                    logger.info("Using OpenAI for email extraction", extra={"file_name": filename})
+                    raw_output = await openai_generate(
+                        prompt=prompt,
+                        system_prompt=EMAIL_PROMPT[:500],
+                        temperature=0.1,
+                        timeout_seconds=90.0,
                     )
-                    response.raise_for_status()
-                    result = response.json()
-                    response_text = result.get("response", "") or result.get("text", "")
-                    if not response_text and "message" in result:
-                        response_text = result.get("message", {}).get("content", "")
-                    result = {"response": response_text}
-                    logger.info("✅ Successfully used /api/generate endpoint for email extraction")
-                except httpx.HTTPStatusError as e:
-                    if e.response.status_code != 404:
-                        raise
-                    last_error = e
-                    logger.warning("OLLAMA /api/generate returned 404, trying /api/chat endpoint")
-                
-                if result is None:
+                except Exception as e:
+                    # When LLM_MODEL=OpenAI we do NOT fallback to OLLAMA for resume parsing.
+                    logger.error(
+                        "OpenAI email extraction failed and OLLAMA fallback is disabled when LLM_MODEL=OpenAI",
+                        extra={"file_name": filename, "error": str(e)},
+                    )
+                    raise
+
+            if not raw_output or not raw_output.strip():
+                # If OpenAI is configured, do not attempt OLLAMA fallback – propagate an error instead.
+                if use_openai() and getattr(settings, "openai_api_key", None) and str(settings.openai_api_key).strip():
+                    raise RuntimeError(
+                        "OpenAI email extraction returned empty response and "
+                        "OLLAMA fallback is disabled when LLM_MODEL=OpenAI"
+                    )
+
+                is_connected, available_model = await self._check_ollama_connection()
+                if not is_connected:
+                    logger.warning(f"OLLAMA not accessible for {filename}, skipping LLM extraction")
+                    return None
+                model_to_use = self.model
+                if available_model and "llama3.1" not in available_model.lower():
+                    model_to_use = available_model
+                logger.info(
+                    f"📤 CALLING OLLAMA API for email extraction",
+                    extra={"file_name": filename, "model": model_to_use, "ollama_host": self.ollama_host}
+                )
+                result = None
+                last_error = None
+                async with httpx.AsyncClient(timeout=Timeout(60.0)) as client:
                     try:
-                        # Use /api/chat with fresh conversation (no history)
-                        # System message ensures complete session isolation
                         response = await client.post(
-                            f"{self.ollama_host}/api/chat",
+                            f"{self.ollama_host}/api/generate",
                             json={
                                 "model": model_to_use,
-                                "messages": [
-                                    {"role": "system", "content": "You are a fresh, isolated extraction agent. This is a new, independent task with no previous context. Ignore any previous conversations."},
-                                    {"role": "user", "content": prompt}
-                                ],
+                                "prompt": prompt,
                                 "stream": False,
-                                "options": {
-                                    "temperature": 0.1,
-                                    "top_p": 0.9,
-                                    "num_predict": 500,  # Limit response length for isolation
-                                }
+                                "options": {"temperature": 0.1, "top_p": 0.9}
                             }
                         )
                         response.raise_for_status()
                         result = response.json()
-                        if "message" in result and "content" in result["message"]:
-                            result = {"response": result["message"]["content"]}
-                        else:
-                            raise ValueError("Unexpected response format from OLLAMA chat API")
-                        logger.info("Successfully used /api/chat endpoint for email extraction")
-                    except Exception as e2:
-                        last_error = e2
-                        logger.error(f"OLLAMA /api/chat also failed: {e2}", extra={"error": str(e2)})
-                
-                if result is None:
-                    raise RuntimeError(
-                        f"All OLLAMA API endpoints failed. "
-                        f"OLLAMA is running at {self.ollama_host} but endpoints return errors. "
-                        f"Last error: {last_error}"
-                    )
-            
-            raw_output = ""
-            if isinstance(result, dict):
-                if "response" in result:
-                    raw_output = str(result["response"])
-                elif "text" in result:
-                    raw_output = str(result["text"])
-                elif "content" in result:
-                    raw_output = str(result["content"])
-                elif "message" in result and isinstance(result.get("message"), dict):
-                    raw_output = str(result["message"].get("content", ""))
-            else:
-                raw_output = str(result)
+                        response_text = result.get("response", "") or result.get("text", "")
+                        if not response_text and "message" in result:
+                            response_text = result.get("message", {}).get("content", "")
+                        result = {"response": response_text}
+                        logger.info("✅ Successfully used /api/generate endpoint for email extraction")
+                    except httpx.HTTPStatusError as e:
+                        if e.response.status_code != 404:
+                            raise
+                        last_error = e
+                        logger.warning("OLLAMA /api/generate returned 404, trying /api/chat endpoint")
+                    if result is None:
+                        try:
+                            response = await client.post(
+                                f"{self.ollama_host}/api/chat",
+                                json={
+                                    "model": model_to_use,
+                                    "messages": [
+                                        {"role": "system", "content": "You are a fresh, isolated extraction agent."},
+                                        {"role": "user", "content": prompt}
+                                    ],
+                                    "stream": False,
+                                    "options": {"temperature": 0.1, "top_p": 0.9, "num_predict": 500}
+                                }
+                            )
+                            response.raise_for_status()
+                            result = response.json()
+                            if "message" in result and "content" in result["message"]:
+                                result = {"response": result["message"]["content"]}
+                            else:
+                                raise ValueError("Unexpected response format from OLLAMA chat API")
+                            logger.info("Successfully used /api/chat endpoint for email extraction")
+                        except Exception as e2:
+                            last_error = e2
+                            logger.error(f"OLLAMA /api/chat also failed: {e2}", extra={"error": str(e2)})
+                    if result is None:
+                        raise RuntimeError(
+                            f"All OLLAMA API endpoints failed. "
+                            f"OLLAMA is running at {self.ollama_host} but endpoints return errors. "
+                            f"Last error: {last_error}"
+                        )
+                if isinstance(result, dict):
+                    if "response" in result:
+                        raw_output = str(result["response"])
+                    elif "text" in result:
+                        raw_output = str(result["text"])
+                    elif "content" in result:
+                        raw_output = str(result["content"])
+                    elif "message" in result and isinstance(result.get("message"), dict):
+                        raw_output = str(result["message"].get("content", ""))
+                else:
+                    raw_output = str(result)
             parsed_data = self._extract_json(raw_output)
             # Handle new format: primary_email, all_emails
             primary_email = parsed_data.get("primary_email")

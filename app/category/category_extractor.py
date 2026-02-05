@@ -6,6 +6,7 @@ from httpx import Timeout
 
 from app.config import settings
 from app.utils.logging import get_logger
+from app.services.llm_service import use_openai, generate as openai_generate
 
 logger = get_logger(__name__)
 
@@ -260,18 +261,6 @@ class CategoryExtractor:
             else:
                 prompt_template = NON_IT_CATEGORY_PROMPT
             
-            is_connected, available_model = await self._check_ollama_connection()
-            if not is_connected:
-                logger.warning(
-                    f"OLLAMA not accessible for category classification, returning None",
-                    extra={"file_name": filename, "mastercategory": mastercategory}
-                )
-                return None
-            
-            model_to_use = self.model
-            if available_model and "llama3.1" not in available_model.lower():
-                model_to_use = available_model
-            
             # Use first 1000 characters as per prompt
             text_to_send = resume_text[:1000]
             prompt = f"""{prompt_template}
@@ -281,68 +270,88 @@ Input resume text:
 
 Output (one line only, category name only, no explanations):"""
             
-            logger.info(
-                "[CATEGORY] Classifying category",
-                extra={
-                    "file_name": filename,
-                    "mastercategory": mastercategory,
-                    "model": model_to_use,
-                    "resume_text_length": len(resume_text)
-                }
-            )
-            
-            result = None
-            async with httpx.AsyncClient(timeout=Timeout(300.0)) as client:
+            raw_output = ""
+            if use_openai() and getattr(settings, "openai_api_key", None) and str(settings.openai_api_key).strip():
                 try:
-                    response = await client.post(
-                        f"{self.ollama_host}/api/generate",
-                        json={
-                            "model": model_to_use,
-                            "prompt": prompt,
-                            "stream": False,
-                            "options": {
-                                "temperature": 0.1,
-                                "top_p": 0.9,
-                            }
-                        }
+                    logger.info(
+                        "Using OpenAI for category extraction",
+                        extra={"file_name": filename, "mastercategory": mastercategory},
                     )
-                    response.raise_for_status()
-                    result = response.json()
-                    response_text = result.get("response", "") or result.get("text", "")
-                    if not response_text and "message" in result:
-                        response_text = result.get("message", {}).get("content", "")
-                    result = {"response": response_text}
-                except httpx.HTTPStatusError as e:
-                    if e.response.status_code == 404:
-                        # Try /api/chat endpoint
+                    raw_output = await openai_generate(
+                        prompt=prompt,
+                        system_prompt=prompt_template[:800],
+                        temperature=0.1,
+                        timeout_seconds=60.0,
+                    )
+                except Exception as e:
+                    # When LLM_MODEL=OpenAI we do NOT fallback to OLLAMA for resume parsing.
+                    logger.error(
+                        "OpenAI category extraction failed and OLLAMA fallback is disabled when LLM_MODEL=OpenAI",
+                        extra={"file_name": filename, "mastercategory": mastercategory, "error": str(e)},
+                    )
+                    raise
+
+            if not raw_output or not raw_output.strip():
+                # If OpenAI is configured, do not attempt OLLAMA fallback – propagate an error instead.
+                if use_openai() and getattr(settings, "openai_api_key", None) and str(settings.openai_api_key).strip():
+                    raise RuntimeError(
+                        "OpenAI category extraction returned empty response and "
+                        "OLLAMA fallback is disabled when LLM_MODEL=OpenAI"
+                    )
+
+                is_connected, available_model = await self._check_ollama_connection()
+                if not is_connected:
+                    logger.warning("OLLAMA not accessible for category classification, returning None", extra={"file_name": filename, "mastercategory": mastercategory})
+                    return None
+                model_to_use = self.model
+                if available_model and "llama3.1" not in available_model.lower():
+                    model_to_use = available_model
+                logger.info(
+                    "[CATEGORY] Classifying category (OLLAMA)",
+                    extra={"file_name": filename, "mastercategory": mastercategory, "model": model_to_use, "resume_text_length": len(resume_text)}
+                )
+                result = None
+                async with httpx.AsyncClient(timeout=Timeout(300.0)) as client:
+                    try:
                         response = await client.post(
-                            f"{self.ollama_host}/api/chat",
+                            f"{self.ollama_host}/api/generate",
                             json={
                                 "model": model_to_use,
-                                "messages": [
-                                    {"role": "system", "content": "You are a fresh, isolated categorization agent. This is a new, independent task with no previous context."},
-                                    {"role": "user", "content": prompt}
-                                ],
+                                "prompt": prompt,
                                 "stream": False,
-                                "options": {
-                                    "temperature": 0.1,
-                                    "top_p": 0.9,
-                                    "num_predict": 100,  # Short response for category name
-                                }
+                                "options": {"temperature": 0.1, "top_p": 0.9}
                             }
                         )
                         response.raise_for_status()
                         result = response.json()
-                        if "message" in result and "content" in result["message"]:
-                            result = {"response": result["message"]["content"]}
-                    else:
-                        raise
-            
-            raw_output = ""
-            if isinstance(result, dict):
-                raw_output = str(result.get("response", "") or result.get("text", "") or result.get("content", ""))
-            else:
-                raw_output = str(result)
+                        response_text = result.get("response", "") or result.get("text", "")
+                        if not response_text and "message" in result:
+                            response_text = result.get("message", {}).get("content", "")
+                        result = {"response": response_text}
+                    except httpx.HTTPStatusError as e:
+                        if e.response.status_code == 404:
+                            response = await client.post(
+                                f"{self.ollama_host}/api/chat",
+                                json={
+                                    "model": model_to_use,
+                                    "messages": [
+                                        {"role": "system", "content": "You are a fresh, isolated categorization agent."},
+                                        {"role": "user", "content": prompt}
+                                    ],
+                                    "stream": False,
+                                    "options": {"temperature": 0.1, "top_p": 0.9, "num_predict": 100}
+                                }
+                            )
+                            response.raise_for_status()
+                            result = response.json()
+                            if "message" in result and "content" in result["message"]:
+                                result = {"response": result["message"]["content"]}
+                        else:
+                            raise
+                if isinstance(result, dict):
+                    raw_output = str(result.get("response", "") or result.get("text", "") or result.get("content", ""))
+                else:
+                    raw_output = str(result)
             
             category = self._parse_category(raw_output)
             

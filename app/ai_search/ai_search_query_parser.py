@@ -1,4 +1,4 @@
-"""Query parser for AI search using OLLAMA LLM."""
+"""Query parser for AI search using OLLAMA or OpenAI LLM (via LLM_MODEL)."""
 import json
 import re
 from typing import Dict, Optional
@@ -7,6 +7,7 @@ from httpx import Timeout
 
 from app.config import settings
 from app.utils.logging import get_logger
+from app.services.llm_service import use_openai, generate as openai_generate
 # QueryCategoryIdentifier removed - category is now provided explicitly in payload
 
 logger = get_logger(__name__)
@@ -415,6 +416,43 @@ class AISearchQueryParser:
         Raises:
             RuntimeError: If OLLAMA is not available or parsing fails
         """
+        # Prepare prompt (used for both OpenAI and OLLAMA)
+        full_prompt = f"{AI_SEARCH_PROMPT}\n\nInput Query: {query}\n\nOutput:"
+
+        # LLM_MODEL=OpenAI: use OpenAI for query parsing
+        if use_openai():
+            if not getattr(settings, "openai_api_key", None) or not str(settings.openai_api_key).strip():
+                raise RuntimeError(
+                    "LLM_MODEL=OpenAI but OPENAI_API_KEY is not set. "
+                    "Set OPENAI_API_KEY in your .env file."
+                )
+            try:
+                raw_output = await openai_generate(
+                    prompt=f"Input Query: {query}\n\nOutput:",
+                    system_prompt=AI_SEARCH_PROMPT,
+                    temperature=0.1,
+                    timeout_seconds=300.0,
+                )
+                parsed_data = self._extract_json(raw_output or "")
+                if parsed_data == self._default_response() and raw_output:
+                    cleaned = re.sub(r'[^\{\}\[\]",:\s\w]', '', raw_output)
+                    try:
+                        parsed_data = json.loads(cleaned)
+                        parsed_data = self._validate_response(parsed_data)
+                    except Exception:
+                        pass
+                parsed_data["mastercategory"] = None
+                parsed_data["category"] = None
+                logger.info(
+                    f"Query parsed successfully (OpenAI): search_type={parsed_data['search_type']}",
+                    extra={"search_type": parsed_data["search_type"], "has_filters": bool(parsed_data["filters"])}
+                )
+                return parsed_data
+            except Exception as e:
+                logger.error(f"OpenAI query parsing failed: {e}", extra={"error": str(e)})
+                raise RuntimeError(f"OpenAI query parsing failed: {e}") from e
+
+        # LLM_MODEL=OLLAMA (default): use OLLAMA
         # Check OLLAMA connection
         is_connected, available_model = await self._check_ollama_connection()
         if not is_connected:
@@ -428,9 +466,6 @@ class AISearchQueryParser:
         if available_model and "llama3.1" not in available_model.lower():
             logger.warning(f"llama3.1 not found, using available model: {available_model}")
             model_to_use = available_model
-        
-        # Prepare prompt
-        full_prompt = f"{AI_SEARCH_PROMPT}\n\nInput Query: {query}\n\nOutput:"
         
         # Try using OLLAMA Python client first
         result = None

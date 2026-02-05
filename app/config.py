@@ -32,6 +32,12 @@ class Settings(BaseSettings):
     # OLLAMA Configuration
     ollama_host: str = Field("http://localhost:11434", alias="OLLAMA_HOST")
     ollama_api_key: Optional[str] = Field(None, alias="OLLAMA_API_KEY")
+
+    # LLM provider: "OpenAI" or "OLLAMA" (used for metadata extraction and AI search; embeddings unchanged)
+    llm_model: str = Field("OLLAMA", alias="LLM_MODEL")
+    # OpenAI (when LLM_MODEL=OpenAI)
+    openai_api_key: Optional[str] = Field(None, alias="OPENAI_API_KEY")
+    openai_model: str = Field("gpt-3.5-turbo", alias="OPENAI_MODEL")
     
     # Memory Optimization Settings
     embedding_batch_size: int = Field(5, alias="EMBEDDING_BATCH_SIZE")

@@ -1,4 +1,4 @@
-"""Service for matching candidate designations with query designations using OLLAMA LLM."""
+"""Service for matching candidate designations using OLLAMA or OpenAI LLM (via LLM_MODEL)."""
 import json
 import re
 from typing import Optional, Tuple
@@ -7,6 +7,7 @@ from httpx import Timeout
 
 from app.config import settings
 from app.utils.logging import get_logger
+from app.services.llm_service import use_openai, generate as openai_generate
 
 # Timeout settings for designation matching
 DESIGNATION_MATCH_TIMEOUT = 10.0  # 10 seconds for designation matching
@@ -83,7 +84,7 @@ class DesignationMatcher:
     """Service for matching candidate designations with query designations using LLM."""
     
     def __init__(self):
-        self.ollama_host = getattr(settings, 'OLLAMA_HOST', 'http://localhost:11434')
+        self.ollama_host = getattr(settings, "ollama_host", "http://localhost:11434")
         self.model = getattr(settings, 'OLLAMA_MODEL', 'llama3.1')
         self.cache = {}  # Simple in-memory cache for designation matches
     
@@ -132,6 +133,32 @@ class DesignationMatcher:
         )
         
         try:
+            # LLM_MODEL=OpenAI: use OpenAI for designation matching
+            if use_openai():
+                if not getattr(settings, "openai_api_key", None) or not str(settings.openai_api_key).strip():
+                    return self._fallback_keyword_match(query_designation, candidate_designation)
+                try:
+                    raw_output = await openai_generate(
+                        prompt=prompt,
+                        system_prompt=None,
+                        temperature=0.1,
+                        timeout_seconds=DESIGNATION_MATCH_TIMEOUT,
+                    )
+                    match_result = self._extract_json(raw_output or "")
+                    is_match = match_result.get("match", False)
+                    confidence = max(0.0, min(1.0, float(match_result.get("confidence", 0.0))))
+                    self.cache[cache_key] = (is_match, confidence)
+                    logger.info(
+                        f"Designation match (OpenAI): query='{query_designation}', candidate='{candidate_designation}', "
+                        f"match={is_match}, confidence={confidence}",
+                        extra={"query_designation": query_designation, "candidate_designation": candidate_designation, "match": is_match, "confidence": confidence}
+                    )
+                    return is_match, confidence
+                except Exception as e:
+                    logger.warning(f"OpenAI designation matching failed, using fallback: {e}", extra={"error": str(e)})
+                    return self._fallback_keyword_match(query_designation, candidate_designation)
+
+            # LLM_MODEL=OLLAMA (default): use OLLAMA
             # Try using OLLAMA Python client first
             result = None
             if OLLAMA_CLIENT_AVAILABLE:
