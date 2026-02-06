@@ -1,5 +1,5 @@
 """API route definitions."""
-from fastapi import APIRouter, Depends, UploadFile, File, Form, Query, HTTPException
+from fastapi import APIRouter, Depends, UploadFile, File, Form, Query, HTTPException, Request
 from sqlalchemy.ext.asyncio import AsyncSession
 from typing import Optional, List
 
@@ -49,13 +49,17 @@ async def get_job_controller(
 
 
 async def get_ai_search_controller(
+    request: Request,
     session: AsyncSession = Depends(get_db_session)
 ) -> AISearchController:
-    """Create AISearchController with dependencies."""
+    """Create AISearchController with dependencies. Reuses Pinecone and EmbeddingService from app.state when initialized at startup."""
     from app.services.pinecone_automation import PineconeAutomation
     
-    embedding_service = EmbeddingService()
-    pinecone_automation = PineconeAutomation()
+    pinecone_automation = getattr(request.app.state, "ai_search_pinecone", None)
+    embedding_service = getattr(request.app.state, "ai_search_embedding_service", None)
+    if pinecone_automation is None or embedding_service is None:
+        embedding_service = EmbeddingService()
+        pinecone_automation = PineconeAutomation()
     resume_repo = ResumeRepository(session)
     return AISearchController(session, embedding_service, pinecone_automation, resume_repo)
 

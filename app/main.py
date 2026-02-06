@@ -51,6 +51,24 @@ async def lifespan(app: FastAPI):
         # Store vector_db in app state for dependency injection
         app.state.vector_db = vector_db
         
+        # Initialize AI search Pinecone (indexes + namespaces) once at startup so search requests are fast
+        try:
+            from app.services.pinecone_automation import PineconeAutomation
+            from app.services.embedding_service import EmbeddingService
+            ai_pinecone = PineconeAutomation()
+            await ai_pinecone.initialize_pinecone()
+            await ai_pinecone.create_indexes()
+            app.state.ai_search_pinecone = ai_pinecone
+            app.state.ai_search_embedding_service = EmbeddingService()
+            logger.info("AI search Pinecone and embedding service initialized at startup")
+        except Exception as e:
+            logger.warning(
+                f"AI search Pinecone init at startup failed, will lazy-init on first request: {e}",
+                extra={"error": str(e)}
+            )
+            app.state.ai_search_pinecone = None
+            app.state.ai_search_embedding_service = None
+        
         logger.info("Application startup complete")
     
     except Exception as e:
