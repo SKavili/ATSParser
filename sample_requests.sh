@@ -1,7 +1,7 @@
 #!/bin/bash
 # Sample cURL requests for ATS Backend API
 
-BASE_URL="http://localhost:8000/api/v1"
+BASE_URL="http://localhost:5002/api/v1"
 
 echo "[INFO] Testing ATS Backend API"
 echo "=============================="

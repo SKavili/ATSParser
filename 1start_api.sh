@@ -46,14 +46,14 @@ fi
 
 # Start the FastAPI server
 echo "[INFO] Starting FastAPI server..."
-echo "[INFO] Server will be available at: http://localhost:8000"
-echo "[INFO] API Documentation: http://localhost:8000/docs"
+echo "[INFO] Server will be available at: http://localhost:5002"
+echo "[INFO] API Documentation: http://localhost:5002/docs"
 echo ""
 echo "Press Ctrl+C to stop the server"
 echo "========================================"
 echo ""
 
-python3 -m uvicorn app.main:app --reload --host 0.0.0.0 --port 8000
+python3 -m uvicorn app.main:app --reload --host 0.0.0.0 --port 5002
 
 # If we get here, the server stopped
 echo ""

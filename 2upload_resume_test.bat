@@ -8,7 +8,7 @@ set BASE_DIR=%~dp0
 
 REM Set resume folder relative to project
 set RESUME_FOLDER=%BASE_DIR%Resumes
-set API_URL=http://localhost:8000/api/v1/upload-resume
+set API_URL=http://localhost:5002/api/v1/upload-resume
  
 echo ========================================
 echo   Testing Resume Upload (Multiple Files)

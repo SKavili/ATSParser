@@ -32,13 +32,13 @@ if errorlevel 1 (
 
 REM Start the FastAPI server in production mode
 echo [INFO] Starting FastAPI server in production mode...
-echo [INFO] Server will be available at: http://localhost:8000
+echo [INFO] Server will be available at: http://localhost:5002
 echo.
 echo Press Ctrl+C to stop the server
 echo ========================================
 echo.
 
-python -m uvicorn app.main:app --host 0.0.0.0 --port 8000 --workers 4
+python -m uvicorn app.main:app --host 0.0.0.0 --port 5002 --workers 4
 
 REM If we get here, the server stopped
 echo.

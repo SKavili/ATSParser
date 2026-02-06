@@ -88,21 +88,21 @@ Enterprise-ready backend for an Applicant Tracking System (ATS) using Python, Fa
    
    Option B: Using command line:
    ```bash
-   uvicorn app.main:app --reload --host 0.0.0.0 --port 8000
+   uvicorn app.main:app --reload --host 0.0.0.0 --port 5002
    ```
    
    Or using Python:
    ```bash
-   python -m uvicorn app.main:app --reload
+   python -m uvicorn app.main:app --reload --port 5002
    ```
-
-The API will be available at `http://localhost:8000`
+ 
+The API will be available at `http://localhost:5002`
 
 ## API Documentation
 
 Once the server is running:
-- Swagger UI: http://localhost:8000/docs
-- ReDoc: http://localhost:8000/redoc
+- Swagger UI: http://localhost:5002/docs
+- ReDoc: http://localhost:5002/redoc
 
 ## API Endpoints
 
@@ -204,7 +204,7 @@ Health check endpoint.
 ### Upload Resume
 
 ```bash
-curl -X POST "http://localhost:8000/api/v1/upload-resume" \
+curl -X POST "http://localhost:5002/api/v1/upload-resume" \
   -H "accept: application/json" \
   -H "Content-Type: multipart/form-data" \
   -F "file=@/path/to/resume.pdf" \
@@ -215,7 +215,7 @@ curl -X POST "http://localhost:8000/api/v1/upload-resume" \
 ### Create Job
 
 ```bash
-curl -X POST "http://localhost:8000/api/v1/create-job" \
+curl -X POST "http://localhost:5002/api/v1/create-job" \
   -H "accept: application/json" \
   -H "Content-Type: application/json" \
   -d '{
@@ -229,7 +229,7 @@ curl -X POST "http://localhost:8000/api/v1/create-job" \
 ### Match Job
 
 ```bash
-curl -X POST "http://localhost:8000/api/v1/match" \
+curl -X POST "http://localhost:5002/api/v1/match" \
   -H "accept: application/json" \
   -H "Content-Type: application/json" \
   -d '{
