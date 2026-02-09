@@ -21,6 +21,7 @@ class ResumeMetadata(Base):
     mobile = Column(String(50), nullable=True)
     email = Column(String(255), nullable=True)
     education = Column(Text, nullable=True)
+    location = Column(String(255), nullable=True)  # Candidate location (city, state, country)
     filename = Column(String(512), nullable=False)
     skillset = Column(Text, nullable=True)
     status = Column(String(50), nullable=True, server_default="pending")  # Processing status

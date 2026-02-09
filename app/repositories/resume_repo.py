@@ -115,7 +115,7 @@ class ResumeRepository:
         valid_columns = {
             'mastercategory', 'category',
             'candidatename', 'jobrole', 'designation', 'experience', 'domain',
-            'mobile', 'email', 'education', 'filename', 'skillset', 'status', 'resume_text', 'pinecone_status'
+            'mobile', 'email', 'education', 'location', 'filename', 'skillset', 'status', 'resume_text', 'pinecone_status'
         }
         
         # Filter out invalid keys and read-only columns
