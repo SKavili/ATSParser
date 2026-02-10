@@ -222,7 +222,7 @@ class ResumeIndexingService:
                 "mobile": resume.mobile or "",
                 "email": resume.email or "",
                 "education": resume.education or "",
-                "location": resume.location or "",  # Candidate location for filtering
+                "location": (resume.location or "").strip().lower() or "",  # Normalized for AI search location filter
                 "skillset": resume.skillset or "",  # Keep original string
                 "skills": skills_array,  # Array for Pinecone filtering
             }
