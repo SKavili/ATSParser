@@ -27,6 +27,7 @@ class ResumeUploadResponse(BaseModel):
     filename: str
     skillset: str
     status: Optional[str] = None  # Processing status
+    location: Optional[str] = None  # Candidate location (city, state, country)
     created_at: str
     
     class Config:

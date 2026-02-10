@@ -694,6 +694,7 @@ class ResumeController:
                 filename=resume_metadata.filename,
                 skillset=resume_metadata.skillset or "",  # Extracted skills
                 status=resume_metadata.status or STATUS_PENDING,
+                location=resume_metadata.location or None,
                 created_at=resume_metadata.created_at.isoformat() if resume_metadata.created_at else "",
             )
         
@@ -1086,6 +1087,7 @@ class ResumeController:
                 filename=resume_metadata.filename,
                 skillset=resume_metadata.skillset or "",
                 status=resume_metadata.status or STATUS_PENDING,
+                location=resume_metadata.location or None,
                 created_at=resume_metadata.created_at.isoformat() if resume_metadata.created_at else "",
             )
         
