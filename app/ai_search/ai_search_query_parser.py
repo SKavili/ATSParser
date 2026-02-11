@@ -182,6 +182,23 @@ class AISearchQueryParser:
         if "candidate_name" not in filters:
             filters["candidate_name"] = None
         
+        # Heuristic: if designation is missing but we have a single multi-word term
+        # in must_have_all, treat it as a role/designation rather than a strict skill.
+        # Example: "computer technician in denver" →
+        #   designation = "computer technician", must_have_all = []
+        if not filters["designation"]:
+            must_all = filters.get("must_have_all") or []
+            if (
+                isinstance(must_all, list)
+                and len(must_all) == 1
+                and isinstance(must_all[0], str)
+            ):
+                term = must_all[0].strip()
+                # Only treat as designation if it looks like a phrase (contains space)
+                if term and " " in term:
+                    filters["designation"] = term
+                    filters["must_have_all"] = []
+        
         # Category fields are not part of LLM output - they are provided explicitly in payload
         # Set to None (will be overridden by controller with explicit values)
             parsed["mastercategory"] = None
@@ -194,18 +211,29 @@ class AISearchQueryParser:
         
         # Normalize designation: convert list to string if needed, then lowercase
         if filters["designation"]:
-            if isinstance(filters["designation"], list):
+            designation_value = filters["designation"]
+            if isinstance(designation_value, list):
                 # If LLM returns a list, take the first element
-                filters["designation"] = filters["designation"][0] if filters["designation"] else None
-            if filters["designation"]:
-                filters["designation"] = str(filters["designation"]).lower().strip()
-                # Set to None if empty string after normalization
-                if not filters["designation"]:
-                    filters["designation"] = None
+                designation_value = designation_value[0] if designation_value else None
+            if designation_value:
+                designation_norm = str(designation_value).lower().strip()
+                filters["designation"] = designation_norm or None
         
-        # Normalize location to lowercase if present
+        # Normalize location: handle both list and string forms and lowercase
         if filters["location"]:
-            filters["location"] = str(filters["location"]).lower().strip()
+            loc_value = filters["location"]
+            if isinstance(loc_value, list):
+                # Take the first non-empty element
+                primary = None
+                for item in loc_value:
+                    if item:
+                        primary = str(item).lower().strip()
+                        if primary:
+                            break
+                filters["location"] = primary or None
+            else:
+                loc_norm = str(loc_value).lower().strip()
+                filters["location"] = loc_norm or None
         
         # Normalize candidate_name: convert list to string if needed, then strip
         if filters["candidate_name"]:

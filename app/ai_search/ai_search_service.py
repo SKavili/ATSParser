@@ -283,9 +283,27 @@ class AISearchService:
         return None
     
     def normalize_location(self, location: str) -> str:
-        """Normalize location to lowercase and apply alias mapping."""
-        location_lower = location.lower().strip()
-        return LOCATION_MAP.get(location_lower, location_lower)
+        """
+        Normalize location string for strict filtering.
+        
+        Rules:
+        - Lowercase and trim whitespace
+        - If there is a comma, keep only the part before the first comma
+          (e.g. "Hyderabad, Telangana" -> "hyderabad")
+        - Apply alias mapping to the final value (e.g. "nyc" -> "new york")
+        """
+        if not location:
+            return ""
+        
+        location_lower = str(location).lower().strip()
+        if not location_lower:
+            return ""
+        
+        # Keep only the primary part before the first comma
+        primary_part = location_lower.split(",", 1)[0].strip()
+        
+        # Apply alias mapping on the primary part
+        return LOCATION_MAP.get(primary_part, primary_part)
     
     def build_pinecone_filter(self, parsed_query: Dict) -> Optional[Dict[str, Any]]:
         """
@@ -408,17 +426,21 @@ class AISearchService:
         # Handle location (optional - preference, not requirement)
         location = filters.get("location")
         if location:
-            normalized_location = self.normalize_location(location)
-            location_filter = {"location": {"$eq": normalized_location}}
+            # Accept both list and string from parser; take primary element
+            if isinstance(location, list):
+                location = location[0] if location else None
+            normalized_location = self.normalize_location(location) if location else ""
+            if normalized_location:
+                location_filter = {"location": {"$eq": normalized_location}}
             # Combine with existing filters
-            if pinecone_filter:
-                if "$and" in pinecone_filter:
-                    pinecone_filter["$and"].append(location_filter)
+                if pinecone_filter:
+                    if "$and" in pinecone_filter:
+                        pinecone_filter["$and"].append(location_filter)
+                    else:
+                        existing_filter = pinecone_filter.copy()
+                        pinecone_filter = {"$and": [existing_filter, location_filter]}
                 else:
-                    existing_filter = pinecone_filter.copy()
-                    pinecone_filter = {"$and": [existing_filter, location_filter]}
-            else:
-                pinecone_filter = location_filter
+                    pinecone_filter = location_filter
         
         # Log the final Pinecone filter for debugging
         if pinecone_filter:

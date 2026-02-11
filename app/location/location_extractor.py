@@ -47,7 +47,7 @@ VALID EXAMPLES:
 {"location": "New York, NY, USA"}
 {"location": null}"""
 
-LOCATION_EXTRACTION_TEXT_LIMIT = 1500  # Location often in header/contact
+LOCATION_EXTRACTION_TEXT_LIMIT = 6000  # Location often in header/contact
 OLLAMA_TIMEOUT = 90.0
 OLLAMA_MAX_TOKENS = 80
 

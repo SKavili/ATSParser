@@ -208,6 +208,15 @@ class ResumeIndexingService:
             normalized_designation = (resume.designation or "").lower().strip()
             normalized_jobrole = (resume.jobrole or "").lower().strip()
             
+            # Normalize location for strict location-based AI search:
+            # - Lowercase and trim
+            # - Keep only the part before the first comma (city-level)
+            raw_location = (resume.location or "").strip()
+            normalized_location = ""
+            if raw_location:
+                raw_location_lower = raw_location.lower().strip()
+                normalized_location = raw_location_lower.split(",", 1)[0].strip()
+            
             base_metadata = {
                 "resume_id": resume.id,
                 "candidate_id": f"C{resume.id}",  # Generate candidate_id
@@ -222,7 +231,7 @@ class ResumeIndexingService:
                 "mobile": resume.mobile or "",
                 "email": resume.email or "",
                 "education": resume.education or "",
-                "location": (resume.location or "").strip().lower() or "",  # Normalized for AI search location filter
+                "location": normalized_location,  # Canonical city-level location for strict filtering
                 "skillset": resume.skillset or "",  # Keep original string
                 "skills": skills_array,  # Array for Pinecone filtering
             }
