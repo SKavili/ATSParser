@@ -56,6 +56,34 @@ class ResumeRepository:
         )
         return result.scalar_one_or_none()
     
+    async def get_batch_by_ids(self, resume_ids: List[int]) -> Dict[int, ResumeMetadata]:
+        """
+        Batch fetch multiple resumes by IDs in a single query.
+        
+        This is much more efficient than calling get_by_id() multiple times,
+        especially when fetching many resumes (e.g., 60+ candidates).
+        
+        Args:
+            resume_ids: List of resume IDs to fetch
+        
+        Returns:
+            Dictionary mapping resume_id -> ResumeMetadata object
+            Only includes IDs that were found in the database
+        """
+        if not resume_ids:
+            return {}
+        
+        # Remove duplicates while preserving order
+        unique_ids = list(dict.fromkeys(resume_ids))
+        
+        result = await self.session.execute(
+            select(ResumeMetadata).where(ResumeMetadata.id.in_(unique_ids))
+        )
+        resumes = result.scalars().all()
+        
+        # Return as dict for O(1) lookup
+        return {resume.id: resume for resume in resumes}
+    
     async def get_all(self, limit: Optional[int] = None, offset: int = 0) -> List[ResumeMetadata]:
         """Get all resumes with optional pagination."""
         query = select(ResumeMetadata).offset(offset)

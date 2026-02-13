@@ -13,12 +13,13 @@ from app.repositories.resume_repo import ResumeRepository
 from app.repositories.prompt_repo import PromptRepository
 from app.database.connection import get_db_session
 from app.models.resume_models import ResumeUpload, ResumeUploadResponse
-from app.models.job_models import JobCreate, JobCreateResponse, MatchRequest, MatchResponse
+from app.models.job_models import JobCreate, JobCreateResponse, MatchRequest, MatchResponse, JDParseRequest, ParseJDResponse
 from app.models.ai_search_models import AISearchRequest, AISearchResponse
 from app.services.resume_indexing_service import ResumeIndexingService
 from app.skills.skills_service import SkillsService
 from app.ai_search.ai_search_controller import AISearchController
 from app.utils.logging import get_logger
+from app.jd_parser import JDExtractor
 
 logger = get_logger(__name__)
 
@@ -38,14 +39,26 @@ async def get_resume_controller(
 
 
 async def get_job_controller(
+    request: Request,
     session: AsyncSession = Depends(get_db_session),
     vector_db: VectorDBService = Depends(get_vector_db_service)
 ) -> JobController:
     """Create JobController with dependencies."""
+    from app.services.pinecone_automation import PineconeAutomation
+    
+    # Reuse PineconeAutomation from app.state if available (same pattern as AI search)
+    pinecone_automation = getattr(request.app.state, "ai_search_pinecone", None)
+    if pinecone_automation is None:
+        pinecone_automation = PineconeAutomation()
+        # Initialize if not already done (will be initialized at startup, but safe to call again)
+        if not pinecone_automation.pc:
+            await pinecone_automation.initialize_pinecone()
+    
     job_parser = JobParser()
     embedding_service = EmbeddingService()
     resume_repo = ResumeRepository(session)
-    return JobController(job_parser, embedding_service, vector_db, resume_repo)
+    jd_extractor = JDExtractor()
+    return JobController(job_parser, embedding_service, vector_db, resume_repo, jd_extractor, pinecone_automation)
 
 
 async def get_ai_search_controller(
@@ -141,6 +154,33 @@ async def match_job(
     - top_k: Number of results to return (optional, defaults to configured value)
     """
     return await controller.match_job(match_request)
+
+
+@router.post("/parse-jd", response_model=ParseJDResponse, status_code=200)
+async def parse_job_description(
+    request: JDParseRequest,
+    controller: JobController = Depends(get_job_controller)
+):
+    """
+    Parse a raw job description and optionally return matching candidates from Pinecone.
+    
+    Request body:
+    - text: Raw job description text
+    - mastercategory: "IT" or "Non-IT" (required) - determines which Pinecone index to query
+    - category: Specific category name (e.g., "Full Stack Development (Python)") or empty string "" to query all namespaces
+    - top_k: Number of candidate matches (default 10, used when mode=parse-and-match)
+    - mode: "parse-only" (return only parsed JD) or "parse-and-match" (default; also return candidates from vector DB)
+    
+    Flow:
+    - Parses JD to extract: designation, skills, experience, location
+    - Queries Pinecone directly with metadata filters (no SQL pre-filter)
+    - Filters by: designation, skills, location, experience in Pinecone metadata
+    - If category is provided, queries that specific namespace; otherwise queries all namespaces in the mastercategory index
+    
+    Response: parsed_jd, candidates list, match_info (namespace_used, top_k_requested, candidates_found).
+    On vector DB failure, candidates is empty and the request still succeeds.
+    """
+    return await controller.parse_job_description_with_matches(request)
 
 
 @router.post("/retry-failed-resume/{resume_id}", response_model=ResumeUploadResponse, status_code=200)
