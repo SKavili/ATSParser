@@ -101,16 +101,31 @@ app.add_middleware(
 )
 
 
+def _sanitize_validation_errors(errors: list) -> list:
+    """Make validation error details JSON-serializable (e.g. replace bytes 'input' with string)."""
+    out = []
+    for e in errors:
+        item = dict(e)
+        if "input" in item and isinstance(item["input"], bytes):
+            try:
+                item["input"] = item["input"].decode("utf-8", errors="replace")
+            except Exception:
+                item["input"] = "<request body (bytes)>"
+        out.append(item)
+    return out
+
+
 # Request validation error handler
 @app.exception_handler(RequestValidationError)
 async def validation_exception_handler(request: Request, exc: RequestValidationError):
     """Handle request validation errors."""
+    details = _sanitize_validation_errors(exc.errors())
     return JSONResponse(
         status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
         content={
             "error": "Validation error",
             "code": "VALIDATION_ERROR",
-            "details": exc.errors()
+            "details": details
         }
     )
 

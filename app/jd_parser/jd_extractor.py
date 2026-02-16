@@ -1,7 +1,7 @@
 """Service for extracting structured data from Job Descriptions using LLM."""
 import json
 import re
-from typing import Dict, Optional
+from typing import Any, Dict, Optional
 import httpx
 from httpx import Timeout
 
@@ -208,6 +208,27 @@ class JDExtractor:
         )
         return {}
     
+    def _normalize_location_type(self, value: Any) -> Optional[str]:
+        """
+        Map LLM location_type values to schema literals: strict, preferred, remote.
+        ParsedJD only accepts these three; LLM may return e.g. 'onsite', 'in-office', 'hybrid'.
+        """
+        if value is None:
+            return None
+        s = str(value).strip().lower()
+        if not s:
+            return None
+        if s in ("strict", "preferred", "remote"):
+            return s
+        if s in ("onsite", "on-site", "in-office", "in office", "office"):
+            return "strict"
+        if s in ("work from home", "wfh"):
+            return "remote"
+        if s in ("hybrid", "preferred"):
+            return "preferred"
+        # Default unknown values to strict (location required) to be safe
+        return "strict"
+
     def _normalize_response(self, parsed_data: Dict) -> Dict:
         """Normalize and validate parsed data to match schema."""
         # Ensure arrays are lists, not null
@@ -223,7 +244,7 @@ class JDExtractor:
             "inferred_category": parsed_data.get("inferred_category"),
             "inferred_category_confidence": parsed_data.get("inferred_category_confidence", 0.5),
             "location": parsed_data.get("location"),
-            "location_type": parsed_data.get("location_type"),
+            "location_type": self._normalize_location_type(parsed_data.get("location_type")),
             "other_requirements": parsed_data.get("other_requirements", []) or [],
             "text_for_embedding": parsed_data.get("text_for_embedding", "")
         }

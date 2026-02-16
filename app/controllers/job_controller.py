@@ -983,7 +983,7 @@ class JobController:
                 
                 candidates.append(
                     JDMatchCandidate(
-                        candidate_id=str(candidate_data["resume_id"]),
+                        candidate_id=str(int(candidate_data["resume_id"])),
                         similarity_score=similarity_score,
                         name=resume_metadata.candidatename or None,
                         designation=resume_metadata.designation or resume_metadata.jobrole or None,
