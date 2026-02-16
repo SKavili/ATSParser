@@ -2,7 +2,7 @@
 import asyncio
 import re
 import uuid
-from typing import Optional, Dict, List, Any
+from typing import Optional, Dict, List, Any, Tuple
 
 from fastapi import HTTPException
 
@@ -489,6 +489,74 @@ class JobController:
         # Return score based on match ratio (max 40 points)
         return 40.0 * match_ratio
 
+    @staticmethod
+    def _compute_domain_match_and_score(
+        jd_domain_focus: Optional[str],
+        candidate_domain: Optional[str],
+    ) -> Tuple[Optional[str], Optional[float]]:
+        """Compute domain match text and score 0-100. Returns (match_text, score)."""
+        if not jd_domain_focus or not jd_domain_focus.strip():
+            return None, None
+        if not candidate_domain or not str(candidate_domain).strip():
+            return "No match", 0.0
+        jd_k = set(re.sub(r"[^a-z0-9]", "", jd_domain_focus.lower()))
+        cand_k = set(re.sub(r"[^a-z0-9]", "", str(candidate_domain).lower()))
+        if not jd_k:
+            return None, None
+        overlap = len(jd_k & cand_k) / len(jd_k)
+        if overlap >= 0.7:
+            return "Match", round(100.0 * overlap, 1)
+        if overlap >= 0.3:
+            return "Partial", round(100.0 * overlap, 1)
+        return "No match", round(100.0 * overlap, 1)
+
+    @staticmethod
+    def _compute_education_score(
+        jd_education_requirements: List[str],
+        candidate_education: Optional[str],
+    ) -> Optional[float]:
+        """Compute education match score 0-100."""
+        if not jd_education_requirements:
+            return None
+        if not candidate_education or not str(candidate_education).strip():
+            return 0.0
+        cand_lower = str(candidate_education).lower()
+        matches = sum(1 for req in jd_education_requirements if req and req.lower() in cand_lower)
+        return round(100.0 * matches / len(jd_education_requirements), 1) if matches else 0.0
+
+    @staticmethod
+    def _compute_experience_match_and_score(
+        jd_min_years: Optional[int],
+        jd_max_years: Optional[int],
+        candidate_years: Optional[float],
+    ) -> Tuple[Optional[str], Optional[float]]:
+        """Compute experience match text and score 0-100. Returns (match_text, score)."""
+        if jd_min_years is None and jd_max_years is None:
+            return None, None
+        if candidate_years is None:
+            return "Unknown", 0.0
+        if jd_min_years is not None and candidate_years < jd_min_years:
+            gap = jd_min_years - candidate_years
+            return "Below", round(max(0.0, 100.0 - gap * 15.0), 1)
+        if jd_max_years is not None and candidate_years > jd_max_years:
+            return "Above", 100.0
+        return "Meets", 100.0
+
+    @staticmethod
+    def _compute_matched_missing_skills(
+        jd_skills: List[str],
+        candidate_skills: Optional[List[str]],
+    ) -> Tuple[List[str], List[str]]:
+        """Return (matched_skills, missing_skills) using normalized skill lists."""
+        jd_n = normalize_skill_list(jd_skills) if jd_skills else []
+        cand_n = normalize_skill_list(candidate_skills) if candidate_skills else []
+        if not jd_n:
+            return [], []
+        cand_set = set(cand_n)
+        matched = [s for s in jd_n if s in cand_set]
+        missing = [s for s in jd_n if s not in cand_set]
+        return matched, missing
+
     async def _filter_resumes_by_jd_requirements(
         self, parsed_jd: ParsedJD, mastercategory: str
     ) -> List[int]:
@@ -974,22 +1042,52 @@ class JobController:
             scored_candidates.sort(key=lambda x: x["combined_score"], reverse=True)
             top_candidates = scored_candidates[: request.top_k]
             
-            # Build final candidate list
-            for candidate_data in top_candidates:
+            # Build final candidate list with extended output fields
+            for rank_one_based, candidate_data in enumerate(top_candidates, start=1):
                 resume_metadata = candidate_data["resume_metadata"]
                 combined_score = candidate_data["combined_score"]
                 # Clamp combined score to 0-100 range
                 similarity_score = round(min(100.0, max(0.0, combined_score)), 1)
-                
+                candidate_skills = self._parse_skills_list(resume_metadata.skillset)
+                candidate_years = self._parse_experience_years(resume_metadata.experience)
+
+                domain_match, domain_score = self._compute_domain_match_and_score(
+                    parsed_jd.domain_focus, getattr(resume_metadata, "domain", None)
+                )
+                education_score = self._compute_education_score(
+                    parsed_jd.education_requirements or [],
+                    getattr(resume_metadata, "education", None),
+                )
+                experience_match, experience_score = self._compute_experience_match_and_score(
+                    parsed_jd.min_experience_years,
+                    parsed_jd.max_experience_years,
+                    candidate_years,
+                )
+                matched_skills, missing_skills = self._compute_matched_missing_skills(
+                    parsed_jd.must_have_skills or [],
+                    candidate_skills,
+                )
+
                 candidates.append(
                     JDMatchCandidate(
                         candidate_id=str(int(candidate_data["resume_id"])),
                         similarity_score=similarity_score,
                         name=resume_metadata.candidatename or None,
+                        email=getattr(resume_metadata, "email", None) or None,
                         designation=resume_metadata.designation or resume_metadata.jobrole or None,
-                        experience_years=self._parse_experience_years(resume_metadata.experience),
-                        skills=self._parse_skills_list(resume_metadata.skillset),
+                        experience_years=candidate_years,
+                        skills=candidate_skills,
                         location=resume_metadata.location or None,
+                        domain_match=domain_match,
+                        domain_score=domain_score,
+                        education_score=education_score,
+                        experience_match=experience_match,
+                        experience_score=experience_score,
+                        match_percent=similarity_score,
+                        total_score=similarity_score,
+                        rank=rank_one_based,
+                        matched_skills=matched_skills or None,
+                        missing_skills=missing_skills or None,
                     )
                 )
 
