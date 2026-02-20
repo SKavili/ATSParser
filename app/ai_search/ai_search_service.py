@@ -115,6 +115,7 @@ class AISearchService:
     ROLE_NORMALIZATION = {
         # QA Automation Engineer family
         "qa_automation_engineer": [
+            "qa automation",
             "qa automation engineer",
             "automation qa engineer",
             "qa engineer automation",
@@ -131,6 +132,7 @@ class AISearchService:
             "quality assurance tester",
             "qa engineer",
             "quality assurance engineer",
+            "quality assurance analyst",
         ],
         # Generic Software Engineer family
         "software_engineer": [
@@ -205,6 +207,29 @@ class AISearchService:
                     return canonical
 
         return None
+    
+    def _candidate_matches_query_role(
+        self, candidate: Dict[str, Any], query_designation: Optional[str]
+    ) -> bool:
+        """
+        Return True if the candidate's role matches the query designation (same role family).
+        When the query specifies a role, only candidates in that role family are kept.
+        If query_designation is missing or role cannot be normalized, returns True (no filter).
+        """
+        if not query_designation or not str(query_designation).strip():
+            return True
+        normalized_query = self._normalize_role(query_designation)
+        if normalized_query is None:
+            return True  # Unknown role family - don't filter
+        cand_designation = candidate.get("designation") or ""
+        cand_jobrole = candidate.get("jobrole") or ""
+        for raw in (cand_designation, cand_jobrole):
+            if not raw:
+                continue
+            cand_normalized = self._normalize_role(raw)
+            if cand_normalized == normalized_query:
+                return True
+        return False
     
     def _normalize_namespace(self, category: str) -> str:
         """
@@ -373,13 +398,35 @@ class AISearchService:
         # NOTE: Designation filters are handled via soft scoring (for better recall)
         # Designation filtering removed from Pinecone (now scored after retrieval)
         
-        # Handle experience filtering (HARD FILTER: when min_experience is specified, enforce >= requirement)
+        # Handle experience filtering
+        # Single number (e.g. "10 years"): band filter min±2 (8-12) for recruiter-friendly relevance
+        # Range (e.g. "5-7 years"): use min and max as given
         min_experience = filters.get("min_experience")
+        max_experience = filters.get("max_experience")
         if min_experience is not None:
             try:
                 min_exp = int(min_experience)
-                # Add experience_years >= min_experience filter to Pinecone
-                experience_filter = {"experience_years": {"$gte": min_exp}}
+                if max_experience is None:
+                    # Single number: band (min_exp - 2, min_exp + 2) e.g. "10 years" -> 8-12
+                    band_low = max(0, min_exp - 2)
+                    band_high = min_exp + 2
+                    experience_filter = {
+                        "$and": [
+                            {"experience_years": {"$gte": band_low}},
+                            {"experience_years": {"$lte": band_high}}
+                        ]
+                    }
+                    logger.debug(
+                        f"Added experience band filter: {band_low}-{band_high} (min {min_exp} ±2)",
+                        extra={"min_experience": min_exp, "band_low": band_low, "band_high": band_high}
+                    )
+                else:
+                    # Range query: enforce >= min (max handled below)
+                    experience_filter = {"experience_years": {"$gte": min_exp}}
+                    logger.debug(
+                        f"Added experience filter: experience_years >= {min_exp}",
+                        extra={"min_experience": min_exp}
+                    )
                 
                 # Combine with existing filters
                 if pinecone_filter:
@@ -390,16 +437,10 @@ class AISearchService:
                         pinecone_filter = {"$and": [existing_filter, experience_filter]}
                 else:
                     pinecone_filter = experience_filter
-                
-                logger.debug(
-                    f"Added experience filter: experience_years >= {min_exp}",
-                    extra={"min_experience": min_exp}
-                )
             except (ValueError, TypeError):
                 logger.warning(f"Invalid min_experience value: {min_experience}")
         
         # Handle max_experience (for range queries like "5-7 years")
-        max_experience = filters.get("max_experience")
         if max_experience is not None:
             try:
                 max_exp = int(max_experience)
@@ -628,25 +669,30 @@ class AISearchService:
                     f"match=False, penalty=-40"
                 )
         
-        # FIX 4: Score experience with penalties for too little experience
+        # Experience score tiers: exact = best, ±1 = next, ±2 = next, then others (recruiter-friendly ordering)
         min_experience = filters.get("min_experience")
         max_experience = filters.get("max_experience")
         
         if min_experience is not None:
             try:
                 min_exp = int(min_experience)
-                candidate_exp = candidate.get("experience_years", 0)
+                candidate_exp = candidate.get("experience_years")
+                if candidate_exp is None:
+                    candidate_exp = 0
                 
-                # Exact match or slightly above (ideal)
-                if abs(candidate_exp - min_exp) <= 1:
-                    score += 10.0  # Exact match bonus
+                diff = abs(candidate_exp - min_exp)
+                if diff == 0:
+                    score += 18.0  # Exact match (best)
+                elif diff == 1:
+                    score += 14.0  # ±1 year (next)
+                elif diff == 2:
+                    score += 10.0  # ±2 years (next)
                 elif candidate_exp >= min_exp:
-                    score += 8.0  # Above requirement (good)
+                    score += 4.0   # Above band (e.g. 13 when query was 10; still show but rank lower)
                 elif candidate_exp >= min_exp - 2:
-                    score += 3.0  # Close (within 2 years)
-                elif candidate_exp < min_exp - 2:
-                    # Penalty for significantly less experience
-                    score -= 15.0  # Penalty for too little experience
+                    score += 3.0   # Within 2 below (edge case if band not applied)
+                else:
+                    score -= 15.0  # Too little experience
                     logger.debug(
                         f"Experience penalty: required={min_exp}, candidate={candidate_exp}, penalty=-15"
                     )
@@ -1389,6 +1435,23 @@ class AISearchService:
                     candidate["fit_tier"] = fit_tier
                     
                     processed_results.append(candidate)
+                
+                # Hard filter by role when query specifies a designation (exclude wrong roles e.g. Python dev for QA query)
+                query_designation = parsed_query.get("filters", {}).get("designation")
+                if query_designation:
+                    before_count = len(processed_results)
+                    processed_results = [
+                        c for c in processed_results
+                        if self._candidate_matches_query_role(c, query_designation)
+                    ]
+                    logger.info(
+                        f"Role filter (designation={query_designation!r}): {before_count} -> {len(processed_results)} candidates",
+                        extra={
+                            "query_designation": query_designation,
+                            "before": before_count,
+                            "after": len(processed_results)
+                        }
+                    )
                 
                 # Sort by final combined score
                 processed_results.sort(key=lambda x: x["score"], reverse=True)

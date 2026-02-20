@@ -364,6 +364,9 @@ class ResumeRepository:
         """
         Get resumes that need to be indexed in Pinecone.
         
+        Only returns resumes with status = 'completed'. Failed or processing
+        resumes are not embedded.
+        
         Args:
             limit: Optional limit on number of results
             resume_ids: Optional list of specific resume IDs to process
@@ -376,7 +379,7 @@ class ResumeRepository:
         
         # Filter by pinecone_status
         if force:
-            # Force re-index: get all resumes (or specific IDs)
+            # Force re-index: get completed resumes (or specific IDs)
             if resume_ids:
                 query = query.where(ResumeMetadata.id.in_(resume_ids))
         else:
@@ -390,6 +393,9 @@ class ResumeRepository:
                 query = query.where(
                     (ResumeMetadata.pinecone_status == 0) | (ResumeMetadata.pinecone_status.is_(None))
                 )
+        
+        # Only completed resumes; failed or processing are not embedded
+        query = query.where(ResumeMetadata.status == "completed")
         
         # Only get resumes with resume_text and mastercategory (required for indexing)
         query = query.where(
