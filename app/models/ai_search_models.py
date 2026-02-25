@@ -1,6 +1,23 @@
 """Pydantic models for AI search operations."""
 from typing import Optional, List, Dict, Any
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
+
+
+def _normalize_mastercategory(value: Optional[str]) -> Optional[str]:
+    """Normalize mastercategory to canonical IT or NON_IT (e.g. 'Non - IT' -> 'NON_IT')."""
+    if value is None or not str(value).strip():
+        return None
+    s = str(value).strip()
+    # Collapse spaces/hyphens to single token and lowercase for comparison
+    normalized = s.replace(" ", "").replace("-", "").replace("_", "").lower()
+    if normalized == "it":
+        return "IT"
+    if normalized == "nonit":
+        return "NON_IT"
+    # Already canonical
+    if s.upper() in ("IT", "NON_IT"):
+        return s.upper()
+    return s
 
 
 class AISearchRequest(BaseModel):
@@ -10,6 +27,12 @@ class AISearchRequest(BaseModel):
     category: Optional[str] = Field(None, description="Category namespace - optional, if not provided will search all categories")
     user_id: Optional[int] = Field(None, description="Optional user ID for tracking")
     top_k: Optional[int] = Field(20, description="Number of results to return (default: 20)")
+
+    @field_validator("mastercategory", mode="before")
+    @classmethod
+    def normalize_mastercategory(cls, v: Optional[str]) -> Optional[str]:
+        """Normalize 'Non - IT', 'Non-IT', 'NON IT' etc. to 'NON_IT'; 'it'/'IT' to 'IT'."""
+        return _normalize_mastercategory(v)
 
 
 class CandidateResult(BaseModel):
