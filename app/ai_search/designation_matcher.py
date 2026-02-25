@@ -1,7 +1,7 @@
 """Service for matching candidate designations using OLLAMA or OpenAI LLM (via LLM_MODEL)."""
 import json
 import re
-from typing import Optional, Tuple
+from typing import Optional, Tuple, List
 import httpx
 from httpx import Timeout
 
@@ -80,6 +80,32 @@ Candidate Role: "{candidate_designation}"
 Output:"""
 
 
+DESIGNATION_EXPAND_PROMPT = """You are an ATS (Applicant Tracking System) job title expert.
+
+TASK:
+Given a single job title/role from a recruiter search query, return a JSON array of equivalent or same-family job titles that should match for filtering. These are titles that refer to the SAME role (synonyms, abbreviations, common variations).
+
+RULES:
+- Include the query title itself (lowercase).
+- Include common variations: Senior/Lead/Junior, hyphenation, word order (e.g. "QA Engineer" and "Engineer QA").
+- Include standard abbreviations (e.g. QA, SDET, PM, BA, SRE, DevOps).
+- Include synonyms (e.g. "Quality Assurance" for "QA", "Test Engineer" for "QA Engineer").
+- Do NOT include completely different roles.
+- Return ONLY a JSON array of strings. No explanation, no markdown, no code block.
+- All strings must be lowercase.
+- Maximum 25 titles.
+
+Example for "QA":
+["qa", "qa engineer", "quality assurance", "quality assurance engineer", "test engineer", "sdet", "qa lead", "qa analyst", "automation engineer", "test automation engineer", "qa automation engineer"]
+
+Example for "python full stack developer":
+["python full stack developer", "full stack python developer", "full stack developer", "senior python full stack developer", "full stack engineer python", "python developer full stack"]
+
+Input job title from query: "{query_designation}"
+
+Output (JSON array only):"""
+
+
 class DesignationMatcher:
     """Service for matching candidate designations with query designations using LLM."""
     
@@ -91,6 +117,148 @@ class DesignationMatcher:
     def _get_cache_key(self, query_designation: str, candidate_designation: str) -> str:
         """Generate cache key for designation pair."""
         return f"{query_designation.lower().strip()}|{candidate_designation.lower().strip()}"
+    
+    async def expand_designation_to_equivalent_roles(self, query_designation: str) -> List[str]:
+        """
+        Use LLM to expand a query designation into a list of equivalent/same-family job titles
+        for Pinecone filtering. No static list - LLM generates variants per query.
+        
+        Args:
+            query_designation: Role from search query (e.g. "QA", "python full stack developer")
+        
+        Returns:
+            List of lowercase job title strings (max 25) to use in designation $in filter.
+            On failure returns [query_designation.lower()] so filter still applies.
+        """
+        if not query_designation or not str(query_designation).strip():
+            return []
+        query_designation = query_designation.strip()
+        fallback = [query_designation.lower()]
+        prompt = DESIGNATION_EXPAND_PROMPT.format(query_designation=query_designation)
+        timeout_seconds = 15.0
+        max_titles = 25
+
+        try:
+            if use_openai():
+                if not getattr(settings, "openai_api_key", None) or not str(settings.openai_api_key).strip():
+                    return fallback
+                raw_output = await openai_generate(
+                    prompt=prompt,
+                    system_prompt=None,
+                    temperature=0.1,
+                    timeout_seconds=timeout_seconds,
+                )
+                titles = self._parse_designation_list(raw_output or "", max_titles)
+                if titles:
+                    logger.info(
+                        f"Designation expand (OpenAI): '{query_designation}' -> {len(titles)} equivalents",
+                        extra={"query_designation": query_designation, "count": len(titles)}
+                    )
+                    return titles
+                return fallback
+
+            # OLLAMA
+            result = None
+            if OLLAMA_CLIENT_AVAILABLE:
+                try:
+                    import asyncio
+                    loop = asyncio.get_event_loop()
+                    def _generate():
+                        client = ollama.Client(
+                            host=self.ollama_host.replace("http://", "").replace("https://", "")
+                        )
+                        response = client.generate(
+                            model=self.model,
+                            prompt=prompt,
+                            format="json",
+                            options={"temperature": 0.1, "top_p": 0.9},
+                        )
+                        raw = response.get("response", "") if isinstance(response, dict) else str(response)
+                        return {"response": raw}
+                    result = await loop.run_in_executor(None, _generate)
+                except Exception as e:
+                    logger.warning(f"OLLAMA client failed for designation expand: {e}")
+                    result = None
+
+            if result is None:
+                async with httpx.AsyncClient(timeout=Timeout(timeout_seconds)) as client:
+                    try:
+                        response = await client.post(
+                            f"{self.ollama_host}/api/generate",
+                            json={
+                                "model": self.model,
+                                "prompt": prompt,
+                                "format": "json",
+                                "stream": False,
+                                "options": {"temperature": 0.1, "top_p": 0.9},
+                            }
+                        )
+                        response.raise_for_status()
+                        result = response.json()
+                    except httpx.HTTPStatusError as e:
+                        if e.response.status_code == 404:
+                            response = await client.post(
+                                f"{self.ollama_host}/api/chat",
+                                json={
+                                    "model": self.model,
+                                    "messages": [
+                                        {"role": "system", "content": "You return only JSON arrays of job titles."},
+                                        {"role": "user", "content": prompt}
+                                    ],
+                                    "stream": False,
+                                    "options": {"temperature": 0.1, "top_p": 0.9},
+                                }
+                            )
+                            response.raise_for_status()
+                            chat_result = response.json()
+                            result = {"response": chat_result.get("message", {}).get("content", "")}
+                        else:
+                            raise
+
+            raw_output = result.get("response", "")
+            titles = self._parse_designation_list(raw_output, max_titles)
+            if titles:
+                logger.info(
+                    f"Designation expand (OLLAMA): '{query_designation}' -> {len(titles)} equivalents",
+                    extra={"query_designation": query_designation, "count": len(titles)}
+                )
+                return titles
+            return fallback
+        except Exception as e:
+            logger.warning(
+                f"Designation expand failed: {e}, using query as single filter value",
+                extra={"query_designation": query_designation, "error": str(e)}
+            )
+            return fallback
+
+    def _parse_designation_list(self, text: str, max_items: int = 25) -> List[str]:
+        """Parse LLM response into a list of lowercase designation strings."""
+        if not text or not text.strip():
+            return []
+        cleaned = text.strip()
+        cleaned = re.sub(r"```json\s*", "", cleaned)
+        cleaned = re.sub(r"```\s*", "", cleaned)
+        # Find JSON array
+        start = cleaned.find("[")
+        end = cleaned.rfind("]")
+        if start == -1 or end == -1 or end <= start:
+            return []
+        try:
+            arr = json.loads(cleaned[start : end + 1])
+            if not isinstance(arr, list):
+                return []
+            result = []
+            seen = set()
+            for item in arr:
+                if len(result) >= max_items:
+                    break
+                s = str(item).strip().lower()
+                if s and s not in seen:
+                    seen.add(s)
+                    result.append(s)
+            return result
+        except json.JSONDecodeError:
+            return []
     
     async def is_designation_match(
         self, 

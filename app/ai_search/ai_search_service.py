@@ -395,8 +395,21 @@ class AISearchService:
                         # Multiple OR groups - use $or at top level
                         pinecone_filter = {"$or": or_skill_conditions}
         
-        # NOTE: Designation filters are handled via soft scoring (for better recall)
-        # Designation filtering removed from Pinecone (now scored after retrieval)
+        # Designation filter: use LLM-expanded equivalent roles list (set by search_semantic before calling this)
+        designation_equivalent_list = filters.get("designation_equivalent_list")
+        if designation_equivalent_list and len(designation_equivalent_list) > 0:
+            designation_filter = {"designation": {"$in": designation_equivalent_list}}
+            if pinecone_filter:
+                if "$and" in pinecone_filter:
+                    pinecone_filter["$and"].append(designation_filter)
+                else:
+                    pinecone_filter = {"$and": [pinecone_filter, designation_filter]}
+            else:
+                pinecone_filter = designation_filter
+            logger.debug(
+                f"Added designation filter: {len(designation_equivalent_list)} equivalent roles",
+                extra={"designation_count": len(designation_equivalent_list)}
+            )
         
         # Handle experience filtering
         # Single number (e.g. "10 years"): band filter min±2 (8-12) for recruiter-friendly relevance
@@ -1273,6 +1286,22 @@ class AISearchService:
             if not self.pinecone_automation.pc:
                 await self.pinecone_automation.initialize_pinecone()
                 await self.pinecone_automation.create_indexes()
+            
+            # If query has a designation, expand to equivalent roles for Pinecone filter (once per request)
+            filters = parsed_query.get("filters", {})
+            query_designation = filters.get("designation")
+            if query_designation and str(query_designation).strip():
+                try:
+                    designation_equivalent_list = await self.designation_matcher.expand_designation_to_equivalent_roles(
+                        query_designation
+                    )
+                    if designation_equivalent_list:
+                        parsed_query.setdefault("filters", {})["designation_equivalent_list"] = designation_equivalent_list
+                except Exception as e:
+                    logger.warning(
+                        f"Designation expand failed, skipping designation filter: {e}",
+                        extra={"designation": query_designation, "error": str(e)}
+                    )
             
             # EXPLICIT CATEGORY MODE: Hard-constrained search
             if explicit_category_mode:

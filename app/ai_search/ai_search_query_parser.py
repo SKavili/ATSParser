@@ -30,10 +30,14 @@ CORE RULES – YOU MUST FOLLOW THESE STRICTLY:
    - Never use knowledge from examples to decide what something "probably means".
    - Never decide that something is a "domain", "company", "acronym", "location", etc. unless it is very clearly used that way in the sentence.
 
-2. Designation (job title)
-   - Only set designation when the query clearly starts with or strongly focuses on a job title phrase.
+2. Designation (job title / role)
+   - Set designation for ANY phrase that is clearly a job title or role, including in AND queries.
    - Do NOT split a job title into skills. Example: "Python Developer" → designation = "python developer" (NOT skills = ["python"])
    - "Senior QA Automation Engineer" → designation = "senior qa automation engineer"
+   - In "X AND Y" style: if one term is a role/title (e.g. QA, PM, Developer, Manager, Tester, Analyst) and another is a skill/tech, put the ROLE in designation and the SKILL in must_have_all.
+   - Examples: "Python AND QA" → designation = "qa", must_have_all = ["python"]. "sql AND python full stack developer" → designation = "python full stack developer", must_have_all = ["sql"]
+   - Single-token roles: "QA", "PM", "BA", "Dev", "Tester", "Manager", "Analyst" etc. in AND with skills → set as designation, NOT in must_have_all.
+   - Multi-word role phrases (e.g. "python full stack developer", "front end python developer") → always designation, never split into skills.
 
 3. Skills / must_have_all
    - Only include words or short phrases that are clearly listed as required skills/technologies/tools.
@@ -182,27 +186,32 @@ class AISearchQueryParser:
         if "candidate_name" not in filters:
             filters["candidate_name"] = None
         
-        # Heuristic: if designation is missing but we have a single multi-word term
-        # in must_have_all, treat it as a role/designation rather than a strict skill.
-        # Example: "computer technician in denver" →
-        #   designation = "computer technician", must_have_all = []
+        # Heuristic: if designation is missing but we have a single term in must_have_all
+        # that is a role (multi-word phrase or known role keyword), treat as designation.
         if not filters["designation"]:
             must_all = filters.get("must_have_all") or []
-            if (
-                isinstance(must_all, list)
-                and len(must_all) == 1
-                and isinstance(must_all[0], str)
-            ):
-                term = must_all[0].strip()
-                # Only treat as designation if it looks like a phrase (contains space)
-                if term and " " in term:
-                    filters["designation"] = term
-                    filters["must_have_all"] = []
+            if isinstance(must_all, list) and len(must_all) >= 1:
+                # Single multi-word term → designation (e.g. "computer technician", "python full stack developer")
+                if len(must_all) == 1 and isinstance(must_all[0], str):
+                    term = must_all[0].strip().lower()
+                    if term and " " in term:
+                        filters["designation"] = term
+                        filters["must_have_all"] = []
+                # Single-token role keyword in must_have_all (e.g. "qa" in ["python", "qa"]) → move "qa" to designation
+                else:
+                    role_keywords = {"qa", "pm", "ba", "dev", "tester", "analyst", "manager", "developer", "engineer", "sre", "sdet"}
+                    role_terms = [t for t in must_all if isinstance(t, str) and t.strip().lower() in role_keywords]
+                    skill_terms = [t for t in must_all if isinstance(t, str) and t.strip().lower() not in role_keywords]
+                    if len(role_terms) == 1 and skill_terms:
+                        filters["designation"] = role_terms[0].strip().lower()
+                        filters["must_have_all"] = [s.strip().lower() for s in skill_terms if s.strip()]
+                    elif len(role_terms) == 1 and not skill_terms:
+                        filters["designation"] = role_terms[0].strip().lower()
+                        filters["must_have_all"] = []
         
         # Category fields are not part of LLM output - they are provided explicitly in payload
-        # Set to None (will be overridden by controller with explicit values)
-            parsed["mastercategory"] = None
-            parsed["category"] = None
+        parsed["mastercategory"] = None
+        parsed["category"] = None
         
         # Normalize search_type
         search_type = parsed["search_type"].lower()
