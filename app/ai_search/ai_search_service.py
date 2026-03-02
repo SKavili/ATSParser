@@ -175,20 +175,45 @@ class AISearchService:
         self.pinecone_automation = pinecone_automation
         self.resume_repo = resume_repo
         self.designation_matcher = DesignationMatcher()
-
+    
+    def _strip_seniority_words(self, title: Optional[str]) -> Optional[str]:
+        """
+        Remove seniority adjectives (senior/lead/principal/junior/etc.) from a title
+        for role-family based matching and filtering.
+        """
+        if not title:
+            return None
+        words = str(title).lower().split()
+        seniority_words = {
+            "senior",
+            "sr",
+            "lead",
+            "principal",
+            "junior",
+            "jr",
+            "staff",
+            "associate",
+        }
+        filtered = [w for w in words if w not in seniority_words]
+        if not filtered:
+            # If everything was stripped, fall back to original words
+            return " ".join(words)
+        return " ".join(filtered)
+    
     def _normalize_role(self, title: Optional[str]) -> Optional[str]:
         """
         Normalize a job title to a canonical role key, if known.
-
+        
         This is used for HARD role gating when the query specifies a role.
         Example:
             "QA Automation Engineer" and "SDET" both → "qa_automation_engineer"
         """
         if not title:
             return None
-
-        # Basic normalization: lowercase and collapse whitespace
-        normalized = " ".join(str(title).lower().split())
+        
+        # Strip seniority words first, then normalize whitespace
+        base = self._strip_seniority_words(title)
+        normalized = " ".join(str(base).lower().split()) if base else ""
         if not normalized:
             return None
 
@@ -395,22 +420,6 @@ class AISearchService:
                         # Multiple OR groups - use $or at top level
                         pinecone_filter = {"$or": or_skill_conditions}
         
-        # Designation filter: use LLM-expanded equivalent roles list (set by search_semantic before calling this)
-        designation_equivalent_list = filters.get("designation_equivalent_list")
-        if designation_equivalent_list and len(designation_equivalent_list) > 0:
-            designation_filter = {"designation": {"$in": designation_equivalent_list}}
-            if pinecone_filter:
-                if "$and" in pinecone_filter:
-                    pinecone_filter["$and"].append(designation_filter)
-                else:
-                    pinecone_filter = {"$and": [pinecone_filter, designation_filter]}
-            else:
-                pinecone_filter = designation_filter
-            logger.debug(
-                f"Added designation filter: {len(designation_equivalent_list)} equivalent roles",
-                extra={"designation_count": len(designation_equivalent_list)}
-            )
-        
         # Handle experience filtering
         # Single number (e.g. "10 years"): band filter min±2 (8-12) for recruiter-friendly relevance
         # Range (e.g. "5-7 years"): use min and max as given
@@ -609,6 +618,22 @@ class AISearchService:
                 logger.debug(
                     f"QA skill boost: {qa_skill_matches} skills matched, boost=+{qa_boost}"
                 )
+        
+        # Domain alignment boost (soft ranking signal only, never a hard filter)
+        domain_filter = (filters.get("domain") or "").lower().strip()
+        if domain_filter:
+            candidate_domain = str(candidate.get("domain") or "").lower().strip()
+            if candidate_domain:
+                if candidate_domain == domain_filter:
+                    score += 12.0
+                    logger.debug(
+                        f"Domain match: query={domain_filter}, candidate={candidate_domain}, boost=+12"
+                    )
+                elif domain_filter in candidate_domain or candidate_domain in domain_filter:
+                    score += 6.0
+                    logger.debug(
+                        f"Domain partial match: query={domain_filter}, candidate={candidate_domain}, boost=+6"
+                    )
         
         # OPTIMIZATION for 180k+ resumes: Rule-based designation matching first, LLM only for top candidates
         designation = filters.get("designation")
@@ -1287,13 +1312,14 @@ class AISearchService:
                 await self.pinecone_automation.initialize_pinecone()
                 await self.pinecone_automation.create_indexes()
             
-            # If query has a designation, expand to equivalent roles for Pinecone filter (once per request)
+            # If query has a designation, expand to equivalent roles for potential downstream use
             filters = parsed_query.get("filters", {})
             query_designation = filters.get("designation")
             if query_designation and str(query_designation).strip():
                 try:
+                    normalized_for_filter = self._strip_seniority_words(query_designation)
                     designation_equivalent_list = await self.designation_matcher.expand_designation_to_equivalent_roles(
-                        query_designation
+                        normalized_for_filter or query_designation
                     )
                     if designation_equivalent_list:
                         parsed_query.setdefault("filters", {})["designation_equivalent_list"] = designation_equivalent_list
@@ -1429,6 +1455,7 @@ class AISearchService:
                         "experience_years": experience_years,
                         "skills": skills,
                         "location": metadata.get("location"),
+                    "domain": metadata.get("domain"),
                         "score": score
                     }
                     
@@ -1478,6 +1505,23 @@ class AISearchService:
                         extra={
                             "query_designation": query_designation,
                             "before": before_count,
+                            "after": len(processed_results)
+                        }
+                    )
+                
+                # Hard filter by category when explicit category mode is used
+                if category:
+                    normalized_target_category = self._normalize_namespace(category)
+                    before_cat_count = len(processed_results)
+                    processed_results = [
+                        c for c in processed_results
+                        if self._normalize_namespace(c.get("category", "")) == normalized_target_category
+                    ]
+                    logger.info(
+                        f"Category filter (category={category!r}): {before_cat_count} -> {len(processed_results)} candidates",
+                        extra={
+                            "category": category,
+                            "before": before_cat_count,
                             "after": len(processed_results)
                         }
                     )
@@ -2147,6 +2191,7 @@ class AISearchService:
                     "experience_years": experience_years,
                     "skills": skills,
                     "location": metadata.get("location"),
+                    "domain": metadata.get("domain"),
                     "score": score  # Semantic similarity score from Pinecone
                 }
                 

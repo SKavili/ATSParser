@@ -44,38 +44,43 @@ CORE RULES – YOU MUST FOLLOW THESE STRICTLY:
    - Do NOT interpret nouns as skills unless they are in a clear skills list context.
    - "in pharmaceutical domain" → do NOT add "pharmaceutical domain" to skills unless the query explicitly says it is a skill/requirement.
 
-4. Experience
+4. Domain / industry
+   - Use filters.domain ONLY when the query clearly describes a business/industry domain for the candidate, e.g. "in financial technology domain", "fintech industry", "healthcare domain".
+   - When domain/industry is explicitly mentioned, put a short, lowercase phrase in filters.domain (e.g. "financial technology", "fintech", "healthcare").
+   - Do NOT also add that domain phrase to must_have_all unless the query explicitly lists it as a required skill/tool.
+
+5. Experience
    - ONLY extract when there are clear numeric patterns:
      - "15+ years", "5 years", "5-8 years", "at least 10 years", "more than 7 years"
    - Do NOT infer experience from words like: senior, lead, principal, experienced, expert, veteran, etc.
 
-5. Location
+6. Location
    - ONLY when clearly used as a place: "in Bangalore", "located in Texas", "New York"
    - Do NOT treat company names, project names, or product names as locations.
 
-6. Boolean logic – be literal
+7. Boolean logic – be literal
    - Parse AND / OR / parentheses / quotes exactly as written.
    - "A OR B" → must_have_one_of_groups = [["a"], ["b"]]
    - "(A AND B) OR C" → must_have_one_of_groups = [["a", "b"], ["c"]]
    - Terms without operators → treat as AND → must_have_all
    - Quoted phrases stay together as one term.
 
-7. text_for_embedding – mandatory
+8. text_for_embedding – mandatory
    - ALWAYS create it.
    - Use ONLY words that appear in the original query.
    - Order preference: main role phrase → listed skills/tools → experience phrase → location phrase
    - Keep it natural but lowercase.
 
-8. search_type
+9. search_type
    - "name" → only when query is clearly just a full name with no other content
    - "hybrid" → when there is clear designation/role + at least one of: numeric experience OR list of skills/tools
    - "semantic" → everything else
 
-9. Absolute prohibitions – YOU MUST NOT:
+10. Absolute prohibitions – YOU MUST NOT:
    - Assume any word is a skill just because it often is in resumes
    - Split job titles into skills
    - Infer experience level from seniority words
-   - Decide something is a "domain" or "industry" unless explicitly phrased that way
+   - Decide something is a "domain" or "industry" unless it is explicitly phrased that way in the query (e.g. uses words like "domain", "industry", "sector", "vertical").
    - Use meaning or context from the examples below to interpret the current query
    - Add, remove, or rephrase terms that do not appear in the query
 
@@ -90,6 +95,7 @@ Output format – STRICT JSON only – nothing else:
     "must_have_one_of_groups": [["term1"], ["term2 and phrase"]],
     "min_experience": null | integer,
     "max_experience": null | integer,
+    "domain": null | "exact lowercase domain phrase",
     "location": null | "city" | ["city1", "city2"],
     "candidate_name": null | "full name lowercase"
   }
@@ -181,6 +187,8 @@ class AISearchQueryParser:
             filters["min_experience"] = None
         if "max_experience" not in filters:
             filters["max_experience"] = None
+        if "domain" not in filters:
+            filters["domain"] = None
         if "location" not in filters:
             filters["location"] = None
         if "candidate_name" not in filters:
@@ -228,6 +236,15 @@ class AISearchQueryParser:
                 designation_norm = str(designation_value).lower().strip()
                 filters["designation"] = designation_norm or None
         
+        # Normalize domain: convert list to string if needed, then lowercase
+        if filters["domain"]:
+            domain_value = filters["domain"]
+            if isinstance(domain_value, list):
+                domain_value = domain_value[0] if domain_value else None
+            if domain_value:
+                domain_norm = str(domain_value).lower().strip()
+                filters["domain"] = domain_norm or None
+        
         # Normalize location: handle both list and string forms and lowercase
         if filters["location"]:
             loc_value = filters["location"]
@@ -268,6 +285,7 @@ class AISearchQueryParser:
                 "must_have_one_of_groups": [],
                 "min_experience": None,
                 "max_experience": None,
+                "domain": None,
                 "location": None,
                 "candidate_name": None
             },
