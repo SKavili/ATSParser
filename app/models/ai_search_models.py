@@ -26,7 +26,7 @@ class AISearchRequest(BaseModel):
     mastercategory: Optional[str] = Field(None, description="Mastercategory (IT/NON_IT) - optional, if not provided will search all categories")
     category: Optional[str] = Field(None, description="Category namespace - optional, if not provided will search all categories")
     user_id: Optional[int] = Field(None, description="Optional user ID for tracking")
-    top_k: Optional[int] = Field(20, description="Number of results to return (default: 20)")
+    top_k: Optional[int] = Field(2000, description="Number of results to return (default: 2000)")
 
     @field_validator("mastercategory", mode="before")
     @classmethod
