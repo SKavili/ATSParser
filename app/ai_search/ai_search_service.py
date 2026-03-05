@@ -115,6 +115,7 @@ class AISearchService:
     ROLE_NORMALIZATION = {
         # QA Automation Engineer family
         "qa_automation_engineer": [
+            "qa",
             "qa automation",
             "qa automation engineer",
             "automation qa engineer",
@@ -133,6 +134,9 @@ class AISearchService:
             "qa engineer",
             "quality assurance engineer",
             "quality assurance analyst",
+            "dynamic quality assurance analyst",
+            "senior quality assurance analyst",
+            "lead quality assurance analyst",
             "qa automation test engineer",
             "qa automation tester",
             "test engineer automation",

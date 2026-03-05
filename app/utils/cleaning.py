@@ -218,7 +218,12 @@ SKILL_ALIAS_MAP = {
     "python 3.10": "python",
     "python 3.11": "python",
     "python 3.12": "python",
-    
+    # Common Python typos
+    "pythan": "python",
+    "pyhton": "python",
+    "pyton": "python",
+    "pythom": "python",
+
     # JavaScript variations
     "javascript": "js",
     "ecmascript": "js",
@@ -250,18 +255,27 @@ SKILL_ALIAS_MAP = {
     "spring data": "spring",
     "spring cloud": "spring",
     
-    # .NET variations
+    # .NET variations (treat all key .NET technologies as 'dotnet')
     ".net": "dotnet",
     "dot net": "dotnet",
-    "asp.net": "aspnet",
-    "asp net": "aspnet",
-    "c#": "csharp",
-    "c sharp": "csharp",
+    "asp.net": "dotnet",
+    "asp net": "dotnet",
+    "c#": "dotnet",
+    "c sharp": "dotnet",
     ".net core": "dotnet",
     "dotnet core": "dotnet",
-    "asp.net core": "aspnet",
-    "asp net core": "aspnet",
-    
+    "asp.net core": "dotnet",
+    "asp net core": "dotnet",
+
+    # Power Apps / Power Platform variations
+    "power apps": "powerapps",
+    "power app": "powerapps",
+    "powerapps": "powerapps",
+    "microsoft power apps": "powerapps",
+    "ms power apps": "powerapps",
+    "power platform": "powerapps",
+    "microsoft power platform": "powerapps",
+
     # Database variations
     "postgresql": "postgres",
     "postgres sql": "postgres",

@@ -38,7 +38,7 @@ class AISearchController:
         mastercategory: Optional[str] = None,
         category: Optional[str] = None,
         user_id: Optional[int] = None,
-        top_k: int = 2000
+        top_k: int = 100
     ) -> Dict[str, Any]:
         """
         Perform AI-powered search for candidates.
@@ -52,7 +52,7 @@ class AISearchController:
             mastercategory: Mastercategory (IT/NON_IT) - optional
             category: Category namespace - optional
             user_id: Optional user ID for tracking
-            top_k: Number of results to return (default: 2000)
+            top_k: Number of results to return (default: 100)
         
         Returns:
             Dict with search results and metadata

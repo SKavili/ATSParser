@@ -339,7 +339,7 @@ async def ai_search(
     - mastercategory: Mastercategory (IT/NON_IT) - optional, if provided searches only that category
     - category: Category namespace - optional, if provided searches only that namespace
     - user_id: Optional user ID for tracking
-    - top_k: Number of results to return (default: 2000)
+    - top_k: Number of results to return (default: 100)
     
     Note: If both mastercategory and category are provided, searches only that specific namespace.
           If not provided, performs broad search across relevant namespaces using smart filtering.
@@ -357,7 +357,7 @@ async def ai_search(
             mastercategory=request.mastercategory,
             category=request.category,
             user_id=request.user_id,
-                top_k=request.top_k or 2000
+                top_k=request.top_k or 100
         )
     except RuntimeError as e:
         # Query parsing failed
