@@ -1147,10 +1147,13 @@ class AISearchService:
             
             # Split name into tokens (normalize and remove empty strings)
             tokens = [token.strip().lower() for token in candidate_name.split() if token.strip()]
-            
+
             if not tokens:
                 logger.warning(f"Empty name tokens from query: '{candidate_name}'")
                 return []
+
+            # Ignore very short tokens (1–2 characters) for matching to avoid overly broad results
+            filtered_tokens = [token for token in tokens if len(token) >= 3]
             
             # DEBUG: Check sample database values before querying
             try:
@@ -1200,9 +1203,9 @@ class AISearchService:
             except Exception as e:
                 logger.warning(f"DEBUG: Failed to fetch sample names: {e}")
             
-            # Build OR conditions for each token (substring matching - simplified for better compatibility)
+            # Build OR conditions for each significant token (substring matching - simplified for better compatibility)
             conditions = []
-            for token in tokens:
+            for token in filtered_tokens:
                 # Use LOWER with LIKE for case-insensitive matching (more reliable than TRIM)
                 conditions.append(
                     func.LOWER(ResumeMetadata.candidatename).like(f"%{token}%")
@@ -1231,6 +1234,7 @@ class AISearchService:
                 extra={
                     "candidate_name": candidate_name,
                     "tokens": tokens,
+                    "filtered_tokens": filtered_tokens,
                     "normalized_query_name": normalized_query_name,
                     "condition_count": len(conditions),
                     "condition_types": [
@@ -1301,6 +1305,7 @@ class AISearchService:
                 extra={
                     "candidate_name": candidate_name,
                     "query_tokens": tokens,
+                    "filtered_tokens": [token for token in tokens if len(token) >= 3],
                     "normalized_query_name": normalized_query_name,
                     "raw_result_count": len(resumes),
                     "sample_names": [r.candidatename for r in resumes[:5]] if resumes else [],
@@ -1346,6 +1351,7 @@ class AISearchService:
                 # Calculate match score based on match type (prioritize exact matches)
                 if candidate_name_lower == normalized_query:
                     # Exact full name match (highest priority)
+   
                     match_score = 1.0
                     match_type = "exact"
                 elif normalized_query in candidate_name_lower or candidate_name_lower in normalized_query:
@@ -1353,11 +1359,12 @@ class AISearchService:
                     match_score = 0.8
                     match_type = "partial"
                 else:
-                    # Check token-based match
-                    matched_tokens = sum(1 for token in tokens if token in candidate_name_lower)
-                    if matched_tokens > 0:
-                        # Token-based match (at least one token matched)
-                        match_ratio = matched_tokens / len(tokens)
+                    # Check token-based match (ignore very short tokens for scoring as well)
+                    effective_tokens = [token for token in tokens if len(token) >= 3]
+                    matched_tokens = sum(1 for token in effective_tokens if token in candidate_name_lower)
+                    if matched_tokens > 0 and effective_tokens:
+                        # Token-based match (at least one meaningful token matched)
+                        match_ratio = matched_tokens / len(effective_tokens)
                         match_score = 0.6 * match_ratio  # Base score for token match
                         match_type = "token"
                     else:
