@@ -58,3 +58,5 @@ class AISearchResponse(BaseModel):
     category: Optional[str] = Field(None, description="Category namespace used for search (None if broad search)")
     total_results: int
     results: List[CandidateResult]
+    search_type: Optional[str] = Field(None, description="'semantic' | 'name' | 'hybrid'")
+    results_from: Optional[str] = Field(None, description="'primary' | 'name' | 'generic_embedding_with_filters' | 'semantic_only'")

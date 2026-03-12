@@ -50,6 +50,18 @@ class Settings(BaseSettings):
     sentry_dsn: Optional[str] = Field(None, alias="SENTRY_DSN")
     log_level: str = Field("INFO", alias="LOG_LEVEL")
     
+    # AI Search (optional overrides; defaults keep current behavior)
+    ai_search_query_max_length: int = Field(2000, alias="AI_SEARCH_QUERY_MAX_LENGTH")
+    ai_search_top_k_max: int = Field(200, alias="AI_SEARCH_TOP_K_MAX")
+    ai_search_name_result_cap: int = Field(100, alias="AI_SEARCH_NAME_RESULT_CAP")
+    ai_search_hybrid_semantic_weight: float = Field(0.7, alias="AI_SEARCH_HYBRID_SEMANTIC_WEIGHT")  # 0.7 semantic + 0.3 keyword
+    ai_search_skill_weight: float = Field(40.0, alias="AI_SEARCH_SKILL_WEIGHT")
+    ai_search_group_skill_weight: float = Field(30.0, alias="AI_SEARCH_GROUP_SKILL_WEIGHT")
+    ai_search_designation_match_weight: float = Field(50.0, alias="AI_SEARCH_DESIGNATION_MATCH_WEIGHT")
+    ai_search_designation_mismatch_penalty: float = Field(40.0, alias="AI_SEARCH_DESIGNATION_MISMATCH_PENALTY")
+    ai_search_experience_exact_weight: float = Field(18.0, alias="AI_SEARCH_EXPERIENCE_EXACT_WEIGHT")
+    ai_search_domain_match_weight: float = Field(12.0, alias="AI_SEARCH_DOMAIN_MATCH_WEIGHT")
+    
     # SQL Logging (for debugging)
     sql_echo: bool = Field(False, alias="SQL_ECHO")  # Enable SQL query logging
     sql_log_level: str = Field("INFO", alias="SQL_LOG_LEVEL")  # SQL log level: DEBUG, INFO, WARNING

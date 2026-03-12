@@ -1,12 +1,18 @@
 """AI Search service implementing semantic search, filtering, and ranking."""
 import re
-from typing import Dict, List, Optional, Any
+from typing import Dict, List, Optional, Any, Tuple
+from app.config import settings
 from app.services.embedding_service import EmbeddingService
 from app.services.pinecone_automation import PineconeAutomation
 from app.repositories.resume_repo import ResumeRepository
 from app.utils.logging import get_logger
-from app.ai_search.designation_matcher import DesignationMatcher
 from app.utils.cleaning import normalize_skill_list
+from app.utils.nlp_utils import (
+    stemmed_skill_overlap_ratio,
+    expand_query_for_embedding,
+    keyword_score_for_candidate,
+)
+from app.ai_search.designation_matcher import DesignationMatcher
 
 logger = get_logger(__name__)
 
@@ -345,7 +351,32 @@ class AISearchService:
                     return canonical
 
         return None
-    
+
+    def _get_ai_search_weights(self) -> Dict[str, float]:
+        """Return relevance scoring weights from config (with defaults)."""
+        return {
+            "skill_weight": getattr(settings, "ai_search_skill_weight", 40.0),
+            "group_skill_weight": getattr(settings, "ai_search_group_skill_weight", 30.0),
+            "designation_match_weight": getattr(settings, "ai_search_designation_match_weight", 50.0),
+            "designation_mismatch_penalty": getattr(settings, "ai_search_designation_mismatch_penalty", 40.0),
+            "experience_exact_weight": getattr(settings, "ai_search_experience_exact_weight", 18.0),
+            "domain_match_weight": getattr(settings, "ai_search_domain_match_weight", 12.0),
+            "hybrid_semantic_weight": getattr(settings, "ai_search_hybrid_semantic_weight", 0.7),
+        }
+
+    def _compute_hybrid_combined_score(
+        self,
+        semantic_score: float,
+        keyword_score: float,
+        relevance_score: float,
+    ) -> float:
+        """Blend semantic (0-1), keyword (0-1), and relevance (0-100) into a combined 0-200 score."""
+        alpha = getattr(settings, "ai_search_hybrid_semantic_weight", 0.7)
+        semantic_part = semantic_score * 100.0
+        keyword_part = keyword_score * 100.0
+        blended = alpha * semantic_part + (1.0 - alpha) * keyword_part
+        return blended + relevance_score
+
     def _candidate_matches_query_role(
         self,
         candidate: Dict[str, Any],
@@ -413,14 +444,27 @@ class AISearchService:
             # No match found via canonical normalization
             return False
         
-        # 3) Fallback for roles without a known family: exact title match
+        # 3) Fallback for roles without a known family:
+        #    - If the query designation is actually a tool-like phrase (e.g. "power bi"),
+        #      don't enforce strict role gating – treat it as skill-only.
+        #    - Otherwise, consider substring matches in designation/jobrole before giving up.
+        from app.utils import is_tool_like_phrase
         q = str(query_designation).strip().lower()
         if q:
+            # Tool-like "designation" (e.g. "power bi") → do not gate by role
+            if is_tool_like_phrase(q):
+                return True
+            # If the query role phrase appears inside the candidate designation/jobrole,
+            # treat it as a match even if we don't have a canonical family.
             for raw in (cand_designation, cand_jobrole):
-                if raw and raw.strip().lower() == q:
+                if not raw:
+                    continue
+                raw_lower = raw.strip().lower()
+                if raw_lower == q or q in raw_lower:
                     return True
-            # Strict gating for unknown roles: only exact title matches pass
-            return False
+            # If we reach here, we couldn't confidently match – but to avoid over-filtering
+            # for unknown roles, return True (no hard gating).
+            return True
         
         # Should not reach here (empty query handled above), but be safe
         return True
@@ -742,6 +786,10 @@ class AISearchService:
         else:
             candidate_skills = []
         
+        weights = self._get_ai_search_weights()
+        skill_w = weights["skill_weight"]
+        group_w = weights["group_skill_weight"]
+        
         # Score must_have_all skills (soft scoring - partial matches get partial score)
         must_have_all = filters.get("must_have_all", [])
         if must_have_all:
@@ -751,7 +799,12 @@ class AISearchService:
             if matched_skills > 0:
                 # Partial match: score based on percentage of skills matched
                 skill_match_ratio = matched_skills / len(required_skills)
-                score += skill_match_ratio * 40.0  # Max 40 points for skills
+                score += skill_match_ratio * skill_w
+            else:
+                # NLP: stemmed overlap (e.g. "testing" vs "test", "selenium" vs "selenium webdriver")
+                stemmed_ratio = stemmed_skill_overlap_ratio(must_have_all, candidate_skills)
+                if stemmed_ratio > 0:
+                    score += stemmed_ratio * skill_w
         
         # Score must_have_one_of_groups (OR logic - any group match gets points)
         must_have_one_of_groups = filters.get("must_have_one_of_groups", [])
@@ -765,8 +818,13 @@ class AISearchService:
                 matched_in_group = sum(1 for skill in group_skills if skill in candidate_skills)
                 if matched_in_group > 0:
                     group_ratio = matched_in_group / len(group_skills)
-                    group_score = group_ratio * 30.0  # Max 30 points per group
+                    group_score = group_ratio * group_w
                     max_group_score = max(max_group_score, group_score)
+                else:
+                    # NLP: stemmed overlap for this OR group
+                    stemmed_ratio = stemmed_skill_overlap_ratio(group, candidate_skills)
+                    if stemmed_ratio > 0:
+                        max_group_score = max(max_group_score, stemmed_ratio * group_w)
             score += max_group_score
         
         # FIX 5: Domain-specific skill boosts (QA/Automation)
@@ -790,13 +848,14 @@ class AISearchService:
         
         # Domain alignment boost (soft ranking signal only, never a hard filter)
         domain_filter = (filters.get("domain") or "").lower().strip()
+        domain_w = weights.get("domain_match_weight", 12.0)
         if domain_filter:
             candidate_domain = str(candidate.get("domain") or "").lower().strip()
             if candidate_domain:
                 if candidate_domain == domain_filter:
-                    score += 12.0
+                    score += domain_w
                     logger.debug(
-                        f"Domain match: query={domain_filter}, candidate={candidate_domain}, boost=+12"
+                        f"Domain match: query={domain_filter}, candidate={candidate_domain}, boost=+{domain_w}"
                     )
                 elif domain_filter in candidate_domain or candidate_domain in domain_filter:
                     score += 6.0
@@ -853,10 +912,12 @@ class AISearchService:
             
             # Apply scoring based on rule-based match result
             # Note: LLM matching will be called later for top candidates only (see two-stage processing below)
+            des_match_w = weights.get("designation_match_weight", 50.0)
+            des_penalty = weights.get("designation_mismatch_penalty", 40.0)
             if is_match:
                 # Strong positive score based on confidence
                 if confidence >= 0.9:
-                    score += 50.0  # Very high confidence match
+                    score += des_match_w  # Very high confidence match
                 elif confidence >= 0.7:
                     score += 40.0  # High confidence match
                 elif confidence >= 0.5:
@@ -870,15 +931,16 @@ class AISearchService:
                 )
             else:
                 # Strong penalty for mismatch
-                score -= 40.0  # Heavy penalty for non-matching roles
+                score -= des_penalty
                 logger.debug(
                     f"Designation mismatch (rule-based): query='{designation}', candidate='{candidate_designation or candidate_jobrole}', "
-                    f"match=False, penalty=-40"
+                    f"match=False, penalty=-{des_penalty}"
                 )
         
         # Experience score tiers: exact = best, ±1 = next, ±2 = next, then others (recruiter-friendly ordering)
         min_experience = filters.get("min_experience")
         max_experience = filters.get("max_experience")
+        exp_exact_w = weights.get("experience_exact_weight", 18.0)
         
         if min_experience is not None:
             try:
@@ -889,7 +951,7 @@ class AISearchService:
                 
                 diff = abs(candidate_exp - min_exp)
                 if diff == 0:
-                    score += 18.0  # Exact match (best)
+                    score += exp_exact_w  # Exact match (best)
                 elif diff == 1:
                     score += 14.0  # ±1 year (next)
                 elif diff == 2:
@@ -1052,7 +1114,7 @@ class AISearchService:
         else:
             candidate_skills = []
         
-        # Check if all required skills are present
+        # Check if all required skills are present (exact then stemmed)
         has_all_required_skills = True
         if must_have_all:
             # Normalize required skills to canonical forms for matching
@@ -1063,8 +1125,11 @@ class AISearchService:
                 if not skill_found:
                     has_all_required_skills = False
                     break
+            # Stemmed fallback: e.g. "testing" vs "test"
+            if not has_all_required_skills and stemmed_skill_overlap_ratio(must_have_all, candidate_skills) >= 1.0:
+                has_all_required_skills = True
         
-        # Check if at least one skill from any group is present
+        # Check if at least one skill from any group is present (exact then stemmed)
         has_one_of_skills = True
         if must_have_one_of_groups:
             has_one_of_skills = False
@@ -1079,6 +1144,14 @@ class AISearchService:
                         break
                 if has_one_of_skills:
                     break
+            # Stemmed fallback for OR groups
+            if not has_one_of_skills:
+                for group in must_have_one_of_groups:
+                    if not group:
+                        continue
+                    if stemmed_skill_overlap_ratio(group, candidate_skills) > 0:
+                        has_one_of_skills = True
+                        break
         
         # Apply skill-based promotion
         skills_match = (not must_have_all or has_all_required_skills) and \
@@ -1417,8 +1490,25 @@ class AISearchService:
                     "fit_tier": self._get_fit_tier_from_score(match_score)
                 })
             
-            # Sort by score (highest first)
-            results_with_scores.sort(key=lambda x: x["score"], reverse=True)
+            # Sort by score (highest first), then by number of matched tokens (more tokens = better), then by name length (shorter = closer match)
+            def name_sort_key(r):
+                s = r["score"]
+                # Secondary: prefer more matched tokens (approximate via score tier)
+                token_bonus = 1.0 if s >= 0.6 else (0.5 if s >= 0.4 else 0.0)
+                # Tertiary: shorter name length when scores equal (exact/substring tend to be shorter)
+                name_len = len(r.get("name", "") or "")
+                return (s, token_bonus, -name_len)
+            
+            results_with_scores.sort(key=name_sort_key, reverse=True)
+            
+            # Cap results for name search (configurable)
+            name_cap = getattr(settings, "ai_search_name_result_cap", 100)
+            if len(results_with_scores) > name_cap:
+                results_with_scores = results_with_scores[:name_cap]
+                logger.info(
+                    f"Name search capped to {name_cap} results",
+                    extra={"candidate_name": candidate_name, "cap": name_cap}
+                )
             
             # Remove match_type from final results (internal only)
             results = [{k: v for k, v in r.items() if k != "match_type"} for r in results_with_scores]
@@ -1544,8 +1634,11 @@ class AISearchService:
                     else:
                         text_for_embedding = "candidate resume"
                 
+                # Query expansion: add synonyms for better embedding recall
+                text_to_embed = expand_query_for_embedding(text_for_embedding) or text_for_embedding
+                
                 # Generate embedding
-                embedding = await self.embedding_service.generate_embedding(text_for_embedding)
+                embedding = await self.embedding_service.generate_embedding(text_to_embed)
                 
                 # Build Pinecone filter
                 pinecone_filter = self.build_pinecone_filter(parsed_query)
@@ -1643,9 +1736,19 @@ class AISearchService:
                         strict_category=category
                     )
                     
-                    # Combine semantic score (0-1) with relevance score (0-100)
-                    semantic_score_normalized = score * 100.0
-                    combined_score = semantic_score_normalized + relevance_score
+                    # Hybrid: blend semantic + keyword overlap + relevance
+                    cand_skills = candidate.get("skills", []) or []
+                    if isinstance(cand_skills, str):
+                        cand_skills = [s.strip() for s in cand_skills.split(",") if s.strip()]
+                    keyword_score = keyword_score_for_candidate(
+                        text_for_embedding,
+                        cand_skills,
+                        candidate.get("designation"),
+                        candidate.get("domain"),
+                    )
+                    combined_score = self._compute_hybrid_combined_score(
+                        score, keyword_score, relevance_score
+                    )
                     
                     # Normalize combined score to 0-1 range
                     normalized_score = max(0.0, min(1.0, combined_score / 200.0))
@@ -2381,13 +2484,20 @@ class AISearchService:
                 # Calculate relevance score based on filters (soft scoring)
                 relevance_score = await self.calculate_relevance_score(candidate, parsed_query)
                 
-                # Combine semantic score (0-1) with relevance score (0-100)
-                # Normalize semantic score to 0-100 range and combine
-                semantic_score_normalized = score * 100.0  # Convert 0-1 to 0-100
-                combined_score = semantic_score_normalized + relevance_score
+                # Hybrid: blend semantic + keyword overlap + relevance
+                text_for_embedding = parsed_query.get("text_for_embedding", "") or ""
+                keyword_score = keyword_score_for_candidate(
+                    text_for_embedding,
+                    skills,
+                    candidate.get("designation"),
+                    metadata.get("domain"),
+                )
+                combined_score = self._compute_hybrid_combined_score(
+                    score, keyword_score, relevance_score
+                )
                 
                 # Normalize combined score to 0-1 range for Pydantic model validation
-                # Combined score range: can be negative (due to penalties) to 200 (semantic 0-100 + relevance 0-100)
+                # Combined score range: can be negative (due to penalties) to 200
                 normalized_score = combined_score / 200.0
                 
                 # Clamp normalized score to [0.0, 1.0] to satisfy Pydantic model constraint
@@ -2609,8 +2719,11 @@ class AISearchService:
                 else:
                     text_for_embedding = "candidate resume"
             
+            # Query expansion for better embedding recall
+            text_to_embed = expand_query_for_embedding(text_for_embedding) or text_for_embedding
+            
             # Generate embedding
-            embedding = await self.embedding_service.generate_embedding(text_for_embedding)
+            embedding = await self.embedding_service.generate_embedding(text_to_embed)
             
             # Build Pinecone filter (only query filters, no category)
             pinecone_filter = self.build_pinecone_filter(parsed_query)

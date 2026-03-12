@@ -267,7 +267,12 @@ SKILL_ALIAS_MAP = {
     "asp.net core": "dotnet",
     "asp net core": "dotnet",
 
-    # Power Apps / Power Platform variations
+    # Power BI / Power Platform variations
+    "power bi": "power bi",
+    "powerbi": "power bi",
+    "power bi developer": "power bi",
+    "powerbi developer": "power bi",
+    "power bi dev": "power bi",
     "power apps": "powerapps",
     "power app": "powerapps",
     "powerapps": "powerapps",

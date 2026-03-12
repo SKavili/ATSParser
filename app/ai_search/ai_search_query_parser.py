@@ -7,6 +7,7 @@ from httpx import Timeout
 
 from app.config import settings
 from app.utils.logging import get_logger
+from app.utils.nlp_utils import is_likely_name_query
 from app.services.llm_service import use_openai, generate as openai_generate
 # QueryCategoryIdentifier removed - category is now provided explicitly in payload
 
@@ -193,7 +194,25 @@ class AISearchQueryParser:
             filters["location"] = None
         if "candidate_name" not in filters:
             filters["candidate_name"] = None
-        
+
+        # Slot validation: coerce numeric and string types
+        try:
+            if filters.get("min_experience") is not None:
+                v = filters["min_experience"]
+                filters["min_experience"] = int(v) if v != "" else None
+        except (ValueError, TypeError):
+            filters["min_experience"] = None
+        try:
+            if filters.get("max_experience") is not None:
+                v = filters["max_experience"]
+                filters["max_experience"] = int(v) if v != "" else None
+        except (ValueError, TypeError):
+            filters["max_experience"] = None
+        if filters.get("location") is not None and isinstance(filters["location"], list):
+            filters["location"] = (filters["location"][0] if filters["location"] else None) or None
+        if filters.get("candidate_name") is not None and isinstance(filters["candidate_name"], list):
+            filters["candidate_name"] = (filters["candidate_name"][0] if filters["candidate_name"] else None) or None
+
         # Heuristic: if designation is missing but we have role-like content in must_have_all,
         # move it into designation instead of treating it as mandatory skills.
         if not filters["designation"]:
@@ -418,6 +437,39 @@ class AISearchQueryParser:
         Raises:
             RuntimeError: If OLLAMA is not available or parsing fails
         """
+        # NLP gate: if query looks like a person name only, skip LLM and return name search (faster, cheaper)
+        if is_likely_name_query(query):
+            name_lower = query.strip()
+            logger.info(
+                f"Name-query gate: skipping LLM for likely name search",
+                extra={"query": name_lower[:80]}
+            )
+            return {
+                "search_type": "name",
+                "text_for_embedding": name_lower,
+                "filters": {
+                    "designation": None,
+                    "must_have_all": [],
+                    "must_have_one_of_groups": [],
+                    "min_experience": None,
+                    "max_experience": None,
+                    "domain": None,
+                    "location": None,
+                    "candidate_name": name_lower,
+                },
+                "mastercategory": None,
+                "category": None,
+            }
+
+        # Query validation: trim and cap length
+        query = query.strip() if query else ""
+        max_len = getattr(settings, "ai_search_query_max_length", 2000)
+        if len(query) > max_len:
+            logger.warning(f"Query truncated from {len(query)} to {max_len} characters")
+            query = query[:max_len]
+        if not query:
+            raise RuntimeError("Query is empty after trimming")
+
         # Prepare prompt (used for both OpenAI and OLLAMA)
         full_prompt = f"{AI_SEARCH_PROMPT}\n\nInput Query: {query}\n\nOutput:"
 

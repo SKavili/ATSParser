@@ -5,6 +5,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.ai_search.ai_search_query_parser import AISearchQueryParser
 from app.ai_search.ai_search_service import AISearchService
 from app.ai_search.ai_search_repository import AISearchRepository
+from app.config import settings
 from app.services.embedding_service import EmbeddingService
 from app.services.pinecone_automation import PineconeAutomation
 from app.repositories.resume_repo import ResumeRepository
@@ -62,6 +63,10 @@ class AISearchController:
             Exception: If search execution fails
         """
         try:
+            # Cap top_k to configurable maximum
+            top_k_max = getattr(settings, "ai_search_top_k_max", 200)
+            top_k = min(top_k or 100, top_k_max)
+            
             # Step 1: Save query to database
             search_query = await self.repository.create_query(
                 query_text=query,
@@ -263,12 +268,15 @@ class AISearchController:
                 # Continue even if save fails
             
             # Step 6: Return response
+            results_from = "name" if search_type == "name" else "primary"
             response = {
                 "query": query,
                 "mastercategory": mastercategory if explicit_mode else None,
                 "category": category if explicit_mode else None,
                 "total_results": len(formatted_results),
-                "results": formatted_results
+                "results": formatted_results,
+                "search_type": search_type,
+                "results_from": results_from,
             }
             
             logger.info(
