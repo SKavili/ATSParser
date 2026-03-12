@@ -227,7 +227,8 @@ class AISearchController:
                     explicit_category_mode=explicit_mode
                 )
             
-            # Step 4: Format results (exclude profiles with score 0.0 or below)
+            # Step 4: Format results (exclude profiles with score 0.0 or below,
+            # and drop very weak fits labeled as "Low Match")
             formatted_results = []
             for result in results:
                 # Convert score from decimal (0.0-1.0) to percentage (0-100)
@@ -235,6 +236,11 @@ class AISearchController:
                 if score_decimal <= 0.0:
                     continue  # Do not return profiles with minimal/zero score
                 score_percentage = round(score_decimal * 100.0, 2)
+
+                # Skip very weak overall matches
+                fit_tier = result.get("fit_tier", "Partial Match")
+                if fit_tier == "Low Match":
+                    continue
                 
                 formatted_results.append({
                     "candidate_id": result.get("candidate_id", ""),
@@ -248,7 +254,7 @@ class AISearchController:
                     "skills": result.get("skills", []),
                     "location": result.get("location"),
                     "score": score_percentage,  # Score as percentage (0-100)
-                    "fit_tier": result.get("fit_tier", "Partial Match")
+                    "fit_tier": fit_tier
                 })
             
             # Step 5: Save results to database
