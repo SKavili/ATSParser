@@ -127,7 +127,7 @@ class DesignationMatcher:
             query_designation: Role from search query (e.g. "QA", "python full stack developer")
         
         Returns:
-            List of lowercase job title strings (max 25) to use in designation $in filter.
+            List of lowercase job title strings (max ~6) to use in designation $in filter.
             On failure returns [query_designation.lower()] so filter still applies.
         """
         if not query_designation or not str(query_designation).strip():
@@ -136,7 +136,8 @@ class DesignationMatcher:
         fallback = [query_designation.lower()]
         prompt = DESIGNATION_EXPAND_PROMPT.format(query_designation=query_designation)
         timeout_seconds = 15.0
-        max_titles = 25
+        # Keep expansion small and focused; we will further trim and post-filter.
+        max_titles = 10
 
         try:
             if use_openai():
@@ -149,6 +150,7 @@ class DesignationMatcher:
                     timeout_seconds=timeout_seconds,
                 )
                 titles = self._parse_designation_list(raw_output or "", max_titles)
+                titles = self._postprocess_expanded_titles(query_designation, titles)
                 if titles:
                     logger.info(
                         f"Designation expand (OpenAI): '{query_designation}' -> {len(titles)} equivalents",
@@ -217,6 +219,7 @@ class DesignationMatcher:
 
             raw_output = result.get("response", "")
             titles = self._parse_designation_list(raw_output, max_titles)
+            titles = self._postprocess_expanded_titles(query_designation, titles)
             if titles:
                 logger.info(
                     f"Designation expand (OLLAMA): '{query_designation}' -> {len(titles)} equivalents",
@@ -230,6 +233,81 @@ class DesignationMatcher:
                 extra={"query_designation": query_designation, "error": str(e)}
             )
             return fallback
+
+    def _postprocess_expanded_titles(self, query_designation: str, titles: List[str]) -> List[str]:
+        """
+        Post-process LLM-expanded titles:
+        - Always keep the original query title (lowercased).
+        - Trim to a small, focused set (max 6).
+        - Optionally drop obviously wrong roles for certain query types (e.g. product roles).
+        """
+        if not titles:
+            return [query_designation.lower()]
+
+        q = query_designation.strip().lower()
+        seen = set()
+        result: List[str] = []
+
+        # Always ensure the original query title is first
+        if q:
+            seen.add(q)
+            result.append(q)
+
+        # Basic trim to keep only a few closest variants
+        for t in titles:
+            if len(result) >= 6:
+                break
+            s = (t or "").strip().lower()
+            if not s or s in seen:
+                continue
+            seen.add(s)
+            result.append(s)
+
+        # If the query looks like a slash-separated tech stack developer/engineer role
+        # e.g. "sql/etl/ssis/ssrs developer", generate focused role variants like
+        # "sql developer", "etl developer", "ssis developer", "ssrs developer".
+        if "/" in q:
+            base_role = None
+            if " developer" in q:
+                base_role = "developer"
+            elif " engineer" in q:
+                base_role = "engineer"
+
+            if base_role:
+                # Take the part before the base role word, split by "/" to get tech tokens
+                head = q.split(base_role, 1)[0]
+                tech_parts = [p.strip() for p in head.split("/") if p.strip()]
+                stack_variants = []
+                if tech_parts:
+                    # Combined stack title, normalized
+                    combined_title = "/".join(tech_parts) + f" {base_role}"
+                    stack_variants.append(combined_title)
+                    # Single-tech role titles
+                    for tech in tech_parts:
+                        stack_variants.append(f"{tech} {base_role}")
+
+                for v in stack_variants:
+                    if len(result) >= 6:
+                        break
+                    vv = v.strip().lower()
+                    if vv and vv not in seen:
+                        seen.add(vv)
+                        result.append(vv)
+
+        # For clearly "product" roles, avoid pulling in generic delivery roles
+        if "product" in q:
+            blocked = {
+                "scrum master",
+                "agile coach",
+                "project manager",
+                "program manager",
+            }
+            result = [r for r in result if r not in blocked]
+            # Ensure we don't end up empty
+            if not result and q:
+                result = [q]
+
+        return result
 
     def _parse_designation_list(self, text: str, max_items: int = 25) -> List[str]:
         """Parse LLM response into a list of lowercase designation strings."""

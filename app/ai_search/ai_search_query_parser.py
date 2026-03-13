@@ -438,7 +438,11 @@ class AISearchQueryParser:
             RuntimeError: If OLLAMA is not available or parsing fails
         """
         # NLP gate: if query looks like a person name only, skip LLM and return name search (faster, cheaper)
-        if is_likely_name_query(query):
+        # IMPORTANT: Only apply this when caller did NOT already provide an explicit
+        # mastercategory/category. If the UI sends a category like "IT" / "Network & Security"
+        # together with a query such as "Computer Support Specialist", we should
+        # treat it as a role-based semantic search, not as a person name.
+        if is_likely_name_query(query) and not skip_category_inference:
             name_lower = query.strip()
             logger.info(
                 f"Name-query gate: skipping LLM for likely name search",

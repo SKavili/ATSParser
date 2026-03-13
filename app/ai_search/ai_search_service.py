@@ -171,15 +171,19 @@ class AISearchService:
             "scrum lead",
             "agile coach",
         ],
-        # Project Manager family
+        # Project / Program Manager family
         "project_manager": [
             "project manager",
-            "program manager",
             "project/program manager",
             "technical project manager",
             "it project manager",
             "senior project manager",
             "delivery manager",
+        ],
+        "program_manager": [
+            "program manager",
+            "senior program manager",
+            "it program manager",
         ],
         # Change Manager family
         "change_manager": [
@@ -264,6 +268,7 @@ class AISearchService:
             "product manager",
             "technical product manager",
             "digital product manager",
+            "senior product manager",
         ],
         # Logistics / Operations Manager family (NON-IT)
         "logistics_manager": [
@@ -361,7 +366,6 @@ class AISearchService:
             "designation_mismatch_penalty": getattr(settings, "ai_search_designation_mismatch_penalty", 40.0),
             "experience_exact_weight": getattr(settings, "ai_search_experience_exact_weight", 18.0),
             "domain_match_weight": getattr(settings, "ai_search_domain_match_weight", 12.0),
-            "hybrid_semantic_weight": getattr(settings, "ai_search_hybrid_semantic_weight", 0.7),
         }
 
     def _compute_hybrid_combined_score(
@@ -370,12 +374,35 @@ class AISearchService:
         keyword_score: float,
         relevance_score: float,
     ) -> float:
-        """Blend semantic (0-1), keyword (0-1), and relevance (0-100) into a combined 0-200 score."""
-        alpha = getattr(settings, "ai_search_hybrid_semantic_weight", 0.7)
-        semantic_part = semantic_score * 100.0
-        keyword_part = keyword_score * 100.0
-        blended = alpha * semantic_part + (1.0 - alpha) * keyword_part
-        return blended + relevance_score
+        """
+        Blend semantic (0-1), keyword (0-1), and relevance (0-100) into a final 0-100 score.
+
+        Design goals:
+        - Recruiter-facing score is always in [0, 100]
+        - Weights are explicit and easy to tune
+        - Negative relevance penalties cannot collapse everything to 0
+        """
+        # Clamp inputs to expected ranges
+        semantic_clamped = max(0.0, min(1.0, semantic_score))
+        keyword_clamped = max(0.0, min(1.0, keyword_score))
+        relevance_clamped = max(0.0, min(100.0, relevance_score))
+
+        semantic_pct = semantic_clamped * 100.0
+        keyword_pct = keyword_clamped * 100.0
+
+        # Explicit, interpretable weights (can be moved to config later if needed)
+        semantic_weight = 0.6
+        relevance_weight = 0.3
+        keyword_weight = 0.1
+
+        final_score = (
+            semantic_pct * semantic_weight
+            + relevance_clamped * relevance_weight
+            + keyword_pct * keyword_weight
+        )
+
+        # Bound the final score to [0, 100]
+        return max(0.0, min(100.0, final_score))
 
     def _candidate_matches_query_role(
         self,
@@ -427,7 +454,8 @@ class AISearchService:
             if equivalents:
                 cand_designation = (candidate.get("designation") or "").strip().lower()
                 cand_jobrole = (candidate.get("jobrole") or "").strip().lower()
-                for raw in (cand_designation, cand_jobrole):
+                # Prefer jobrole over designation for role matching
+                for raw in (cand_jobrole, cand_designation):
                     if raw and raw in equivalents:
                         return True
         
@@ -435,7 +463,8 @@ class AISearchService:
         cand_designation = candidate.get("designation") or ""
         cand_jobrole = candidate.get("jobrole") or ""
         if normalized_query is not None:
-            for raw in (cand_designation, cand_jobrole):
+            # Prefer jobrole over designation for canonical role-family matching
+            for raw in (cand_jobrole, cand_designation):
                 if not raw:
                     continue
                 cand_normalized = self._normalize_role(raw)
@@ -456,7 +485,8 @@ class AISearchService:
                 return True
             # If the query role phrase appears inside the candidate designation/jobrole,
             # treat it as a match even if we don't have a canonical family.
-            for raw in (cand_designation, cand_jobrole):
+            # Prefer jobrole over designation when checking.
+            for raw in (cand_jobrole, cand_designation):
                 if not raw:
                     continue
                 raw_lower = raw.strip().lower()
@@ -862,6 +892,39 @@ class AISearchService:
                     logger.debug(
                         f"Domain partial match: query={domain_filter}, candidate={candidate_domain}, boost=+6"
                     )
+
+        # Title similarity / exact-title boost (applies to jobrole/designation)
+        designation_query = (filters.get("designation") or "").strip().lower()
+        if designation_query:
+            cand_jobrole = (candidate.get("jobrole") or "").strip().lower()
+            cand_designation = (candidate.get("designation") or "").strip().lower()
+            # Exact match on jobrole or designation → strong boost
+            if cand_jobrole == designation_query or cand_designation == designation_query:
+                score += 25.0
+                logger.debug(
+                    f"Exact title match boost: query='{designation_query}', "
+                    f"candidate_jobrole='{cand_jobrole}', candidate_designation='{cand_designation}', "
+                    f"boost=+25"
+                )
+            else:
+                # Simple token-overlap similarity: if most words match in order, give a small boost
+                q_tokens = designation_query.split()
+                jr_tokens = cand_jobrole.split() if cand_jobrole else []
+                des_tokens = cand_designation.split() if cand_designation else []
+                def _overlap_ratio(a, b):
+                    if not a or not b:
+                        return 0.0
+                    set_a, set_b = set(a), set(b)
+                    inter = len(set_a & set_b)
+                    return inter / len(set_a)
+                title_sim = max(_overlap_ratio(q_tokens, jr_tokens), _overlap_ratio(q_tokens, des_tokens))
+                if title_sim >= 0.75:
+                    score += 10.0
+                    logger.debug(
+                        f"Title similarity boost: query='{designation_query}', "
+                        f"candidate_jobrole='{cand_jobrole}', candidate_designation='{cand_designation}', "
+                        f"similarity={title_sim:.2f}, boost=+10"
+                    )
         
         # OPTIMIZATION for 180k+ resumes: Rule-based designation matching first, LLM only for top candidates
         designation = filters.get("designation")
@@ -1025,14 +1088,13 @@ class AISearchService:
         Args:
             candidate: Candidate metadata
             parsed_query: Parsed query
-            combined_score: Combined score (0-200, semantic + relevance)
+            combined_score: Combined score (0-100, recruiter-facing)
         
         Returns:
             Fit tier: "Perfect Match", "Good Match", "Partial Match", "Low Match"
         """
         # Normalize combined score to 0-1 for categorization
-        # Combined score is semantic (0-100) + relevance (0-100) = 0-200
-        normalized_score = combined_score / 200.0
+        normalized_score = max(0.0, min(1.0, combined_score / 100.0))
         
         # FIX 6: Additional checks for fit tier (domain/role alignment + exact role gating)
         identified_mastercategory = parsed_query.get("mastercategory")
@@ -1060,7 +1122,9 @@ class AISearchService:
             ):
                 return "Low Match"  # Force low match for students when query wants professionals
 
-        # NEW: Exact role gating when query specifies a role/designation
+        # NEW: Functional role-family gating when query specifies a role/designation.
+        # We want to allow close functional roles (e.g. product manager vs product ops)
+        # but push clearly different families (e.g. scrum master vs product ops) to Low Match.
         query_role = filters.get("designation")
         candidate_role_raw = candidate.get("designation") or candidate.get("jobrole") or ""
 
@@ -1069,17 +1133,25 @@ class AISearchService:
             self._normalize_role(candidate_role_raw) if candidate_role_raw else None
         )
 
-        exact_role_match = (
-            normalized_query_role is not None
-            and normalized_candidate_role is not None
-            and normalized_query_role == normalized_candidate_role
+        # Map canonical roles into functional families
+        ROLE_FAMILIES = {
+            "product_manager": "product_management",
+            "project_manager": "project_program_management",
+            "program_manager": "project_program_management",
+            "scrum_master": "agile_delivery",
+            "business_analyst": "business_analysis",
+            "data_analyst": "data_analytics",
+            "data_engineer": "data_engineering",
+        }
+
+        query_family = ROLE_FAMILIES.get(normalized_query_role) if normalized_query_role else None
+        candidate_family = (
+            ROLE_FAMILIES.get(normalized_candidate_role) if normalized_candidate_role else None
         )
 
-        # If the query specifies a recognizable role and the candidate role is also recognized
-        if normalized_query_role and normalized_candidate_role:
-            # Hard rule: if roles differ, always force Low Match
-            if not exact_role_match:
-                return "Low Match"
+        # If both roles map to families and the families differ, force Low Match
+        if query_family and candidate_family and query_family != candidate_family:
+            return "Low Match"
 
             # If roles match exactly, we can promote the fit tier based on experience
             min_experience = filters.get("min_experience")
@@ -1749,11 +1821,9 @@ class AISearchService:
                     combined_score = self._compute_hybrid_combined_score(
                         score, keyword_score, relevance_score
                     )
-                    
-                    # Normalize combined score to 0-1 range
-                    normalized_score = max(0.0, min(1.0, combined_score / 200.0))
-                    
-                    candidate["score"] = normalized_score
+                    # Store per-signal scores
+                    candidate["keyword_score"] = keyword_score
+                    candidate["score"] = max(0.0, min(1.0, combined_score / 100.0))
                     candidate["semantic_score"] = score
                     candidate["relevance_score"] = relevance_score
                     
@@ -2495,19 +2565,13 @@ class AISearchService:
                 combined_score = self._compute_hybrid_combined_score(
                     score, keyword_score, relevance_score
                 )
-                
-                # Normalize combined score to 0-1 range for Pydantic model validation
-                # Combined score range: can be negative (due to penalties) to 200
-                normalized_score = combined_score / 200.0
-                
-                # Clamp normalized score to [0.0, 1.0] to satisfy Pydantic model constraint
-                # Negative scores indicate poor matches (heavy penalties), clamp to 0.0
-                normalized_score = max(0.0, min(1.0, normalized_score))
+                normalized_score = max(0.0, min(1.0, combined_score / 100.0))
                 
                 # Update candidate with normalized score (0-1 range for Pydantic model)
                 candidate["score"] = normalized_score
                 candidate["semantic_score"] = score  # Keep original semantic score (0-1)
                 candidate["relevance_score"] = relevance_score  # Keep relevance score (0-100)
+                candidate["keyword_score"] = keyword_score  # Keep keyword score (0-1)
                 
                 # FIX 1: Hard-gate empty/category results - filter out invalid candidates
                 if not candidate.get("candidate_id") or not candidate.get("candidate_id").strip():
@@ -2592,10 +2656,15 @@ class AISearchService:
                                 
                                 # Recalculate combined score
                                 semantic_score = candidate.get("semantic_score", 0.0)
-                                semantic_score_normalized = semantic_score * 100.0
-                                new_combined_score = semantic_score_normalized + candidate["relevance_score"]
-                                new_normalized_score = max(0.0, min(1.0, new_combined_score / 200.0))
-                                candidate["score"] = new_normalized_score
+                                keyword_score = candidate.get("keyword_score", 0.0)
+                                new_combined_score = self._compute_hybrid_combined_score(
+                                    semantic_score,
+                                    keyword_score,
+                                    candidate["relevance_score"],
+                                )
+                                candidate["score"] = max(
+                                    0.0, min(1.0, new_combined_score / 100.0)
+                                )
                                 
                                 logger.debug(
                                     f"LLM match found: {designation} vs {cand_role}, confidence={confidence}, boost=+{llm_boost}",
@@ -2942,6 +3011,22 @@ class AISearchService:
         """
         Process, deduplicate, and rank results from broad search.
         """
+        # Derive a text representation for keyword scoring
+        text_for_embedding = parsed_query.get("text_for_embedding", "") or ""
+        if not text_for_embedding.strip():
+            filters = parsed_query.get("filters", {})
+            filter_parts: List[str] = []
+            designation = filters.get("designation")
+            if designation:
+                filter_parts.append(str(designation))
+            must_have_all = filters.get("must_have_all") or []
+            if must_have_all:
+                filter_parts.extend([str(s) for s in must_have_all])
+            if filter_parts:
+                text_for_embedding = " ".join(filter_parts)
+            else:
+                text_for_embedding = "candidate resume"
+
         # Deduplicate by resume_id
         seen_resume_ids = set()
         unique_results = []
@@ -2993,14 +3078,22 @@ class AISearchService:
                 parsed_query
             )
             
-            # Combine semantic score with relevance score
-            semantic_score_normalized = score * 100.0
-            combined_score = semantic_score_normalized + relevance_score
-            normalized_score = max(0.0, min(1.0, combined_score / 200.0))
+            # Hybrid: blend semantic + keyword overlap + relevance
+            keyword_score = keyword_score_for_candidate(
+                text_for_embedding,
+                skills,
+                candidate.get("designation"),
+                metadata.get("domain"),
+            )
+            combined_score = self._compute_hybrid_combined_score(
+                score, keyword_score, relevance_score
+            )
+            normalized_score = max(0.0, min(1.0, combined_score / 100.0))
             
             candidate["score"] = normalized_score
             candidate["semantic_score"] = score
             candidate["relevance_score"] = relevance_score
+            candidate["keyword_score"] = keyword_score
             
             # Filter invalid candidates
             if not candidate.get("candidate_id") or not candidate.get("candidate_id").strip():
