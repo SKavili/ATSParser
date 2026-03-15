@@ -194,9 +194,15 @@ class AISearchService:
             "change management lead",
             "change management specialist",
         ],
-        # Data Analyst family
+        # Data Professional family (separate from data_analyst; e.g. designation=Data Professional, jobrole=Data Analyst)
+        "data_professional": [
+            "data professional",
+            "data science professional",
+        ],
+        # Data Analyst / Data Scientist family
         "data_analyst": [
             "data analyst",
+            "data scientist",
             "business data analyst",
             "bi analyst",
             "business intelligence analyst",
@@ -208,7 +214,23 @@ class AISearchService:
             "marketing data analyst",
             "financial data analyst",
         ],
-        # Data Engineer / Big Data Engineer family
+        # Database / SQL / SSIS / SSRS / BI developer family (SQL Server stack; distinct from data_engineer)
+        "database_developer": [
+            "sql developer",
+            "sql/ssis developer",
+            "ssis developer",
+            "ssrs developer",
+            "ssas developer",
+            "sql server developer",
+            "sql server (ssis/ssrs/bi) developer",
+            "sr. sql server (ssis/ssrs/bi) developer",
+            "bi developer",
+            "business intelligence developer",
+            "power bi developer",
+            "etl developer (ssis)",
+            "msbi developer",
+        ],
+        # Data Engineer / Big Data Engineer family (big data, pipelines; not SQL/SSIS-specific)
         "data_engineer": [
             "data engineer",
             "big data engineer",
@@ -287,6 +309,19 @@ class AISearchService:
             "ui ux designer",
             "ui ux developer",
         ],
+    }
+
+    # Canonical role -> family for equivalent-title filtering (same as in categorize_fit_tier)
+    ROLE_FAMILIES = {
+        "product_manager": "product_management",
+        "project_manager": "project_program_management",
+        "program_manager": "project_program_management",
+        "scrum_master": "agile_delivery",
+        "business_analyst": "business_analysis",
+        "data_analyst": "data_analytics",
+        "data_professional": "data_analytics",
+        "database_developer": "database_development",  # SQL/SSIS/SSRS/BI; separate from data_engineer
+        "data_engineer": "data_engineering",
     }
     
     def __init__(
@@ -428,54 +463,71 @@ class AISearchService:
         
         # Compute canonical family for the query, if known
         normalized_query = self._normalize_role(query_designation)
+        multi_role = self._is_multi_role_query(query_designation)
+        role_keywords = self._role_keywords_from_query(query_designation) if multi_role else set()
         
         # 1) LLM-expanded equivalent titles (dynamic, query-specific)
+        # Always include the query designation itself so "sql/etl developer" matches candidates with that exact title
+        q_normalized = str(query_designation).strip().lower() if query_designation else ""
+        equivalents = {q_normalized} if q_normalized else set()
         if designation_equivalent_list:
             try:
-                equivalents = set()
                 for s in designation_equivalent_list:
                     if not isinstance(s, str):
                         continue
                     title = s.strip().lower()
                     if not title:
                         continue
-                    # If we know the canonical family of the query, keep only
-                    # equivalents that either have no known family OR match
-                    # the query family. This prevents, for example, treating
-                    # 'data engineer' as equivalent to 'data analyst'.
-                    if normalized_query:
+                    # Multi-role query (e.g. "sql/etl developers"): only add titles that contain query role keywords
+                    # so we don't match whole family (e.g. exclude "data engineer" when query is sql/etl).
+                    if multi_role and role_keywords:
+                        if not any(kw in title for kw in role_keywords):
+                            continue
+                    elif normalized_query:
+                        # Single-role: only same canonical (exact/same role), not same family
                         fam = self._normalize_role(title)
                         if fam is not None and fam != normalized_query:
-                            continue
+                            continue  # different canonical, skip
+                    else:
+                        # Query not in static map: only add equivalents that overlap the query (exact/same intent)
+                        q_lower = str(query_designation).strip().lower()
+                        if q_lower and q_lower not in title and title not in q_lower:
+                            continue  # no overlap, skip (e.g. don't add "operations manager" for "gdc transportation sme")
                     equivalents.add(title)
             except Exception:
-                equivalents = set()
-            
-            if equivalents:
-                cand_designation = (candidate.get("designation") or "").strip().lower()
-                cand_jobrole = (candidate.get("jobrole") or "").strip().lower()
-                # Prefer jobrole over designation for role matching
-                for raw in (cand_jobrole, cand_designation):
-                    if raw and raw in equivalents:
-                        return True
+                equivalents = {q_normalized} if q_normalized else set()
         
-        # 2) Canonical role-family based matching (static normalization)
+        # Check candidate against equivalents (always includes query designation, plus LLM titles when available)
+        if equivalents:
+            cand_designation = (candidate.get("designation") or "").strip().lower()
+            cand_jobrole = (candidate.get("jobrole") or "").strip().lower()
+            for raw in (cand_jobrole, cand_designation):
+                if raw and raw in equivalents:
+                    return True
+        
+        # 2) Canonical role matching only (exact/same role; no same-family broadening)
         cand_designation = candidate.get("designation") or ""
         cand_jobrole = candidate.get("jobrole") or ""
         if normalized_query is not None:
-            # Prefer jobrole over designation for canonical role-family matching
+            # Prefer jobrole over designation for canonical role matching
             for raw in (cand_jobrole, cand_designation):
                 if not raw:
                     continue
                 cand_normalized = self._normalize_role(raw)
                 if cand_normalized == normalized_query:
+                    # Multi-role: require candidate's raw role to contain a query keyword (e.g. "sql" or "etl")
+                    if multi_role and role_keywords:
+                        raw_lower = raw.strip().lower()
+                        if not any(kw in raw_lower for kw in role_keywords):
+                            continue  # same canonical but wrong role (e.g. data engineer for sql/etl query)
                     return True
-            # No match found via canonical normalization
+            # No match: same-family not allowed (only exact/same canonical)
             return False
         
         # 3) Fallback for roles without a known family:
         #    - If the query designation is actually a tool-like phrase (e.g. "power bi"),
         #      don't enforce strict role gating – treat it as skill-only.
+        #    - Multi-role: only match if candidate role contains at least one query role keyword.
         #    - Otherwise, consider substring matches in designation/jobrole before giving up.
         from app.utils import is_tool_like_phrase
         q = str(query_designation).strip().lower()
@@ -483,21 +535,88 @@ class AISearchService:
             # Tool-like "designation" (e.g. "power bi") → do not gate by role
             if is_tool_like_phrase(q):
                 return True
+            # Multi-role: candidate must contain at least one role keyword (e.g. sql or etl)
+            if multi_role and role_keywords:
+                for raw in (cand_jobrole, cand_designation):
+                    if not raw:
+                        continue
+                    raw_lower = raw.strip().lower()
+                    if any(kw in raw_lower for kw in role_keywords):
+                        return True
+                return False  # strict: no keyword in candidate role => no match
             # If the query role phrase appears inside the candidate designation/jobrole,
-            # treat it as a match even if we don't have a canonical family.
-            # Prefer jobrole over designation when checking.
             for raw in (cand_jobrole, cand_designation):
                 if not raw:
                     continue
                 raw_lower = raw.strip().lower()
                 if raw_lower == q or q in raw_lower:
                     return True
-            # If we reach here, we couldn't confidently match – but to avoid over-filtering
-            # for unknown roles, return True (no hard gating).
-            return True
+            # No match: only exact/same or equivalents pass; do not pass everyone for unknown roles
+            return False
         
         # Should not reach here (empty query handled above), but be safe
         return True
+    
+    def _exact_role_match(self, candidate: Dict[str, Any], query_designation: str) -> bool:
+        """True if candidate's jobrole or designation equals query_designation (normalized: lower, strip)."""
+        if not query_designation or not str(query_designation).strip():
+            return False
+        q = str(query_designation).strip().lower()
+        jobrole = (candidate.get("jobrole") or "").strip().lower()
+        designation = (candidate.get("designation") or "").strip().lower()
+        return jobrole == q or designation == q
+    
+    def _candidate_from_resume_metadata(self, resume: Any) -> Dict[str, Any]:
+        """Build a candidate dict from ResumeMetadata ORM (for DB backfill of exact-role matches)."""
+        skills = []
+        if getattr(resume, "skillset", None) and str(resume.skillset).strip():
+            skills = [s.strip() for s in str(resume.skillset).split(",") if s.strip()]
+        experience_years = None
+        if getattr(resume, "experience", None) and str(resume.experience).strip():
+            exp_str = str(resume.experience).strip()
+            m = re.search(r"(\d+(?:\.\d+)?)", exp_str)
+            if m:
+                experience_years = int(float(m.group(1)))
+        return {
+            "resume_id": getattr(resume, "id", None),
+            "candidate_id": f"C{getattr(resume, 'id', 0)}",
+            "name": (getattr(resume, "candidatename", None) or "").strip() or "Unknown",
+            "category": getattr(resume, "category", "") or "",
+            "mastercategory": getattr(resume, "mastercategory", "") or "",
+            "designation": getattr(resume, "designation", "") or "",
+            "jobrole": getattr(resume, "jobrole", "") or "",
+            "experience_years": experience_years,
+            "skills": skills,
+            "location": getattr(resume, "location", None) or "",
+            "domain": getattr(resume, "domain", None),
+            "score": 0.0,
+            "semantic_score": 0.0,
+            "keyword_score": 0.0,
+            "relevance_score": 0.0,
+        }
+    
+    def _is_multi_role_query(self, query_designation: Optional[str]) -> bool:
+        """True if query lists multiple specific roles (e.g. 'sql/etl developers') so we match only those, not whole family."""
+        if not query_designation or not str(query_designation).strip():
+            return False
+        q = str(query_designation).strip().lower()
+        return "/" in q or (len(q.split()) >= 2 and any(
+            t in q for t in (" sql ", " etl ", " ssis ", " ssrs ", " and ", " or ")
+        ))
+    
+    def _role_keywords_from_query(self, query_designation: str) -> set:
+        """Extract role keywords from query for strict matching (e.g. 'sql/etl developers' -> {'sql', 'etl'})."""
+        if not query_designation or not str(query_designation).strip():
+            return set()
+        q = str(query_designation).strip().lower()
+        # Split by / and space; drop common suffixes so we keep role-specific terms
+        stop = {"developer", "developers", "engineer", "engineers", "and", "or", "the"}
+        tokens = set()
+        for part in q.replace("/", " ").split():
+            t = part.strip()
+            if t and t not in stop:
+                tokens.add(t)
+        return tokens
     
     def _normalize_namespace(self, category: str) -> str:
         """
@@ -927,6 +1046,7 @@ class AISearchService:
                     )
         
         # OPTIMIZATION for 180k+ resumes: Rule-based designation matching first, LLM only for top candidates
+        # Prefer jobrole (normalized) over designation (raw from resume) for matching.
         designation = filters.get("designation")
         if designation:
             candidate_designation = candidate.get("designation", "")
@@ -938,40 +1058,56 @@ class AISearchService:
             
             # Normalize query role once
             normalized_query_role = self._normalize_role(designation)
+            normalized_designation_query = designation.lower().strip()
             
-            # Try matching with candidate designation first (rule-based)
-            if candidate_designation:
-                normalized_cand_role = self._normalize_role(candidate_designation)
-                if normalized_query_role and normalized_cand_role:
-                    # Exact normalized match = perfect match (no LLM needed)
-                    if normalized_query_role == normalized_cand_role:
-                        is_match, confidence = True, 1.0
-                    # Substring match = good match (no LLM needed)
-                    elif normalized_query_role in normalized_cand_role or normalized_cand_role in normalized_query_role:
-                        is_match, confidence = True, 0.85
-                
-                # If rule-based didn't match, try simple keyword matching (fast)
-                if not is_match:
-                    normalized_designation = designation.lower().strip()
-                    candidate_designation_lower = candidate_designation.lower()
-                    if normalized_designation in candidate_designation_lower or candidate_designation_lower in normalized_designation:
-                        is_match, confidence = True, 0.8
-            
-            # If no match with designation, try jobrole (rule-based)
-            if not is_match and candidate_jobrole:
+            # Try matching with candidate jobrole first (normalized), then designation (raw)
+            if candidate_jobrole:
                 normalized_cand_jobrole = self._normalize_role(candidate_jobrole)
                 if normalized_query_role and normalized_cand_jobrole:
                     if normalized_query_role == normalized_cand_jobrole:
                         is_match, confidence = True, 1.0
                     elif normalized_query_role in normalized_cand_jobrole or normalized_cand_jobrole in normalized_query_role:
                         is_match, confidence = True, 0.85
-                
-                # If rule-based didn't match, try simple keyword matching
                 if not is_match:
-                    normalized_designation = designation.lower().strip()
                     candidate_jobrole_lower = candidate_jobrole.lower()
-                    if normalized_designation in candidate_jobrole_lower or candidate_jobrole_lower in normalized_designation:
-                        is_match, confidence = True, 0.7
+                    if normalized_designation_query in candidate_jobrole_lower or candidate_jobrole_lower in normalized_designation_query:
+                        is_match, confidence = True, 0.85
+            
+            if not is_match and candidate_designation:
+                normalized_cand_role = self._normalize_role(candidate_designation)
+                if normalized_query_role and normalized_cand_role:
+                    if normalized_query_role == normalized_cand_role:
+                        is_match, confidence = True, 1.0
+                    elif normalized_query_role in normalized_cand_role or normalized_cand_role in normalized_query_role:
+                        is_match, confidence = True, 0.85
+                if not is_match:
+                    candidate_designation_lower = candidate_designation.lower()
+                    if normalized_designation_query in candidate_designation_lower or candidate_designation_lower in normalized_designation_query:
+                        is_match, confidence = True, 0.8
+            
+            # Role-only mode: same role family = match (align with _candidate_matches_query_role); never -40
+            # Skip same-family for multi-role queries (e.g. "sql/etl" => only sql/etl, not data engineer)
+            role_only = parsed_query.get("role_only", False)
+            multi_role = self._is_multi_role_query(designation)
+            role_keywords = self._role_keywords_from_query(designation) if multi_role else set()
+            if not is_match and role_only and normalized_query_role and not multi_role:
+                query_family = self.ROLE_FAMILIES.get(normalized_query_role)
+                for raw in (candidate_jobrole, candidate_designation):
+                    if not raw:
+                        continue
+                    cand_norm = self._normalize_role(raw)
+                    if cand_norm and query_family and self.ROLE_FAMILIES.get(cand_norm) == query_family:
+                        is_match, confidence = True, 0.85
+                        break
+            # Multi-role: match only if candidate role contains at least one query role keyword
+            if not is_match and role_only and multi_role and role_keywords:
+                for raw in (candidate_jobrole, candidate_designation):
+                    if not raw:
+                        continue
+                    raw_lower = str(raw).strip().lower()
+                    if any(kw in raw_lower for kw in role_keywords):
+                        is_match, confidence = True, 0.85
+                        break
             
             # Apply scoring based on rule-based match result
             # Note: LLM matching will be called later for top candidates only (see two-stage processing below)
@@ -993,12 +1129,13 @@ class AISearchService:
                     f"match=True, confidence={confidence}, boost=+{score}"
                 )
             else:
-                # Strong penalty for mismatch
-                score -= des_penalty
-                logger.debug(
-                    f"Designation mismatch (rule-based): query='{designation}', candidate='{candidate_designation or candidate_jobrole}', "
-                    f"match=False, penalty=-{des_penalty}"
-                )
+                # Penalty only when not role_only (in role_only mode we use inclusion gate; no penalty)
+                if not role_only:
+                    score -= des_penalty
+                    logger.debug(
+                        f"Designation mismatch (rule-based): query='{designation}', candidate='{candidate_designation or candidate_jobrole}', "
+                        f"match=False, penalty=-{des_penalty}"
+                    )
         
         # Experience score tiers: exact = best, ±1 = next, ±2 = next, then others (recruiter-friendly ordering)
         min_experience = filters.get("min_experience")
@@ -1108,12 +1245,12 @@ class AISearchService:
         # Check for student/intern roles when query wants professional
         filters = parsed_query.get("filters", {})
         designation = (filters.get("designation") or "").lower()
-        candidate_designation = (candidate.get("designation") or "").lower()
+        candidate_role_for_check = (candidate.get("jobrole") or candidate.get("designation") or "").lower()
         
         if designation and (
-            "student" in candidate_designation
-            or "intern" in candidate_designation
-            or "trainee" in candidate_designation
+            "student" in candidate_role_for_check
+            or "intern" in candidate_role_for_check
+            or "trainee" in candidate_role_for_check
         ):
             if (
                 "student" not in designation
@@ -1125,28 +1262,19 @@ class AISearchService:
         # NEW: Functional role-family gating when query specifies a role/designation.
         # We want to allow close functional roles (e.g. product manager vs product ops)
         # but push clearly different families (e.g. scrum master vs product ops) to Low Match.
+        # Prefer jobrole (normalized) over designation (raw) for candidate role.
         query_role = filters.get("designation")
-        candidate_role_raw = candidate.get("designation") or candidate.get("jobrole") or ""
+        candidate_role_raw = candidate.get("jobrole") or candidate.get("designation") or ""
 
         normalized_query_role = self._normalize_role(query_role) if query_role else None
         normalized_candidate_role = (
             self._normalize_role(candidate_role_raw) if candidate_role_raw else None
         )
 
-        # Map canonical roles into functional families
-        ROLE_FAMILIES = {
-            "product_manager": "product_management",
-            "project_manager": "project_program_management",
-            "program_manager": "project_program_management",
-            "scrum_master": "agile_delivery",
-            "business_analyst": "business_analysis",
-            "data_analyst": "data_analytics",
-            "data_engineer": "data_engineering",
-        }
-
-        query_family = ROLE_FAMILIES.get(normalized_query_role) if normalized_query_role else None
+        # Use class-level ROLE_FAMILIES for consistent family gating
+        query_family = self.ROLE_FAMILIES.get(normalized_query_role) if normalized_query_role else None
         candidate_family = (
-            ROLE_FAMILIES.get(normalized_candidate_role) if normalized_candidate_role else None
+            self.ROLE_FAMILIES.get(normalized_candidate_role) if normalized_candidate_role else None
         )
 
         # If both roles map to families and the families differ, force Low Match
@@ -1271,6 +1399,10 @@ class AISearchService:
         elif normalized_score >= 0.50:
             return "Partial Match"
         else:
+            # Role-only mode: same role family → at least Partial Match (never drop as Low Match)
+            role_only = parsed_query.get("role_only", False)
+            if role_only and query_family and candidate_family and query_family == candidate_family:
+                return "Partial Match"
             return "Low Match"
     
     async def search_name(self, candidate_name: str, session) -> List[Dict[str, Any]]:
@@ -1715,6 +1847,12 @@ class AISearchService:
                 # Build Pinecone filter
                 pinecone_filter = self.build_pinecone_filter(parsed_query)
                 
+                # When we have a designation, fetch more from Pinecone so role filter has a larger pool
+                # (exact-role candidates may be ranked 101+ by similarity and would otherwise be missed)
+                pinecone_fetch_k = top_k
+                if query_designation and str(query_designation).strip():
+                    pinecone_fetch_k = min(getattr(settings, "ai_search_top_k_max", 200) * 2, max(top_k * 3, 200))
+                
                 # Query ONLY the specified namespace (NO fallbacks)
                 all_results = []
                 try:
@@ -1722,7 +1860,7 @@ class AISearchService:
                         query_vector=embedding,
                         mastercategory=target_index_name,
                         namespace=target_namespace if target_namespace else None,
-                        top_k=top_k,
+                        top_k=pinecone_fetch_k,
                         filter_dict=pinecone_filter
                     )
                     all_results.extend(namespace_results)
@@ -1842,6 +1980,7 @@ class AISearchService:
                     processed_results.append(candidate)
                 
                 # Hard filter by role when query specifies a designation (exclude wrong roles e.g. Python dev for QA query)
+                # Always keep candidates with exact role match (100% same) even if they'd fail family/equivalents
                 filters_for_role = parsed_query.get("filters", {})
                 query_designation = filters_for_role.get("designation")
                 if query_designation:
@@ -1855,6 +1994,7 @@ class AISearchService:
                             query_designation,
                             designation_equivalent_list=designation_equivalent_list,
                         )
+                        or self._exact_role_match(c, query_designation)
                     ]
                     logger.info(
                         f"Role filter (designation={query_designation!r}): {before_count} -> {len(processed_results)} candidates",
@@ -1882,8 +2022,78 @@ class AISearchService:
                         }
                     )
                 
-                # Sort by final combined score
-                processed_results.sort(key=lambda x: x["score"], reverse=True)
+                # Backfill: include exact-role matches from DB that may be outside Pinecone top_k
+                seen_resume_ids = {c.get("resume_id") for c in processed_results if c.get("resume_id")}
+                if query_designation and str(query_designation).strip():
+                    try:
+                        backfill_ids = await self.resume_repo.get_resume_ids_by_exact_role(
+                            mastercategory, category, query_designation, limit=50
+                        )
+                        logger.info(
+                            "Exact-role backfill query: DB returned %s ids for role=%r, category=%r",
+                            len(backfill_ids), query_designation, category,
+                            extra={"backfill_ids": backfill_ids[:20], "mastercategory": mastercategory}
+                        )
+                        backfill_ids = [i for i in backfill_ids if i not in seen_resume_ids]
+                        if backfill_ids:
+                            resumes_map = await self.resume_repo.get_batch_by_ids(backfill_ids)
+                            for rid, resume in resumes_map.items():
+                                candidate = self._candidate_from_resume_metadata(resume)
+                                relevance_score = await self.calculate_relevance_score(
+                                    candidate, parsed_query,
+                                    strict_mastercategory=mastercategory,
+                                    strict_category=category
+                                )
+                                cand_skills = candidate.get("skills") or []
+                                keyword_score = keyword_score_for_candidate(
+                                    text_for_embedding,
+                                    cand_skills,
+                                    candidate.get("designation"),
+                                    candidate.get("domain"),
+                                )
+                                combined_score = self._compute_hybrid_combined_score(
+                                    0.0, keyword_score, relevance_score
+                                )
+                                candidate["keyword_score"] = keyword_score
+                                candidate["relevance_score"] = relevance_score
+                                candidate["score"] = max(0.35, min(1.0, combined_score / 100.0))
+                                candidate["semantic_score"] = 0.0
+                                candidate["fit_tier"] = self.categorize_fit_tier(candidate, parsed_query, combined_score)
+                                candidate["_exact_role_match"] = True
+                                if parsed_query.get("role_only"):
+                                    candidate["role_only_mode"] = True
+                                processed_results.append(candidate)
+                                seen_resume_ids.add(rid)
+                            logger.info(
+                                f"Backfilled {len(resumes_map)} exact-role candidates from DB",
+                                extra={"count": len(resumes_map), "resume_ids": list(resumes_map.keys())}
+                            )
+                    except Exception as e:
+                        logger.warning(
+                            f"Exact-role backfill failed: {e}",
+                            extra={"error": str(e), "designation": query_designation}
+                        )
+                
+                # Role-only mode: guarantee minimum score so role-matched candidates are not dropped by controller
+                if parsed_query.get("role_only"):
+                    for c in processed_results:
+                        c["role_only_mode"] = True
+                        if c.get("score", 0) < 0.35:
+                            c["score"] = 0.35
+                
+                # Mark exact role match (100% same) so we sort them first and never drop by top_k
+                q_des = filters_for_role.get("designation") if query_designation else None
+                if q_des:
+                    for c in processed_results:
+                        c["_exact_role_match"] = self._exact_role_match(c, q_des)
+                else:
+                    for c in processed_results:
+                        c["_exact_role_match"] = False
+                
+                # Sort: exact role matches first, then by score (so exact matches are never pushed out by top_k)
+                processed_results.sort(
+                    key=lambda x: (not x.get("_exact_role_match", False), -x.get("score", 0.0))
+                )
                 
                 # Limit to top_k
                 processed_results = processed_results[:top_k]
@@ -2713,7 +2923,7 @@ class AISearchService:
             if normalized_query_role and len(processed_results) > 5:
                 role_matched = []
                 for c in processed_results:
-                    cand_role_raw = c.get("designation") or c.get("jobrole") or ""
+                    cand_role_raw = c.get("jobrole") or c.get("designation") or ""
                     normalized_cand_role = (
                         self._normalize_role(cand_role_raw) if cand_role_raw else None
                     )

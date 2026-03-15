@@ -330,6 +330,19 @@ class AISearchQueryParser:
                 if not filters["candidate_name"]:
                     filters["candidate_name"] = None
         
+        # Role-only intent: designation present, no other strong filters → inclusion by role family only
+        designation = filters.get("designation") or ""
+        must_all = filters.get("must_have_all") or []
+        must_groups = filters.get("must_have_one_of_groups") or []
+        has_skills = bool(must_all or (must_groups and any(g for g in must_groups)))
+        parsed["role_only"] = (
+            bool(designation and str(designation).strip())
+            and not has_skills
+            and filters.get("min_experience") is None
+            and filters.get("max_experience") is None
+            and not filters.get("location")
+            and not filters.get("candidate_name")
+        )
         return parsed
     
     def _default_response(self) -> Dict:
@@ -349,7 +362,8 @@ class AISearchQueryParser:
             },
             # Category fields are not part of LLM output - set to None (will be overridden by controller)
             "mastercategory": None,
-            "category": None
+            "category": None,
+            "role_only": False,
         }
     
     def _infer_mastercategory_from_query(self, query: str, parsed_data: Dict) -> Optional[str]:

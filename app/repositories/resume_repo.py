@@ -2,7 +2,7 @@
 import asyncio
 from typing import Optional, List, Dict, Any, Union
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import select, update, Table
+from sqlalchemy import select, update, Table, func
 from sqlalchemy.exc import IntegrityError, OperationalError
 
 from app.database.models import ResumeMetadata
@@ -355,6 +355,42 @@ class ResumeRepository:
         result = await self.session.execute(query)
         return list(result.scalars().all())
     
+    async def get_resume_ids_by_exact_role(
+        self,
+        mastercategory: str,
+        category: str,
+        designation: str,
+        limit: int = 100
+    ) -> List[int]:
+        """
+        Get resume IDs that have exact role match (jobrole or designation equals query) in the given category.
+        Used to backfill exact-role candidates that may be outside Pinecone top_k.
+        Uses case-insensitive and trim-safe comparison for role and category.
+        """
+        if not designation or not str(designation).strip():
+            return []
+        q = str(designation).strip().lower()
+        mc = str(mastercategory).strip().lower() if mastercategory else ""
+        cat = str(category).strip().lower() if category else ""
+        if not mc or not cat:
+            return []
+        # Trim and lower role columns so " SQL/ETL Developer " matches
+        jobrole_lower = func.lower(func.trim(ResumeMetadata.jobrole))
+        designation_lower = func.lower(func.trim(ResumeMetadata.designation))
+        role_match = (jobrole_lower == q) | (designation_lower == q)
+        # Case-insensitive category match
+        mc_match = func.lower(ResumeMetadata.mastercategory) == mc
+        cat_match = func.lower(ResumeMetadata.category) == cat
+        stmt = (
+            select(ResumeMetadata.id)
+            .where(mc_match)
+            .where(cat_match)
+            .where(role_match)
+            .limit(limit)
+        )
+        result = await self.session.execute(stmt)
+        return [row[0] for row in result.fetchall()]
+
     async def get_pending_pinecone_resumes(
         self, 
         limit: Optional[int] = None,

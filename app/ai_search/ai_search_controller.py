@@ -228,18 +228,19 @@ class AISearchController:
                 )
             
             # Step 4: Format results (exclude profiles with score 0.0 or below,
-            # and drop very weak fits labeled as "Low Match")
+            # and drop very weak fits labeled as "Low Match" — unless role_only_mode)
+            role_only_mode = any(r.get("role_only_mode") for r in results) if results else False
             formatted_results = []
             for result in results:
                 # Convert score from decimal (0.0-1.0) to percentage (0-100)
                 score_decimal = result.get("score", 0.0)
-                if score_decimal <= 0.0:
+                if not role_only_mode and score_decimal <= 0.0:
                     continue  # Do not return profiles with minimal/zero score
                 score_percentage = round(score_decimal * 100.0, 2)
 
-                # Skip very weak overall matches
+                # Skip very weak overall matches (unless role_only: inclusion by role gate)
                 fit_tier = result.get("fit_tier", "Partial Match")
-                if fit_tier == "Low Match":
+                if not role_only_mode and fit_tier == "Low Match":
                     continue
                 
                 formatted_results.append({
@@ -256,6 +257,19 @@ class AISearchController:
                     "score": score_percentage,  # Score as percentage (0-100)
                     "fit_tier": fit_tier
                 })
+            
+            # Observability: log when all candidates were dropped by score/fit_tier
+            if results and len(formatted_results) == 0:
+                logger.warning(
+                    "Role filter kept candidates but controller returned 0 (all Low Match or score <= 0). "
+                    "Check role_only detection and scoring alignment.",
+                    extra={
+                        "query_id": search_query_id,
+                        "query": query[:100],
+                        "total_before_format": len(results),
+                        "role_only_mode": role_only_mode,
+                    }
+                )
             
             # Step 5: Save results to database
             try:
