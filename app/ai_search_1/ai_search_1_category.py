@@ -68,6 +68,53 @@ def _norm_key(s: str) -> str:
     return re.sub(r"[^a-z0-9]+", "", (s or "").lower())
 
 
+def infer_category_from_token_match(mastercategory: str, token: str) -> Optional[str]:
+    """
+    Dynamic, non-static token-to-category match using current allowed lists.
+    Used for comma-ordered focus terms before LLM fallback.
+    """
+    mc = _normalize_mastercategory(mastercategory)
+    if mc not in ("IT", "NON_IT"):
+        return None
+    t = (token or "").strip().lower()
+    if not t:
+        return None
+    # 1) Strict lexical token match against category title.
+    token_pattern = re.compile(rf"\b{re.escape(t)}\b")
+    allowed = IT_ALLOWED_CATEGORIES if mc == "IT" else NON_IT_ALLOWED_CATEGORIES
+    for c in allowed:
+        if token_pattern.search(c.lower()):
+            return c
+
+    # 2) Semantic token aliases for common, high-signal skills (non-static category names).
+    # These aliases map a token to a category *family* and then pick the matching
+    # category from the current allowed list.
+    alias_to_category_terms = {
+        "sql": ["database", "data technologies", "data engineer"],
+        "mysql": ["database", "data technologies"],
+        "postgres": ["database", "data technologies"],
+        "oracle": ["database", "data technologies"],
+        "mongodb": ["database", "data technologies"],
+        "python": ["python"],
+        "java": ["java"],
+        "dotnet": [".net", "dotnet"],
+        "aws": ["aws", "cloud platforms"],
+        "azure": ["azure", "cloud platforms"],
+        "gcp": ["cloud"],
+        "devops": ["devops", "platform engineering"],
+    }
+
+    # Normalize token to a simple key (keep original as fallback).
+    token_key = re.sub(r"[^a-z0-9\.\+#]+", "", t)
+    terms = alias_to_category_terms.get(token_key) or alias_to_category_terms.get(t) or []
+    if terms:
+        for c in allowed:
+            c_low = c.lower()
+            if any(term in c_low for term in terms):
+                return c
+    return None
+
+
 def match_allowed_category(raw: Optional[str], allowed: List[str]) -> Optional[str]:
     """Map model output to a canonical label from the allowed list."""
     if not raw or not allowed:

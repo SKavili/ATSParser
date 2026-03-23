@@ -4,7 +4,11 @@ from typing import Any, Dict, List, Optional, Tuple
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.ai_search_1.ai_search_1_category import infer_category_from_query, match_override_category
+from app.ai_search_1.ai_search_1_category import (
+    infer_category_from_query,
+    infer_category_from_token_match,
+    match_override_category,
+)
 from app.ai_search_1.ai_search_1_mastercategory import infer_mastercategory_from_query
 from app.ai_search_1.ai_search_1_query_parser import AISearch1QueryParser
 from app.ai_search_1.ai_search_1_repository import AISearch1Repository
@@ -115,6 +119,12 @@ class AISearch1Controller:
                 return original_query
 
             focus_query = _extract_focus_query(query, parsed_query)
+            comma_focus_terms: List[str] = []
+            if isinstance(query, str) and "," in query:
+                for part in query.split(","):
+                    token = (part or "").strip()
+                    if token:
+                        comma_focus_terms.append(token)
 
             # Domain-term heuristic (same as legacy AI search controller)
             filters = parsed_query.get("filters") or {}
@@ -170,6 +180,37 @@ class AISearch1Controller:
             effective_cat: Optional[str] = None
 
             async def _infer_mc_and_category() -> Tuple[Optional[str], Optional[str]]:
+                # Requirement: for comma-separated queries, evaluate terms in order.
+                # Try first term category first; only if category is None, move to next term.
+                if comma_focus_terms:
+                    first_mc: Optional[str] = None
+                    first_term_for_fallback: Optional[str] = None
+                    for term in comma_focus_terms:
+                        if not first_term_for_fallback:
+                            first_term_for_fallback = term
+                        parsed_for_term: Dict[str, Any] = {
+                            "filters": {},
+                            "text_for_embedding": term,
+                        }
+                        mc = await infer_mastercategory_from_query(term, parsed_for_term)
+                        if not first_mc and mc:
+                            first_mc = mc
+                        if not mc:
+                            continue
+                        # Requirement: first token priority without static skill maps.
+                        # Try direct lexical token->category match from allowed list first.
+                        token_cat = infer_category_from_token_match(mc, term)
+                        if token_cat:
+                            return mc, token_cat
+                    # No direct token match from ordered list:
+                    # fallback to AI category inference using the first token only.
+                    if first_mc and first_term_for_fallback:
+                        cat = await infer_category_from_query(first_term_for_fallback, first_mc, self._pinecone)
+                        if cat:
+                            return first_mc, cat
+                    # If still no category matched, return first inferred mastercategory (if any).
+                    return first_mc, None
+
                 mc = await infer_mastercategory_from_query(focus_query, parsed_query)
                 if not mc:
                     return None, None
