@@ -63,6 +63,8 @@ SAMPLE IT CATEGORIES:
 20. ERP Systems
 21. IT Business Analysis
 22. IT Project / Program Management
+23. Test Planning & Execution
+24. Data Engineer
 
 ASSESSMENT & SELECTION RULES (STRICT):
 

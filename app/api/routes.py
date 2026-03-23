@@ -15,9 +15,11 @@ from app.database.connection import get_db_session
 from app.models.resume_models import ResumeUpload, ResumeUploadResponse
 from app.models.job_models import JobCreate, JobCreateResponse, MatchRequest, MatchResponse, JDParseRequest, ParseJDResponse
 from app.models.ai_search_models import AISearchRequest, AISearchResponse
+from app.models.ai_search_1_models import AISearch1Request, AISearch1Response
 from app.services.resume_indexing_service import ResumeIndexingService
 from app.skills.skills_service import SkillsService
 from app.ai_search.ai_search_controller import AISearchController
+from app.ai_search_1.ai_search_1_controller import AISearch1Controller
 from app.utils.logging import get_logger
 from app.jd_parser import JDExtractor
 
@@ -75,6 +77,22 @@ async def get_ai_search_controller(
         pinecone_automation = PineconeAutomation()
     resume_repo = ResumeRepository(session)
     return AISearchController(session, embedding_service, pinecone_automation, resume_repo)
+
+
+async def get_ai_search_1_controller(
+    request: Request,
+    session: AsyncSession = Depends(get_db_session),
+) -> AISearch1Controller:
+    """Same dependencies as AI search; separate controller with query-driven IT/NON_IT + category."""
+    from app.services.pinecone_automation import PineconeAutomation
+
+    pinecone_automation = getattr(request.app.state, "ai_search_pinecone", None)
+    embedding_service = getattr(request.app.state, "ai_search_embedding_service", None)
+    if pinecone_automation is None or embedding_service is None:
+        embedding_service = EmbeddingService()
+        pinecone_automation = PineconeAutomation()
+    resume_repo = ResumeRepository(session)
+    return AISearch1Controller(session, embedding_service, pinecone_automation, resume_repo)
 
 
 @router.post("/upload-resume", response_model=ResumeUploadResponse, status_code=200)
@@ -372,6 +390,34 @@ async def ai_search(
             status_code=500,
             detail=f"Search failed: {str(e)}"
         )
+
+
+@router.post("/ai-search-1", response_model=AISearch1Response, status_code=200)
+async def ai_search_1(
+    request: AISearch1Request,
+    controller: AISearch1Controller = Depends(get_ai_search_1_controller),
+):
+    """
+    AI search with query-driven IT vs NON_IT and category classification.
+
+    If `mastercategory` and `category` are both provided and valid, uses them (explicit).
+    Otherwise infers IT/NON_IT and a category from the query text, then runs the same
+    semantic/name pipeline as `/ai-search`. Does not change `/ai-search` behavior.
+    """
+    try:
+        return await controller.search(
+            query=request.query,
+            mastercategory=request.mastercategory,
+            category=request.category,
+            user_id=request.user_id,
+            top_k=request.top_k or 100,
+        )
+    except RuntimeError as e:
+        logger.error(f"AI search v1 query parsing failed: {e}", extra={"error": str(e)})
+        raise HTTPException(status_code=400, detail=f"Query parsing failed: {str(e)}")
+    except Exception as e:
+        logger.error(f"AI search v1 failed: {e}", extra={"error": str(e)}, exc_info=True)
+        raise HTTPException(status_code=500, detail=f"Search failed: {str(e)}")
 
 
 @router.get("/health")
