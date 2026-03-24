@@ -1,0 +1,674 @@
+"""Service for matching candidate designations using OLLAMA or OpenAI LLM (via LLM_MODEL)."""
+import json
+import re
+from typing import Optional, Tuple, List
+import httpx
+from httpx import Timeout
+
+from app.config import settings
+from app.utils.logging import get_logger
+from app.services.llm_service import use_openai, generate as openai_generate
+
+# Timeout settings for designation matching
+DESIGNATION_MATCH_TIMEOUT = 10.0  # 10 seconds for designation matching
+
+logger = get_logger(__name__)
+
+# Try to import OLLAMA Python client
+try:
+    import ollama
+    OLLAMA_CLIENT_AVAILABLE = True
+except ImportError:
+    OLLAMA_CLIENT_AVAILABLE = False
+    logger.warning("OLLAMA Python client not available, using HTTP API directly")
+
+DESIGNATION_MATCH_PROMPT = """IMPORTANT: This is a FRESH, ISOLATED matching task.
+Ignore all prior context, memory, or previous conversations.
+
+ROLE:
+You are a job title matching expert for an ATS (Applicant Tracking System).
+
+TASK:
+Determine if a candidate's job title/designation matches the required role from a search query.
+
+CONTEXT:
+- Job titles can have many variations and synonyms
+- Senior/Lead variations of the same role should match
+- Industry-specific abbreviations should be recognized (e.g., SDET = QA Automation Engineer)
+- Completely different roles should NOT match
+
+MATCHING RULES:
+1. EXACT MATCHES: "QA Automation Engineer" = "QA Automation Engineer" → MATCH
+2. SYNONYMS: "QA Automation Engineer" = "Automation Test Engineer" → MATCH
+3. VARIATIONS: "QA Automation Engineer" = "Senior QA Automation Engineer" → MATCH
+4. ABBREVIATIONS: "QA Automation Engineer" = "SDET" → MATCH (if SDET means Software Development Engineer in Test)
+5. DIFFERENT ROLES: "QA Automation Engineer" ≠ "Software Engineer" (without QA context) → NO MATCH
+6. DIFFERENT ROLES: "QA Automation Engineer" ≠ "UI/UX Specialist" → NO MATCH
+7. DIFFERENT ROLES: "QA Automation Engineer" ≠ "Data Analyst" → NO MATCH
+8. STUDENT/INTERN: "QA Automation Engineer" ≠ "Software Engineering Student" → NO MATCH
+
+EXAMPLES:
+Query: "QA Automation Engineer"
+- "Automation Test Engineer" → MATCH (synonym)
+- "Test Automation Engineer" → MATCH (synonym)
+- "SDET" → MATCH (abbreviation)
+- "Senior QA Automation Engineer" → MATCH (senior variation)
+- "QA Engineer - Automation" → MATCH (variation)
+- "Software Engineer" → NO MATCH (different role, no QA context)
+- "UI/UX Specialist" → NO MATCH (completely different)
+- "Software Engineering Student" → NO MATCH (student, not professional role)
+
+OUTPUT FORMAT (STRICT JSON ONLY):
+{
+  "match": true/false,
+  "confidence": 0.0-1.0,
+  "reason": "Brief explanation"
+}
+
+OUTPUT RULES:
+- Return ONLY valid JSON
+- No markdown, no code blocks
+- match: boolean (true if roles match, false otherwise)
+- confidence: float between 0.0 and 1.0 (1.0 = perfect match, 0.0 = no match)
+- reason: string explaining the decision
+
+Now analyze this match:
+
+Query Role: "{query_designation}"
+Candidate Role: "{candidate_designation}"
+
+Output:"""
+
+
+DESIGNATION_EXPAND_PROMPT = """You are an ATS (Applicant Tracking System) job title expert.
+
+TASK:
+Given a single job title/role from a recruiter search query, return a JSON array of equivalent or same-family job titles that should match for filtering. These are titles that refer to the SAME role (synonyms, abbreviations, common variations).
+
+RULES:
+- Include the query title itself (lowercase).
+- Include common variations: Senior/Lead/Junior, hyphenation, word order (e.g. "QA Engineer" and "Engineer QA").
+- Include standard abbreviations (e.g. QA, SDET, PM, BA, SRE, DevOps).
+- Include synonyms (e.g. "Quality Assurance" for "QA", "Test Engineer" for "QA Engineer").
+- Do NOT include completely different roles.
+- Return ONLY a JSON array of strings. No explanation, no markdown, no code block.
+- All strings must be lowercase.
+- Maximum 25 titles.
+
+Example for "QA":
+["qa", "qa engineer", "quality assurance", "quality assurance engineer", "test engineer", "sdet", "qa lead", "qa analyst", "automation engineer", "test automation engineer", "qa automation engineer"]
+
+Example for "python full stack developer":
+["python full stack developer", "full stack python developer", "full stack developer", "senior python full stack developer", "full stack engineer python", "python developer full stack"]
+
+Input job title from query: "{query_designation}"
+
+Output (JSON array only):"""
+
+
+class DesignationMatcher:
+    """Service for matching candidate designations with query designations using LLM."""
+    
+    def __init__(self):
+        self.ollama_host = getattr(settings, "ollama_host", "http://localhost:11434")
+        self.model = getattr(settings, 'OLLAMA_MODEL', 'llama3.1')
+        self.cache = {}  # Simple in-memory cache for designation matches
+    
+    def _get_cache_key(self, query_designation: str, candidate_designation: str) -> str:
+        """Generate cache key for designation pair."""
+        return f"{query_designation.lower().strip()}|{candidate_designation.lower().strip()}"
+    
+    async def expand_designation_to_equivalent_roles(self, query_designation: str) -> List[str]:
+        """
+        Use LLM to expand a query designation into a list of equivalent/same-family job titles
+        for Pinecone filtering. No static list - LLM generates variants per query.
+        
+        Args:
+            query_designation: Role from search query (e.g. "QA", "python full stack developer")
+        
+        Returns:
+            List of lowercase job title strings (max ~6) to use in designation $in filter.
+            On failure returns [query_designation.lower()] so filter still applies.
+        """
+        if not query_designation or not str(query_designation).strip():
+            return []
+        query_designation = query_designation.strip()
+        fallback = [query_designation.lower()]
+        prompt = DESIGNATION_EXPAND_PROMPT.format(query_designation=query_designation)
+        timeout_seconds = 15.0
+        # Keep expansion small and focused; we will further trim and post-filter.
+        max_titles = 10
+
+        try:
+            if use_openai():
+                if not getattr(settings, "openai_api_key", None) or not str(settings.openai_api_key).strip():
+                    return fallback
+                raw_output = await openai_generate(
+                    prompt=prompt,
+                    system_prompt=None,
+                    temperature=0.1,
+                    timeout_seconds=timeout_seconds,
+                )
+                titles = self._parse_designation_list(raw_output or "", max_titles)
+                titles = self._postprocess_expanded_titles(query_designation, titles)
+                if titles:
+                    logger.info(
+                        f"Designation expand (OpenAI): '{query_designation}' -> {len(titles)} equivalents",
+                        extra={"query_designation": query_designation, "count": len(titles)}
+                    )
+                    return titles
+                return fallback
+
+            # OLLAMA
+            result = None
+            if OLLAMA_CLIENT_AVAILABLE:
+                try:
+                    import asyncio
+                    loop = asyncio.get_event_loop()
+                    def _generate():
+                        client = ollama.Client(
+                            host=self.ollama_host.replace("http://", "").replace("https://", "")
+                        )
+                        response = client.generate(
+                            model=self.model,
+                            prompt=prompt,
+                            format="json",
+                            options={"temperature": 0.1, "top_p": 0.9},
+                        )
+                        raw = response.get("response", "") if isinstance(response, dict) else str(response)
+                        return {"response": raw}
+                    result = await loop.run_in_executor(None, _generate)
+                except Exception as e:
+                    logger.warning(f"OLLAMA client failed for designation expand: {e}")
+                    result = None
+
+            if result is None:
+                async with httpx.AsyncClient(timeout=Timeout(timeout_seconds)) as client:
+                    try:
+                        response = await client.post(
+                            f"{self.ollama_host}/api/generate",
+                            json={
+                                "model": self.model,
+                                "prompt": prompt,
+                                "format": "json",
+                                "stream": False,
+                                "options": {"temperature": 0.1, "top_p": 0.9},
+                            }
+                        )
+                        response.raise_for_status()
+                        result = response.json()
+                    except httpx.HTTPStatusError as e:
+                        if e.response.status_code == 404:
+                            response = await client.post(
+                                f"{self.ollama_host}/api/chat",
+                                json={
+                                    "model": self.model,
+                                    "messages": [
+                                        {"role": "system", "content": "You return only JSON arrays of job titles."},
+                                        {"role": "user", "content": prompt}
+                                    ],
+                                    "stream": False,
+                                    "options": {"temperature": 0.1, "top_p": 0.9},
+                                }
+                            )
+                            response.raise_for_status()
+                            chat_result = response.json()
+                            result = {"response": chat_result.get("message", {}).get("content", "")}
+                        else:
+                            raise
+
+            raw_output = result.get("response", "")
+            titles = self._parse_designation_list(raw_output, max_titles)
+            titles = self._postprocess_expanded_titles(query_designation, titles)
+            if titles:
+                logger.info(
+                    f"Designation expand (OLLAMA): '{query_designation}' -> {len(titles)} equivalents",
+                    extra={"query_designation": query_designation, "count": len(titles)}
+                )
+                return titles
+            return fallback
+        except Exception as e:
+            logger.warning(
+                f"Designation expand failed: {e}, using query as single filter value",
+                extra={"query_designation": query_designation, "error": str(e)}
+            )
+            return fallback
+
+    def _postprocess_expanded_titles(self, query_designation: str, titles: List[str]) -> List[str]:
+        """
+        Post-process LLM-expanded titles:
+        - Always keep the original query title (lowercased).
+        - Trim to a small, focused set (max 6).
+        - Optionally drop obviously wrong roles for certain query types (e.g. product roles).
+        """
+        if not titles:
+            return [query_designation.lower()]
+
+        q = query_designation.strip().lower()
+        seen = set()
+        result: List[str] = []
+
+        # Always ensure the original query title is first
+        if q:
+            seen.add(q)
+            result.append(q)
+
+        # Basic trim to keep only a few closest variants
+        for t in titles:
+            if len(result) >= 6:
+                break
+            s = (t or "").strip().lower()
+            if not s or s in seen:
+                continue
+            seen.add(s)
+            result.append(s)
+
+        # If the query looks like a slash-separated tech stack developer/engineer role
+        # e.g. "sql/etl/ssis/ssrs developer", generate focused role variants like
+        # "sql developer", "etl developer", "ssis developer", "ssrs developer".
+        if "/" in q:
+            base_role = None
+            if " developer" in q:
+                base_role = "developer"
+            elif " engineer" in q:
+                base_role = "engineer"
+
+            if base_role:
+                # Take the part before the base role word, split by "/" to get tech tokens
+                head = q.split(base_role, 1)[0]
+                tech_parts = [p.strip() for p in head.split("/") if p.strip()]
+                stack_variants = []
+                if tech_parts:
+                    # Combined stack title, normalized
+                    combined_title = "/".join(tech_parts) + f" {base_role}"
+                    stack_variants.append(combined_title)
+                    # Single-tech role titles
+                    for tech in tech_parts:
+                        stack_variants.append(f"{tech} {base_role}")
+
+                for v in stack_variants:
+                    if len(result) >= 6:
+                        break
+                    vv = v.strip().lower()
+                    if vv and vv not in seen:
+                        seen.add(vv)
+                        result.append(vv)
+
+        # For clearly "product" roles, avoid pulling in generic delivery roles
+        if "product" in q:
+            blocked = {
+                "scrum master",
+                "agile coach",
+                "project manager",
+                "program manager",
+            }
+            result = [r for r in result if r not in blocked]
+            # Ensure we don't end up empty
+            if not result and q:
+                result = [q]
+
+        return result
+
+    def _parse_designation_list(self, text: str, max_items: int = 25) -> List[str]:
+        """Parse LLM response into a list of lowercase designation strings."""
+        if not text or not text.strip():
+            return []
+        cleaned = text.strip()
+        cleaned = re.sub(r"```json\s*", "", cleaned)
+        cleaned = re.sub(r"```\s*", "", cleaned)
+        # Find JSON array
+        start = cleaned.find("[")
+        end = cleaned.rfind("]")
+        if start == -1 or end == -1 or end <= start:
+            return []
+        try:
+            arr = json.loads(cleaned[start : end + 1])
+            if not isinstance(arr, list):
+                return []
+            result = []
+            seen = set()
+            for item in arr:
+                if len(result) >= max_items:
+                    break
+                s = str(item).strip().lower()
+                if s and s not in seen:
+                    seen.add(s)
+                    result.append(s)
+            return result
+        except json.JSONDecodeError:
+            return []
+    
+    async def is_designation_match(
+        self, 
+        query_designation: str, 
+        candidate_designation: str
+    ) -> Tuple[bool, float]:
+        """
+        Use LLM to determine if candidate designation matches query designation.
+        
+        Args:
+            query_designation: Required role from search query (e.g., "QA Automation Engineer")
+            candidate_designation: Candidate's job title/designation (e.g., "Automation Test Engineer")
+        
+        Returns:
+            Tuple of (is_match: bool, confidence: float 0.0-1.0)
+        """
+        if not query_designation or not candidate_designation:
+            return False, 0.0
+        
+        # Normalize inputs
+        query_designation = query_designation.strip()
+        candidate_designation = candidate_designation.strip()
+        
+        if not query_designation or not candidate_designation:
+            return False, 0.0
+        
+        # Check cache
+        cache_key = self._get_cache_key(query_designation, candidate_designation)
+        if cache_key in self.cache:
+            logger.debug(
+                f"Designation match cache hit: {query_designation} vs {candidate_designation}",
+                extra={"query_designation": query_designation, "candidate_designation": candidate_designation}
+            )
+            return self.cache[cache_key]
+        
+        # Prepare prompt
+        prompt = DESIGNATION_MATCH_PROMPT.format(
+            query_designation=query_designation,
+            candidate_designation=candidate_designation
+        )
+        
+        try:
+            # LLM_MODEL=OpenAI: use OpenAI for designation matching
+            if use_openai():
+                if not getattr(settings, "openai_api_key", None) or not str(settings.openai_api_key).strip():
+                    return self._fallback_keyword_match(query_designation, candidate_designation)
+                try:
+                    raw_output = await openai_generate(
+                        prompt=prompt,
+                        system_prompt=None,
+                        temperature=0.1,
+                        timeout_seconds=DESIGNATION_MATCH_TIMEOUT,
+                    )
+                    match_result = self._extract_json(raw_output or "")
+                    is_match = match_result.get("match", False)
+                    confidence = max(0.0, min(1.0, float(match_result.get("confidence", 0.0))))
+                    self.cache[cache_key] = (is_match, confidence)
+                    logger.info(
+                        f"Designation match (OpenAI): query='{query_designation}', candidate='{candidate_designation}', "
+                        f"match={is_match}, confidence={confidence}",
+                        extra={"query_designation": query_designation, "candidate_designation": candidate_designation, "match": is_match, "confidence": confidence}
+                    )
+                    return is_match, confidence
+                except Exception as e:
+                    logger.warning(f"OpenAI designation matching failed, using fallback: {e}", extra={"error": str(e)})
+                    return self._fallback_keyword_match(query_designation, candidate_designation)
+
+            # LLM_MODEL=OLLAMA (default): use OLLAMA
+            # Try using OLLAMA Python client first
+            result = None
+            if OLLAMA_CLIENT_AVAILABLE:
+                try:
+                    import asyncio
+                    loop = asyncio.get_event_loop()
+                    
+                    def _generate():
+                        client = ollama.Client(
+                            host=self.ollama_host.replace("http://", "").replace("https://", "")
+                        )
+                        # Request STRICT JSON output from OLLAMA if supported
+                        response = client.generate(
+                            model=self.model,
+                            prompt=prompt,
+                            format="json",  # Hint to OLLAMA to return strict JSON
+                            options={
+                                "temperature": 0.1,
+                                "top_p": 0.9,
+                            }
+                        )
+                        # When format=\"json\" is used, many OLLAMA models return JSON directly
+                        raw = response.get("response", "") if isinstance(response, dict) else str(response)
+                        return {"response": raw}
+                    
+                    result = await loop.run_in_executor(None, _generate)
+                    logger.debug("Successfully used OLLAMA Python client for designation matching")
+                except Exception as e:
+                    logger.warning(f"OLLAMA Python client failed, falling back to HTTP API: {e}")
+                    result = None
+            
+            # Fallback to HTTP API
+            if result is None:
+                async with httpx.AsyncClient(timeout=Timeout(DESIGNATION_MATCH_TIMEOUT)) as client:
+                    try:
+                        response = await client.post(
+                            f"{self.ollama_host}/api/generate",
+                            json={
+                                "model": self.model,
+                                "prompt": prompt,
+                                "format": "json",  # Ask OLLAMA HTTP API for strict JSON
+                                "stream": False,
+                                "options": {
+                                    "temperature": 0.1,
+                                    "top_p": 0.9,
+                                }
+                            }
+                        )
+                        response.raise_for_status()
+                        result = response.json()
+                        logger.debug("Successfully used /api/generate endpoint for designation matching")
+                    except httpx.HTTPStatusError as e:
+                        if e.response.status_code == 404:
+                            # Try /api/chat endpoint
+                            logger.debug("OLLAMA /api/generate not found, trying /api/chat endpoint")
+                            try:
+                                response = await client.post(
+                                    f"{self.ollama_host}/api/chat",
+                                    json={
+                                        "model": self.model,
+                                        "messages": [
+                                            {"role": "system", "content": "You are a job title matching expert."},
+                                            {"role": "user", "content": prompt}
+                                        ],
+                                        "stream": False,
+                                        "options": {
+                                            "temperature": 0.1,
+                                            "top_p": 0.9,
+                                        }
+                                    }
+                                )
+                                response.raise_for_status()
+                                chat_result = response.json()
+                                result = {"response": chat_result.get("message", {}).get("content", "")}
+                                logger.debug("Successfully used /api/chat endpoint for designation matching")
+                            except Exception as e2:
+                                logger.error(f"Both OLLAMA endpoints failed: {e2}")
+                                raise
+                        else:
+                            raise
+            
+            # Extract JSON from response
+            raw_output = result.get("response", "")
+            match_result = self._extract_json(raw_output)
+            
+            # Parse result
+            is_match = match_result.get("match", False)
+            confidence = float(match_result.get("confidence", 0.0))
+            
+            # Clamp confidence to [0.0, 1.0]
+            confidence = max(0.0, min(1.0, confidence))
+            
+            # Cache result
+            self.cache[cache_key] = (is_match, confidence)
+            
+            logger.info(
+                f"Designation match: query='{query_designation}', candidate='{candidate_designation}', "
+                f"match={is_match}, confidence={confidence}",
+                extra={
+                    "query_designation": query_designation,
+                    "candidate_designation": candidate_designation,
+                    "match": is_match,
+                    "confidence": confidence,
+                    "reason": match_result.get("reason", "")
+                }
+            )
+            
+            return is_match, confidence
+            
+        except Exception as e:
+            logger.warning(
+                f"Designation matching failed: {e}, falling back to keyword matching",
+                extra={
+                    "query_designation": query_designation,
+                    "candidate_designation": candidate_designation,
+                    "error": str(e)
+                }
+            )
+            # Fallback to simple keyword matching
+            return self._fallback_keyword_match(query_designation, candidate_designation)
+    
+    def _extract_json(self, text: str) -> dict:
+        """Extract JSON from LLM response.
+
+        The LLM is instructed to return strict JSON, but we still
+        defensively handle extra text before/after the JSON block.
+        """
+        if not text:
+            return {"match": False, "confidence": 0.0, "reason": "Empty LLM response"}
+
+        # 1) Fast path: try parsing the whole text as JSON
+        try:
+            return json.loads(text)
+        except json.JSONDecodeError:
+            pass
+
+        # 2) Try to locate the first '{' and the last '}' and parse that slice
+        start = text.find("{")
+        end = text.rfind("}")
+        if start != -1 and end != -1 and end > start:
+            candidate_json = text[start : end + 1]
+            try:
+                return json.loads(candidate_json)
+            except json.JSONDecodeError:
+                # Fall through to regex/cleaning
+                pass
+
+        # 3) Fallback: try to find a JSON object containing the "match" key
+        json_match = re.search(r"\{.*\"match\".*\}", text, re.DOTALL)
+        if json_match:
+            try:
+                return json.loads(json_match.group())
+            except json.JSONDecodeError:
+                pass
+
+        # 4) Last resort: clean non-JSON characters and try again
+        cleaned = re.sub(r'[^\{\}\[\]",:\s\w\.\-]', "", text)
+        try:
+            return json.loads(cleaned)
+        except json.JSONDecodeError:
+            pass
+        
+        # 5) Handle incomplete JSON fragments (e.g., '\n  "match"')
+        # Try to extract just the "match" key value if present
+        match_patterns = [
+            r'"match"\s*:\s*true',
+            r'"match"\s*:\s*false',
+            r'match"\s*:\s*true',
+            r'match"\s*:\s*false',
+            r'"match"',  # Just the key name (incomplete)
+        ]
+        text_lower = text.lower()
+        for pattern in match_patterns:
+            match_found = re.search(pattern, text_lower, re.IGNORECASE)
+            if match_found:
+                # Try to extract confidence if present
+                confidence_match = re.search(r'"confidence"\s*:\s*([0-9.]+)', text_lower)
+                confidence = 0.8 if confidence_match else 0.7
+                if confidence_match:
+                    try:
+                        confidence = float(confidence_match.group(1))
+                        confidence = max(0.0, min(1.0, confidence))
+                    except (ValueError, TypeError):
+                        pass
+                
+                # Determine match value
+                if 'true' in match_found.group().lower():
+                    return {"match": True, "confidence": confidence, "reason": "Parsed from incomplete JSON fragment (true detected)"}
+                elif 'false' in match_found.group().lower():
+                    return {"match": False, "confidence": 0.0, "reason": "Parsed from incomplete JSON fragment (false detected)"}
+                else:
+                    # If we only found "match" key without value, try to infer from context
+                    # Check if there are any positive indicators
+                    if any(word in text_lower for word in ['yes', 'match', 'similar', 'related', 'same']):
+                        return {"match": True, "confidence": 0.6, "reason": "Inferred match from incomplete JSON with positive context"}
+                    else:
+                        return {"match": False, "confidence": 0.0, "reason": "Inferred no match from incomplete JSON"}
+
+        # 6) OPTIMIZATION: Safety parser - check for true/false in raw text (for malformed JSON)
+        if '"match": true' in text_lower or '"match":true' in text_lower or 'match": true' in text_lower:
+            return {"match": True, "confidence": 0.8, "reason": "Parsed from malformed JSON (true detected)"}
+        if '"match": false' in text_lower or '"match":false' in text_lower or 'match": false' in text_lower:
+            return {"match": False, "confidence": 0.0, "reason": "Parsed from malformed JSON (false detected)"}
+
+        # Default fallback if everything fails
+        return {"match": False, "confidence": 0.0, "reason": "Failed to parse LLM response"}
+    
+    def _fallback_keyword_match(self, query_designation: str, candidate_designation: str) -> Tuple[bool, float]:
+        """Conservative fallback keyword-based matching when LLM fails.
+
+        Only very strong text similarity is treated as a match:
+        - Exact same normalized title
+        - Very high overlap on meaningful words
+        This prevents unrelated roles like "software engineering student"
+        from matching "QA Automation Engineer".
+        """
+        query_lower = query_designation.lower().strip()
+        candidate_lower = candidate_designation.lower().strip()
+
+        if not query_lower or not candidate_lower:
+            return False, 0.0
+
+        # 1) Exact match
+        if query_lower == candidate_lower:
+            return True, 1.0
+
+        # 2) High-overlap word match on meaningful terms
+        query_terms = set(query_lower.split())
+        candidate_terms = set(candidate_lower.split())
+
+        # Remove very common / uninformative words
+        stop_words = {
+            "the",
+            "a",
+            "an",
+            "and",
+            "or",
+            "of",
+            "in",
+            "on",
+            "at",
+            "to",
+            "for",
+            "with",
+            "senior",
+            "lead",
+            "jr",
+            "sr",
+            "engineer",  # too generic by itself
+            "developer",
+            "manager",
+        }
+        query_terms = {t for t in query_terms if t not in stop_words}
+        candidate_terms = {t for t in candidate_terms if t not in stop_words}
+
+        if not query_terms or not candidate_terms:
+            return False, 0.0
+
+        common_terms = query_terms.intersection(candidate_terms)
+        overlap_ratio = len(common_terms) / len(query_terms)
+
+        # Require very high overlap (>= 0.8) to consider it a match
+        if overlap_ratio >= 0.8:
+            return True, overlap_ratio
+
+        return False, 0.0
+

@@ -16,10 +16,12 @@ from app.models.resume_models import ResumeUpload, ResumeUploadResponse
 from app.models.job_models import JobCreate, JobCreateResponse, MatchRequest, MatchResponse, JDParseRequest, ParseJDResponse
 from app.models.ai_search_models import AISearchRequest, AISearchResponse
 from app.models.ai_search_1_models import AISearch1Request, AISearch1Response
+from app.models.ai_search_2_models import AISearch2Request, AISearch2Response
 from app.services.resume_indexing_service import ResumeIndexingService
 from app.skills.skills_service import SkillsService
 from app.ai_search.ai_search_controller import AISearchController
 from app.ai_search_1.ai_search_1_controller import AISearch1Controller
+from app.ai_search_2.ai_search_2_controller import AISearch2Controller
 from app.utils.logging import get_logger
 from app.jd_parser import JDExtractor
 
@@ -93,6 +95,22 @@ async def get_ai_search_1_controller(
         pinecone_automation = PineconeAutomation()
     resume_repo = ResumeRepository(session)
     return AISearch1Controller(session, embedding_service, pinecone_automation, resume_repo)
+
+
+async def get_ai_search_2_controller(
+    request: Request,
+    session: AsyncSession = Depends(get_db_session),
+) -> AISearch2Controller:
+    """Standalone ai-search-2 dependencies; no category/mastercategory identification step."""
+    from app.services.pinecone_automation import PineconeAutomation
+
+    pinecone_automation = getattr(request.app.state, "ai_search_pinecone", None)
+    embedding_service = getattr(request.app.state, "ai_search_embedding_service", None)
+    if pinecone_automation is None or embedding_service is None:
+        embedding_service = EmbeddingService()
+        pinecone_automation = PineconeAutomation()
+    resume_repo = ResumeRepository(session)
+    return AISearch2Controller(session, embedding_service, pinecone_automation, resume_repo)
 
 
 @router.post("/upload-resume", response_model=ResumeUploadResponse, status_code=200)
@@ -417,6 +435,30 @@ async def ai_search_1(
         raise HTTPException(status_code=400, detail=f"Query parsing failed: {str(e)}")
     except Exception as e:
         logger.error(f"AI search v1 failed: {e}", extra={"error": str(e)}, exc_info=True)
+        raise HTTPException(status_code=500, detail=f"Search failed: {str(e)}")
+
+
+@router.post("/ai-search-2", response_model=AISearch2Response, status_code=200)
+async def ai_search_2(
+    request: AISearch2Request,
+    controller: AISearch2Controller = Depends(get_ai_search_2_controller),
+):
+    """
+    Standalone AI search v2: query-only endpoint.
+    Uses query intent to search across indexes without identifying/accepting
+    explicit mastercategory/category in the API contract.
+    """
+    try:
+        return await controller.search(
+            query=request.query,
+            user_id=request.user_id,
+            top_k=request.top_k or 100,
+        )
+    except RuntimeError as e:
+        logger.error(f"AI search v2 query parsing failed: {e}", extra={"error": str(e)})
+        raise HTTPException(status_code=400, detail=f"Query parsing failed: {str(e)}")
+    except Exception as e:
+        logger.error(f"AI search v2 failed: {e}", extra={"error": str(e)}, exc_info=True)
         raise HTTPException(status_code=500, detail=f"Search failed: {str(e)}")
 
 
