@@ -4,6 +4,7 @@ from typing import Dict, List, Optional, Any, Tuple
 from app.config import settings
 from app.services.embedding_service import EmbeddingService
 from app.services.pinecone_automation import PineconeAutomation
+from app.services.vector_db_service import VectorDBService, get_vector_db_service
 from app.repositories.resume_repo import ResumeRepository
 from app.utils.logging import get_logger
 from app.utils.cleaning import normalize_skill_list
@@ -89,6 +90,7 @@ class AISearch2Service:
         self.pinecone_automation = pinecone_automation
         self.resume_repo = resume_repo
         self.designation_matcher = DesignationMatcher()
+        self.vector_db: Optional[VectorDBService] = None
     
     def _strip_seniority_words(self, title: Optional[str]) -> Optional[str]:
         """
@@ -2721,39 +2723,31 @@ class AISearch2Service:
             
             # Build Pinecone filter (only query filters, no category)
             pinecone_filter = self.build_pinecone_filter(parsed_query)
-            
-            # Smart namespace filtering
-            namespaces_to_query = self._get_smart_namespaces(parsed_query)
-            
+
+            # Query ONLY the single ATS index (no namespaces).
+            # We fetch more vectors than `top_k` because each resume is chunked,
+            # and we later deduplicate results by `resume_id`.
+            if self.vector_db is None:
+                self.vector_db = await get_vector_db_service()
+
+            fetch_k = min(max(top_k * 5, 50), 500)
             logger.info(
-                f"Broad search mode: querying {len(namespaces_to_query)} namespaces across all indices",
-                extra={
-                    "namespace_count": len(namespaces_to_query),
-                    "namespaces": namespaces_to_query[:10]  # Log first 10
-                }
+                "Broad search mode: querying single Pinecone index `ats` (no namespaces)",
+                extra={"top_k": top_k, "fetch_k": fetch_k}
             )
-            
-            # Query namespaces in parallel with partial-result timeout handling.
-            # This returns whatever completed within timeout instead of dropping to zero.
-            query_timeout_seconds = float(getattr(settings, "ai_search_2_query_timeout_seconds", 60.0))
-            results = await self._query_namespaces_parallel(
-                namespaces_to_query,
-                embedding,
-                pinecone_filter,
-                top_k,
-                parsed_query,
-                timeout_seconds=query_timeout_seconds,
+
+            results = await self.vector_db.query_vectors(
+                query_vector=embedding,
+                top_k=fetch_k,
+                filter_dict=pinecone_filter,
             )
             
             # Process, deduplicate, and rank results
             processed_results = self._process_broad_search_results(results, parsed_query, top_k)
             
             logger.info(
-                f"Broad search completed: {len(processed_results)} results from {len(namespaces_to_query)} namespaces",
-                extra={
-                    "result_count": len(processed_results),
-                    "namespace_count": len(namespaces_to_query)
-                }
+                f"Broad search completed: {len(processed_results)} results from Pinecone `ats`",
+                extra={"result_count": len(processed_results)}
             )
             
             return processed_results
