@@ -18,6 +18,7 @@ from app.models.ai_search_models import AISearchRequest, AISearchResponse
 from app.models.ai_search_1_models import AISearch1Request, AISearch1Response
 from app.models.ai_search_2_models import AISearch2Request, AISearch2Response
 from app.services.resume_indexing_service import ResumeIndexingService
+from app.ats_index_pinecone.ats_index_pinecone_service import AtsIndexPineconeService
 from app.skills.skills_service import SkillsService
 from app.ai_search.ai_search_controller import AISearchController
 from app.ai_search_1.ai_search_1_controller import AISearch1Controller
@@ -290,6 +291,30 @@ async def index_pinecone(
     except Exception as e:
         logger.error(f"Error in index-pinecone endpoint: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail=f"Failed to index resumes: {str(e)}")
+
+
+@router.post("/ats-index-pinecone")
+async def ats_index_pinecone(
+    limit: Optional[int] = Query(None, description="Maximum number of resumes to process"),
+    resume_ids: Optional[List[int]] = Query(None, description="Specific resume IDs to process"),
+    force: bool = Query(True, description="If true, index all completed resumes into `ats` (ignores pinecone_status)"),
+    session: AsyncSession = Depends(get_db_session),
+):
+    """Index resumes into Pinecone index `ats` only (no namespaces).
+
+    This endpoint is independent from `/index-pinecone` and does not affect
+    the IT/Non-IT + namespace indexing used by `ai-search` and `ai-search-1`.
+    """
+    try:
+        indexing_service = AtsIndexPineconeService(session)
+        return await indexing_service.index_resumes(
+            limit=limit,
+            resume_ids=resume_ids,
+            force=force,
+        )
+    except Exception as e:
+        logger.error(f"Error in ats-index-pinecone endpoint: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=f"Failed to index into ats: {str(e)}")
 
 
 @router.post("/reindex-resumes")
