@@ -2735,7 +2735,7 @@ class AISearch2Service:
             
             # Query namespaces in parallel with partial-result timeout handling.
             # This returns whatever completed within timeout instead of dropping to zero.
-            query_timeout_seconds = float(getattr(settings, "ai_search_2_query_timeout_seconds", 30.0))
+            query_timeout_seconds = float(getattr(settings, "ai_search_2_query_timeout_seconds", 60.0))
             results = await self._query_namespaces_parallel(
                 namespaces_to_query,
                 embedding,

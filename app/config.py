@@ -61,6 +61,14 @@ class Settings(BaseSettings):
     ai_search_designation_mismatch_penalty: float = Field(40.0, alias="AI_SEARCH_DESIGNATION_MISMATCH_PENALTY")
     ai_search_experience_exact_weight: float = Field(18.0, alias="AI_SEARCH_EXPERIENCE_EXACT_WEIGHT")
     ai_search_domain_match_weight: float = Field(12.0, alias="AI_SEARCH_DOMAIN_MATCH_WEIGHT")
+
+    # ai-search-2: broad namespace fanout control
+    # Max results Pinecone returns per namespace during ai-search-2 broad search.
+    ai_search_2_top_k_per_namespace_cap: int = Field(
+        100,
+        alias="AI_SEARCH_2_TOP_K_PER_NAMESPACE_CAP",
+        description="Max Pinecone matches fetched per namespace for ai-search-2 broad search",
+    )
     
     # SQL Logging (for debugging)
     sql_echo: bool = Field(False, alias="SQL_ECHO")  # Enable SQL query logging
