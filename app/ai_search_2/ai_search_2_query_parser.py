@@ -44,12 +44,14 @@ You are an ATS query parser for recruiters. Your job is to convert the natural l
    - Examples: "Python AND QA" → designation = "qa", must_have_all = ["python"]. "sql AND python full stack developer" → designation = "python full stack developer", must_have_all = ["sql"]
    - Single-token roles: "QA", "PM", "BA", "Dev", "Tester", "Manager", "Analyst" etc. in AND with skills → set as designation, NOT in must_have_all.
    - Multi-word role phrases (e.g. "python full stack developer", "front end python developer") → always designation, never split into skills.
+   - OR role-phrase rule: if query is role phrase OR role phrase (e.g. "python developer OR java developer"), treat both sides as alternative titles, NOT as skills. Do not put "python"/"java"/"developer" into must_have_all.
    - Slash-title pattern rule: when query looks like "X/Y/Z Developer" (or Engineer/Analyst/etc.), treat the whole query as title context and keep only the base role as designation (e.g. designation="developer"). Do NOT create skill filters from X/Y/Z for this pattern.
 
 3. Skills / must_have_all
    - Only include words or short phrases that are clearly listed as required skills/technologies/tools.
    - Do NOT interpret nouns as skills unless they are in a clear skills list context.
    - "in pharmaceutical domain" → do NOT add "pharmaceutical domain" to skills unless the query explicitly says it is a skill/requirement.
+   - Role modifiers are not skills. Words like "independent", "senior/sr", "junior/jr", "lead", "principal", "staff", "contract", "freelance" should stay in title context, not must_have_all.
 
 4. Domain / industry
    - Use filters.domain ONLY when the query clearly describes a business/industry domain for the candidate, e.g. "in financial technology domain", "fintech industry", "healthcare domain".
@@ -238,6 +240,81 @@ class AISearch2QueryParser:
         parsed_data["comma_strict_and"] = False
         # Keep slash tokens for title-only narrowing (e.g., sql/etl developer).
         parsed_data["slash_role_tokens"] = normalized_terms
+
+    def _apply_or_role_phrase_override(self, query: str, parsed_data: Dict) -> None:
+        """
+        Handle "role phrase OR role phrase" as title alternatives, not skill filters.
+        Example: "python developer OR java developer" -> role_or_phrases set,
+        designation/skill filters cleared for downstream title-only filtering.
+        """
+        q = (query or "").strip().lower()
+        if not q or " or " not in q:
+            return
+        parts = [p.strip() for p in re.split(r"\bOR\b", q, flags=re.I) if p.strip()]
+        if len(parts) < 2:
+            return
+
+        role_heads = {"developer", "engineer", "analyst", "architect", "tester", "consultant", "administrator", "manager"}
+        normalized_phrases: List[str] = []
+        for p in parts:
+            if "," in p or "/" in p:
+                return
+            phrase = re.sub(r"[^a-z0-9\s]+", " ", p)
+            phrase = re.sub(r"\s+", " ", phrase).strip()
+            if not phrase:
+                return
+            tokens = phrase.split()
+            if len(tokens) < 2 or len(tokens) > 6:
+                return
+            if tokens[-1] not in role_heads:
+                return
+            normalized_phrases.append(phrase)
+
+        if len(normalized_phrases) < 2:
+            return
+
+        filters = parsed_data.setdefault("filters", {})
+        filters["designation"] = None
+        filters["must_have_all"] = []
+        filters["must_have_one_of_groups"] = []
+        parsed_data["comma_strict_and"] = False
+        parsed_data["role_or_phrases"] = normalized_phrases
+        parsed_data["role_only"] = False
+
+    def _strip_non_skill_modifiers_from_must_have_all(self, parsed_data: Dict) -> None:
+        """
+        Remove title/seniority/employment modifiers from must_have_all when designation exists.
+        Prevents false Pinecone skill filters like {'skills': {'$in': ['independent']}}.
+        """
+        filters = parsed_data.get("filters", {})
+        designation = (filters.get("designation") or "").strip().lower()
+        must_all = normalize_skill_list(filters.get("must_have_all") or [])
+        if not designation or not must_all:
+            return
+
+        non_skill_modifiers = {
+            "independent", "senior", "sr", "junior", "jr", "lead", "principal",
+            "staff", "contract", "contractor", "freelance", "intern", "associate",
+            "assistant", "head", "chief",
+        }
+        designation_tokens = set(re.findall(r"[a-z0-9]+", designation))
+
+        cleaned = []
+        for token in must_all:
+            t = str(token).strip().lower()
+            if not t:
+                continue
+            if t in non_skill_modifiers:
+                continue
+            # If token is just a designation word and is not a known tech skill, drop it.
+            if t in designation_tokens and t in {
+                "developer", "engineer", "analyst", "manager", "architect",
+                "accountant", "administrator", "consultant", "specialist", "tester",
+            }:
+                continue
+            cleaned.append(t)
+
+        filters["must_have_all"] = cleaned
     
     async def _check_ollama_connection(self) -> tuple[bool, Optional[str]]:
         """Check if OLLAMA is accessible and running. Returns (is_connected, available_model)."""
@@ -646,6 +723,8 @@ class AISearch2QueryParser:
                 parsed_data["category"] = None
                 self._merge_comma_separated_and_must_have_all(query, parsed_data)
                 self._apply_slash_role_or_skill_groups(query, parsed_data)
+                self._apply_or_role_phrase_override(query, parsed_data)
+                self._strip_non_skill_modifiers_from_must_have_all(parsed_data)
                 self._recompute_role_only(parsed_data)
                 parsed_data["effective_query"] = query
                 logger.info(
@@ -789,6 +868,8 @@ class AISearch2QueryParser:
 
         self._merge_comma_separated_and_must_have_all(query, parsed_data)
         self._apply_slash_role_or_skill_groups(query, parsed_data)
+        self._apply_or_role_phrase_override(query, parsed_data)
+        self._strip_non_skill_modifiers_from_must_have_all(parsed_data)
         self._recompute_role_only(parsed_data)
         parsed_data["effective_query"] = query
 

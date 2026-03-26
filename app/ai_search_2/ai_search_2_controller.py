@@ -189,6 +189,30 @@ def _title_contains_any_token(candidate: Dict[str, Any], tokens: List[str]) -> b
     return any(str(t).lower() in title_tokens for t in tokens if str(t).strip())
 
 
+def _matches_role_phrase_flex(candidate: Dict[str, Any], phrase: str) -> bool:
+    """
+    Flexible title match for OR-role phrases.
+    Example: query phrase "java developer" matches
+    "sr java full stack developer" (both key tokens present).
+    """
+    normalized_phrase = _normalize_text(phrase)
+    if not normalized_phrase:
+        return False
+    title_text = _normalize_text(
+        f"{candidate.get('jobrole', '')} {candidate.get('designation', '')}"
+    )
+    if not title_text:
+        return False
+    # Exact phrase is always accepted.
+    if normalized_phrase in title_text:
+        return True
+    phrase_tokens = [t for t in normalized_phrase.split() if len(t) >= 3]
+    if not phrase_tokens:
+        return False
+    title_tokens = set(title_text.split())
+    return all(t in title_tokens for t in phrase_tokens)
+
+
 class AISearch2Controller:
     """Query-only AI search across indexes from query intent."""
 
@@ -244,6 +268,7 @@ class AISearch2Controller:
 
             query_designation = parsed_query.get("filters", {}).get("designation")
             slash_role_tokens = parsed_query.get("slash_role_tokens") or []
+            role_or_phrases = parsed_query.get("role_or_phrases") or []
             formatted_results: List[Dict[str, Any]] = []
             for result in results:
                 score_decimal = result.get("score", 0.0)
@@ -291,6 +316,31 @@ class AISearch2Controller:
                             "mode": "query_role_only",
                         },
                     )
+
+            # Role-OR title filter: "python developer OR java developer"
+            # Keep candidates whose title matches at least one phrase.
+            # Preserve phrase order priority (first phrase results first).
+            if role_or_phrases:
+                before = len(formatted_results)
+                ordered: List[Dict[str, Any]] = []
+                seen_resume_ids = set()
+                for phrase in role_or_phrases:
+                    for row in formatted_results:
+                        rid = row.get("resume_id")
+                        if rid in seen_resume_ids:
+                            continue
+                        if _matches_role_phrase_flex(row, phrase):
+                            ordered.append(row)
+                            seen_resume_ids.add(rid)
+                formatted_results = ordered
+                logger.info(
+                    "ai-search-2 role-or title filter applied",
+                    extra={
+                        "role_or_phrases": role_or_phrases,
+                        "before": before,
+                        "after": len(formatted_results),
+                    },
+                )
 
             # Slash-role title narrowing: e.g., "sql/etl developer" should keep only
             # developer titles containing one of ["sql","etl"] in title/jobrole.
