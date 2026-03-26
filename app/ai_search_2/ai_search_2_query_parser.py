@@ -44,7 +44,9 @@ You are an ATS query parser for recruiters. Your job is to convert the natural l
    - Examples: "Python AND QA" → designation = "qa", must_have_all = ["python"]. "sql AND python full stack developer" → designation = "python full stack developer", must_have_all = ["sql"]
    - Single-token roles: "QA", "PM", "BA", "Dev", "Tester", "Manager", "Analyst" etc. in AND with skills → set as designation, NOT in must_have_all.
    - Multi-word role phrases (e.g. "python full stack developer", "front end python developer") → always designation, never split into skills.
+   - Treat "IT" in role phrases as role context (e.g. "IT Infrastructure and Software Solutions Expert") and keep the phrase in designation, not in must_have_all.
    - OR role-phrase rule: if query is role phrase OR role phrase (e.g. "python developer OR java developer"), treat both sides as alternative titles, NOT as skills. Do not put "python"/"java"/"developer" into must_have_all.
+   - Slash role-phrase rule: if query is "role phrase / role phrase" (e.g. "sr software automation test engineer/selenium automation tester"), treat it like OR between two titles.
    - Slash-title pattern rule: when query looks like "X/Y/Z Developer" (or Engineer/Analyst/etc.), treat the whole query as title context and keep only the base role as designation (e.g. designation="developer"). Do NOT create skill filters from X/Y/Z for this pattern.
 
 3. Skills / must_have_all
@@ -74,6 +76,7 @@ You are an ATS query parser for recruiters. Your job is to convert the natural l
    - Terms without operators → treat as AND → must_have_all
    - Comma-separated lists without AND/OR (e.g. "python, sql, django") → every term is required → must_have_all must list ALL terms (AND semantics); apply section 0 spelling normalization to each segment.
    - Quoted phrases stay together as one term.
+   - Slash "/" between terms/phrases should be interpreted as OR intent (A/B -> A OR B), especially for role-style queries.
 
 8. text_for_embedding – mandatory
    - ALWAYS create it.
@@ -208,6 +211,36 @@ class AISearch2QueryParser:
         if re.search(r"\bOR\b|\bAND\b", q, re.I):
             return
 
+        role_heads = {
+            "developer", "engineer", "analyst", "architect", "tester",
+            "consultant", "administrator", "manager", "scientist",
+        }
+
+        # Case A: slash separates full role phrases -> treat as role OR role.
+        slash_parts = [part.strip() for part in q.split("/") if part.strip()]
+        if len(slash_parts) >= 2:
+            normalized_role_phrases: List[str] = []
+            all_role_phrases = True
+            for part in slash_parts:
+                phrase = re.sub(r"[^a-z0-9\s]+", " ", part.lower())
+                phrase = re.sub(r"\s+", " ", phrase).strip()
+                tokens = phrase.split()
+                if len(tokens) < 2 or tokens[-1] not in role_heads:
+                    all_role_phrases = False
+                    break
+                normalized_role_phrases.append(phrase)
+            if all_role_phrases and len(normalized_role_phrases) >= 2:
+                filters = parsed_data.setdefault("filters", {})
+                filters["designation"] = None
+                filters["must_have_all"] = []
+                filters["must_have_one_of_groups"] = []
+                parsed_data["comma_strict_and"] = False
+                parsed_data["role_or_phrases"] = normalized_role_phrases
+                parsed_data["role_only"] = False
+                # Ensure slash token narrowing does not run for role OR phrases.
+                parsed_data["slash_role_tokens"] = []
+                return
+
         role_match = re.search(
             r"\b(developer|engineer|analyst|architect|tester|consultant|administrator|manager)\b\s*$",
             q,
@@ -254,7 +287,10 @@ class AISearch2QueryParser:
         if len(parts) < 2:
             return
 
-        role_heads = {"developer", "engineer", "analyst", "architect", "tester", "consultant", "administrator", "manager"}
+        role_heads = {
+            "developer", "engineer", "analyst", "architect", "tester",
+            "consultant", "administrator", "manager", "scientist",
+        }
         normalized_phrases: List[str] = []
         for p in parts:
             if "," in p or "/" in p:
@@ -295,7 +331,7 @@ class AISearch2QueryParser:
         non_skill_modifiers = {
             "independent", "senior", "sr", "junior", "jr", "lead", "principal",
             "staff", "contract", "contractor", "freelance", "intern", "associate",
-            "assistant", "head", "chief",
+            "assistant", "head", "chief", "it", "expert",
         }
         designation_tokens = set(re.findall(r"[a-z0-9]+", designation))
 
@@ -315,6 +351,43 @@ class AISearch2QueryParser:
             cleaned.append(t)
 
         filters["must_have_all"] = cleaned
+
+    def _apply_role_phrase_fallback_from_query(self, query: str, parsed_data: Dict) -> None:
+        """
+        If parser misses designation for a clear role phrase query, recover by using the
+        full query as designation and clearing skill filters.
+        Example: "IT Infrastructure and Software Solutions Expert".
+        """
+        q = (query or "").strip().lower()
+        if not q:
+            return
+        # Skip explicit boolean/list intents handled elsewhere.
+        # Keep natural "and" in title phrases (e.g. "infrastructure and software ...").
+        if any(sep in q for sep in ["/", ","]) or re.search(r"\bOR\b", q, re.I):
+            return
+
+        filters = parsed_data.setdefault("filters", {})
+        if (filters.get("designation") or "").strip():
+            return
+
+        # Role phrase endings (include "expert" for non-standard titles).
+        role_suffixes = (
+            "developer", "engineer", "analyst", "architect", "tester",
+            "consultant", "administrator", "manager", "specialist", "expert",
+            "scientist", "accountant",
+        )
+        normalized = re.sub(r"[^a-z0-9\s]+", " ", q)
+        normalized = re.sub(r"\s+", " ", normalized).strip()
+        if not normalized:
+            return
+        if not any(normalized.endswith(f" {suffix}") or normalized == suffix for suffix in role_suffixes):
+            return
+
+        filters["designation"] = normalized
+        filters["must_have_all"] = []
+        filters["must_have_one_of_groups"] = []
+        parsed_data["comma_strict_and"] = False
+        parsed_data["role_only"] = True
     
     async def _check_ollama_connection(self) -> tuple[bool, Optional[str]]:
         """Check if OLLAMA is accessible and running. Returns (is_connected, available_model)."""
@@ -724,6 +797,7 @@ class AISearch2QueryParser:
                 self._merge_comma_separated_and_must_have_all(query, parsed_data)
                 self._apply_slash_role_or_skill_groups(query, parsed_data)
                 self._apply_or_role_phrase_override(query, parsed_data)
+                self._apply_role_phrase_fallback_from_query(query, parsed_data)
                 self._strip_non_skill_modifiers_from_must_have_all(parsed_data)
                 self._recompute_role_only(parsed_data)
                 parsed_data["effective_query"] = query
@@ -869,6 +943,7 @@ class AISearch2QueryParser:
         self._merge_comma_separated_and_must_have_all(query, parsed_data)
         self._apply_slash_role_or_skill_groups(query, parsed_data)
         self._apply_or_role_phrase_override(query, parsed_data)
+        self._apply_role_phrase_fallback_from_query(query, parsed_data)
         self._strip_non_skill_modifiers_from_must_have_all(parsed_data)
         self._recompute_role_only(parsed_data)
         parsed_data["effective_query"] = query
