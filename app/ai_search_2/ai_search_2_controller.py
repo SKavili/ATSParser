@@ -176,6 +176,19 @@ def _strict_query_role_only_match(candidate: Dict[str, Any], query_designation: 
     return matched_tokens >= min_required
 
 
+def _title_contains_any_token(candidate: Dict[str, Any], tokens: List[str]) -> bool:
+    """Check if designation/jobrole contains at least one token (title-only matching)."""
+    if not tokens:
+        return True
+    title_text = _normalize_text(
+        f"{candidate.get('jobrole', '')} {candidate.get('designation', '')}"
+    )
+    if not title_text:
+        return False
+    title_tokens = set(title_text.split())
+    return any(str(t).lower() in title_tokens for t in tokens if str(t).strip())
+
+
 class AISearch2Controller:
     """Query-only AI search across indexes from query intent."""
 
@@ -230,6 +243,7 @@ class AISearch2Controller:
                 )
 
             query_designation = parsed_query.get("filters", {}).get("designation")
+            slash_role_tokens = parsed_query.get("slash_role_tokens") or []
             formatted_results: List[Dict[str, Any]] = []
             for result in results:
                 score_decimal = result.get("score", 0.0)
@@ -277,6 +291,23 @@ class AISearch2Controller:
                             "mode": "query_role_only",
                         },
                     )
+
+            # Slash-role title narrowing: e.g., "sql/etl developer" should keep only
+            # developer titles containing one of ["sql","etl"] in title/jobrole.
+            if slash_role_tokens:
+                before = len(formatted_results)
+                formatted_results = [
+                    row for row in formatted_results
+                    if _title_contains_any_token(row, slash_role_tokens)
+                ]
+                logger.info(
+                    "ai-search-2 slash-role title filter applied",
+                    extra={
+                        "tokens": slash_role_tokens,
+                        "before": before,
+                        "after": len(formatted_results),
+                    },
+                )
 
             try:
                 await self.repository.create_result(

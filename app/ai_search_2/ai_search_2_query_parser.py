@@ -44,6 +44,7 @@ You are an ATS query parser for recruiters. Your job is to convert the natural l
    - Examples: "Python AND QA" → designation = "qa", must_have_all = ["python"]. "sql AND python full stack developer" → designation = "python full stack developer", must_have_all = ["sql"]
    - Single-token roles: "QA", "PM", "BA", "Dev", "Tester", "Manager", "Analyst" etc. in AND with skills → set as designation, NOT in must_have_all.
    - Multi-word role phrases (e.g. "python full stack developer", "front end python developer") → always designation, never split into skills.
+   - Slash-title pattern rule: when query looks like "X/Y/Z Developer" (or Engineer/Analyst/etc.), treat the whole query as title context and keep only the base role as designation (e.g. designation="developer"). Do NOT create skill filters from X/Y/Z for this pattern.
 
 3. Skills / must_have_all
    - Only include words or short phrases that are clearly listed as required skills/technologies/tools.
@@ -190,6 +191,53 @@ class AISearch2QueryParser:
         filters["must_have_all"] = combined
         # ai-search-2: comma lists require AND — downstream must drop candidates missing any term
         parsed_data["comma_strict_and"] = True
+
+    def _apply_slash_role_or_skill_groups(self, query: str, parsed_data: Dict) -> None:
+        """
+        Pattern: "<x>/<y>/<z> <role>" should be treated as a role-title phrase only.
+        Example: "SQL/ETL/SSIS Developer" -> designation=developer, no skill filters,
+        and slash_role_tokens=["sql","etl","ssis"] for title-level narrowing downstream.
+        """
+        q = (query or "").strip()
+        if not q or "/" not in q:
+            return
+
+        # Avoid overriding explicit boolean intent.
+        if re.search(r"\bOR\b|\bAND\b", q, re.I):
+            return
+
+        role_match = re.search(
+            r"\b(developer|engineer|analyst|architect|tester|consultant|administrator|manager)\b\s*$",
+            q,
+            re.I,
+        )
+        if not role_match:
+            return
+
+        role_word = role_match.group(1).lower()
+        prefix = q[: role_match.start()].strip()
+        if not prefix or "/" not in prefix:
+            return
+
+        raw_terms = [part.strip() for part in prefix.split("/") if part.strip()]
+        if len(raw_terms) < 2:
+            return
+        normalized_terms = normalize_skill_list(raw_terms)
+        if not normalized_terms:
+            return
+
+        filters = parsed_data.setdefault("filters", {})
+
+        # Keep the role explicit when slash-role pattern is detected.
+        if not (filters.get("designation") or "").strip():
+            filters["designation"] = role_word
+
+        # Slash-title pattern is designation-only: clear skill constraints.
+        filters["must_have_all"] = []
+        filters["must_have_one_of_groups"] = []
+        parsed_data["comma_strict_and"] = False
+        # Keep slash tokens for title-only narrowing (e.g., sql/etl developer).
+        parsed_data["slash_role_tokens"] = normalized_terms
     
     async def _check_ollama_connection(self) -> tuple[bool, Optional[str]]:
         """Check if OLLAMA is accessible and running. Returns (is_connected, available_model)."""
@@ -597,6 +645,7 @@ class AISearch2QueryParser:
                 parsed_data["mastercategory"] = None
                 parsed_data["category"] = None
                 self._merge_comma_separated_and_must_have_all(query, parsed_data)
+                self._apply_slash_role_or_skill_groups(query, parsed_data)
                 self._recompute_role_only(parsed_data)
                 parsed_data["effective_query"] = query
                 logger.info(
@@ -739,6 +788,7 @@ class AISearch2QueryParser:
         parsed_data["category"] = None
 
         self._merge_comma_separated_and_must_have_all(query, parsed_data)
+        self._apply_slash_role_or_skill_groups(query, parsed_data)
         self._recompute_role_only(parsed_data)
         parsed_data["effective_query"] = query
 
