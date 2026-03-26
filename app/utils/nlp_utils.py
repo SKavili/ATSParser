@@ -3,7 +3,31 @@ NLP utilities for AI search: stemming, stop-word removal, tokenization, and name
 Used to improve skill/designation matching and to skip LLM for obvious name-only queries.
 """
 import re
-from typing import List, Set, Optional, Dict
+from typing import List, Set, Optional, Dict, Tuple
+
+
+# Whole-word replacements before LLM parse (complements AI_SEARCH_PROMPT spelling rules).
+_QUERY_TYPO_FIXES: Tuple[Tuple[str, str], ...] = (
+    (r"\bdevelopor\b", "developer"),
+    (r"\bdevaloper\b", "developer"),
+    (r"\bpythan\b", "python"),
+    (r"\bpytaan\b", "python"),
+    (r"\bpythoon\b", "python"),
+)
+
+
+def fix_common_query_typos(text: str) -> str:
+    """
+    Fix frequent keyboard/OCR typos in recruiter search queries (whole words only).
+    Examples: python developor -> python developer; pythan devaloper -> python developer.
+    """
+    if not text or not text.strip():
+        return text
+    out = text
+    for pattern, repl in _QUERY_TYPO_FIXES:
+        out = re.sub(pattern, repl, out, flags=re.IGNORECASE)
+    return out
+
 
 # ---------------------------------------------------------------------------
 # Stop words for search/skill matching (exclude from token overlap when useful)
@@ -149,7 +173,8 @@ def stemmed_skill_overlap_ratio(required_skills: List[str], candidate_skills: Li
     for s in candidate_skills:
         cand_stems.update(normalize_tokens_for_match(s, remove_stop_words=False))
     if not req_stems:
-        return 1.0
+        # Required skills produced no tokens — do not treat as 100% match
+        return 0.0 if required_skills else 1.0
     matched = len(req_stems & cand_stems)
     return matched / len(req_stems)
 

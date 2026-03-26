@@ -252,6 +252,12 @@ class AISearch2Controller:
                     }
                 )
 
+            # Comma-separated AND: drop any row missing a required skill (defense in depth).
+            if search_type != "name" and parsed_query.get("comma_strict_and"):
+                formatted_results = self.search_service._apply_comma_strict_must_have_all_filter(
+                    formatted_results, parsed_query
+                )
+
             # Query-driven strict role filtering for role-style queries.
             # Return only role-matching profiles for queries like "Data Analyst".
             if query_designation and str(query_designation).strip():
@@ -281,7 +287,7 @@ class AISearch2Controller:
                 logger.warning(f"ai-search-2 result save failed: {e}", extra={"query_id": search_query_id})
 
             return {
-                "query": query,
+                "query": parsed_query.get("effective_query", query),
                 "total_results": len(formatted_results),
                 "results": formatted_results,
                 "search_type": search_type,

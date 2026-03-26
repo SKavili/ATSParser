@@ -1,13 +1,14 @@
 """Query parser for AI search using OLLAMA or OpenAI LLM (via LLM_MODEL)."""
 import json
 import re
-from typing import Dict, Optional
+from typing import Dict, List, Optional
 import httpx
 from httpx import Timeout
 
 from app.config import settings
 from app.utils.logging import get_logger
-from app.utils.nlp_utils import is_likely_name_query
+from app.utils.nlp_utils import fix_common_query_typos, is_likely_name_query
+from app.utils.cleaning import normalize_skill_list
 from app.services.llm_service import use_openai, generate as openai_generate
 # QueryCategoryIdentifier removed - category is now provided explicitly in payload
 
@@ -22,13 +23,17 @@ except ImportError:
     logger.warning("OLLAMA Python client not available, using HTTP API directly")
 
 AI_SEARCH_PROMPT = """
-You are an ATS query parser for recruiters. Your ONLY job is to convert the EXACT text of the natural language or boolean query into structured JSON. You must be extremely literal and conservative.
+You are an ATS query parser for recruiters. Your job is to convert the natural language or boolean query into structured JSON. Be conservative about intent, but you MUST fix obvious spelling mistakes in tech/role terms so search and embeddings match real resumes.
 
-CORE RULES – YOU MUST FOLLOW THESE STRICTLY:
+0. Spelling, OCR, and keyboard errors (apply FIRST — overrides "literal" for typos only)
+   - Recruiters often mistype skills and titles. When a token is clearly a misspelling of a common IT skill, language, framework, or job-title word, **normalize it to standard spelling** in designation, must_have_all, must_have_one_of_groups, and text_for_embedding.
+   - Examples of normalization (not exhaustive): developor/devaloper → developer; pythan/pytaan/pythoon → python; enginer → engineer; java script/javascript → javascript (if clearly one term); reactjs → react; anguler/angular; djangoo → django; sqll/sql → sql; kubernates → kubernetes.
+   - Rules: (1) Only fix spelling when the intended word is unambiguous (same meaning as the correct term). (2) Do NOT change one technology into another (e.g. never turn "python" into "java"). (3) Do NOT invent skills or roles not implied by the query. (4) For person names or company names, do NOT "correct" spelling unless it is clearly a known tech term mispasted into a name field.
+   - If the whole query is a plausible person name with no role/skills, do not apply spelling fixes; use search_type "name" as usual.
 
-1. Extract ONLY what is EXPLICITLY WRITTEN in the query.
-   - Never assume, infer, guess, expand, normalize meaning, or add anything that is not directly in the text.
-   - Never use knowledge from examples to decide what something "probably means".
+1. Extract what the user MEANT, using normalized spellings from section 0 where applicable.
+   - Do not infer extra requirements, domains, or experience that are not in the query.
+   - Never use knowledge from examples to invent new filters.
    - Never decide that something is a "domain", "company", "acronym", "location", etc. unless it is very clearly used that way in the sentence.
 
 2. Designation (job title / role)
@@ -64,11 +69,12 @@ CORE RULES – YOU MUST FOLLOW THESE STRICTLY:
    - "A OR B" → must_have_one_of_groups = [["a"], ["b"]]
    - "(A AND B) OR C" → must_have_one_of_groups = [["a", "b"], ["c"]]
    - Terms without operators → treat as AND → must_have_all
+   - Comma-separated lists without AND/OR (e.g. "python, sql, django") → every term is required → must_have_all must list ALL terms (AND semantics); apply section 0 spelling normalization to each segment.
    - Quoted phrases stay together as one term.
 
 8. text_for_embedding – mandatory
    - ALWAYS create it.
-   - Use ONLY words that appear in the original query.
+   - Build it from the query words with **spelling normalized** per section 0 (so embeddings match real resume wording).
    - Order preference: main role phrase → listed skills/tools → experience phrase → location phrase
    - Keep it natural but lowercase.
 
@@ -82,14 +88,14 @@ CORE RULES – YOU MUST FOLLOW THESE STRICTLY:
    - Split job titles into skills
    - Infer experience level from seniority words
    - Decide something is a "domain" or "industry" unless it is explicitly phrased that way in the query (e.g. uses words like "domain", "industry", "sector", "vertical").
-   - Use meaning or context from the examples below to interpret the current query
-   - Add, remove, or rephrase terms that do not appear in the query
+   - Use meaning or context from the examples below to invent filters for the current query
+   - Add, remove, or rephrase **intent** (new requirements) beyond what the query implies — spelling normalization per section 0 is allowed and required
 
 Output format – STRICT JSON only – nothing else:
 
 {
   "search_type": "semantic" | "name" | "hybrid",
-  "text_for_embedding": "lowercase text built only from query words",
+  "text_for_embedding": "lowercase text from the query with tech/role spellings normalized",
   "filters": {
     "designation": null | "exact lowercase phrase",
     "must_have_all": ["exact lowercase term", "another term"],
@@ -113,6 +119,77 @@ class AISearch2QueryParser:
         self.ollama_host = settings.ollama_host
         self.model = "llama3.1"
         # QueryCategoryIdentifier removed - category is now provided explicitly in payload
+
+    def _recompute_role_only(self, parsed_data: Dict) -> None:
+        """Recompute role_only after post-processing (e.g. comma AND merge)."""
+        filters = parsed_data.get("filters", {})
+        designation = filters.get("designation") or ""
+        must_all = filters.get("must_have_all") or []
+        must_groups = filters.get("must_have_one_of_groups") or []
+        has_skills = bool(must_all or (must_groups and any(g for g in must_groups)))
+        parsed_data["role_only"] = (
+            bool(designation and str(designation).strip())
+            and not has_skills
+            and filters.get("min_experience") is None
+            and filters.get("max_experience") is None
+            and not filters.get("location")
+            and not filters.get("candidate_name")
+        )
+
+    def _merge_comma_separated_and_must_have_all(self, query: str, parsed_data: Dict) -> None:
+        """
+        Comma-separated segments (without explicit AND/OR) → AND semantics: every segment
+        must appear in must_have_all (skills/tools), with simple location routing for
+        known city tokens. Merges with LLM output (union of required terms).
+        """
+        q = (query or "").strip()
+        if not q or "," not in q:
+            return
+        if re.search(r"\bOR\b", q, re.I) or re.search(r"\bAND\b", q, re.I):
+            return
+        parts = [p.strip() for p in q.split(",") if p.strip()]
+        if len(parts) < 2:
+            return
+        if any(len(p) > 56 for p in parts):
+            return
+
+        filters = parsed_data.setdefault("filters", {})
+        designation_value = (filters.get("designation") or "").strip().lower()
+
+        # Common city / region tokens → location (first unset wins)
+        location_hints = {
+            "bangalore", "bengaluru", "hyderabad", "chennai", "mumbai", "pune", "noida",
+            "gurgaon", "gurugram", "delhi", "kolkata", "ahmedabad", "kochi", "coimbatore",
+            "new york", "seattle", "nashville", "austin", "boston", "chicago", "dallas",
+            "texas", "california", "florida", "duncansville",
+        }
+
+        merged_skills: List[str] = []
+        for p in parts:
+            pl = p.strip().lower()
+            if not pl:
+                continue
+            primary_loc = pl.split(",", 1)[0].strip() if pl else ""
+            if primary_loc in location_hints or pl in location_hints:
+                if not filters.get("location"):
+                    filters["location"] = pl if pl in location_hints else primary_loc
+                continue
+            if designation_value and (
+                pl == designation_value
+                or (len(pl) <= len(designation_value) + 2 and pl in designation_value)
+                or (len(designation_value) <= len(pl) + 2 and designation_value in pl)
+            ):
+                continue
+            merged_skills.extend(normalize_skill_list([p]))
+
+        if not merged_skills:
+            return
+
+        existing = list(filters.get("must_have_all") or [])
+        combined = normalize_skill_list(existing + merged_skills)
+        filters["must_have_all"] = combined
+        # ai-search-2: comma lists require AND — downstream must drop candidates missing any term
+        parsed_data["comma_strict_and"] = True
     
     async def _check_ollama_connection(self) -> tuple[bool, Optional[str]]:
         """Check if OLLAMA is accessible and running. Returns (is_connected, available_model)."""
@@ -364,6 +441,7 @@ class AISearch2QueryParser:
             "mastercategory": None,
             "category": None,
             "role_only": False,
+            "comma_strict_and": False,
         }
     
     def _infer_mastercategory_from_query(self, query: str, parsed_data: Dict) -> Optional[str]:
@@ -451,13 +529,15 @@ class AISearch2QueryParser:
         Raises:
             RuntimeError: If OLLAMA is not available or parsing fails
         """
+        query = fix_common_query_typos((query or "").strip())
+
         # NLP gate: if query looks like a person name only, skip LLM and return name search (faster, cheaper)
         # IMPORTANT: Only apply this when caller did NOT already provide an explicit
         # mastercategory/category. If the UI sends a category like "IT" / "Network & Security"
         # together with a query such as "Computer Support Specialist", we should
         # treat it as a role-based semantic search, not as a person name.
         if is_likely_name_query(query) and not skip_category_inference:
-            name_lower = query.strip()
+            name_lower = query
             logger.info(
                 f"Name-query gate: skipping LLM for likely name search",
                 extra={"query": name_lower[:80]}
@@ -465,6 +545,7 @@ class AISearch2QueryParser:
             return {
                 "search_type": "name",
                 "text_for_embedding": name_lower,
+                "effective_query": query,
                 "filters": {
                     "designation": None,
                     "must_have_all": [],
@@ -477,10 +558,10 @@ class AISearch2QueryParser:
                 },
                 "mastercategory": None,
                 "category": None,
+                "comma_strict_and": False,
             }
 
-        # Query validation: trim and cap length
-        query = query.strip() if query else ""
+        # Query validation: cap length (already stripped + typo-fixed)
         max_len = getattr(settings, "ai_search_query_max_length", 2000)
         if len(query) > max_len:
             logger.warning(f"Query truncated from {len(query)} to {max_len} characters")
@@ -515,6 +596,9 @@ class AISearch2QueryParser:
                         pass
                 parsed_data["mastercategory"] = None
                 parsed_data["category"] = None
+                self._merge_comma_separated_and_must_have_all(query, parsed_data)
+                self._recompute_role_only(parsed_data)
+                parsed_data["effective_query"] = query
                 logger.info(
                     f"Query parsed successfully (OpenAI): search_type={parsed_data['search_type']}",
                     extra={"search_type": parsed_data["search_type"], "has_filters": bool(parsed_data["filters"])}
@@ -653,7 +737,11 @@ class AISearch2QueryParser:
         # Do not set mastercategory or category - they will be provided from payload
         parsed_data["mastercategory"] = None
         parsed_data["category"] = None
-        
+
+        self._merge_comma_separated_and_must_have_all(query, parsed_data)
+        self._recompute_role_only(parsed_data)
+        parsed_data["effective_query"] = query
+
         logger.info(
             f"Query parsed successfully: search_type={parsed_data['search_type']}",
             extra={
@@ -662,5 +750,5 @@ class AISearch2QueryParser:
                 "skip_category_inference": skip_category_inference
             }
         )
-        
+
         return parsed_data

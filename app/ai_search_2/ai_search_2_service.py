@@ -979,6 +979,9 @@ class AISearch2Service:
         Categorize candidate into fit tier based on combined score.
         Principle: "Rank candidates by relevance and return results in clear fit tiers"
         
+        Tier bands (normalized score = combined_score / 100):
+        - Partial Match requires at least 0.90 (90% alignment with query signals).
+        
         Args:
             candidate: Candidate metadata
             parsed_query: Parsed query
@@ -989,6 +992,10 @@ class AISearch2Service:
         """
         # Normalize combined score to 0-1 for categorization
         normalized_score = max(0.0, min(1.0, combined_score / 100.0))
+        # Recruiter-facing tier cutoffs (strict Partial floor = 90%)
+        _tier_perfect_min = 0.97
+        _tier_good_min = 0.94
+        _tier_partial_min = 0.90
         
         # FIX 6: Additional checks for fit tier (domain/role alignment + exact role gating)
         identified_mastercategory = parsed_query.get("mastercategory")
@@ -1136,31 +1143,78 @@ class AISearch2Service:
                     overlap = len(role_keywords.intersection(candidate_role_words))
                     role_relevant = overlap > 0 and (overlap / len(role_keywords)) >= 0.3
             
-            # Promote based on skills + role relevance
+            # Promote based on skills + role relevance (Partial tier still requires >= 90%)
             if role_relevant or not query_role:
-                # Skills match + role relevant (or no role specified) → promote
-                if normalized_score >= 0.40:  # Lower threshold when skills match
-                    if normalized_score >= 0.65:
-                        return "Good Match"
-                    else:
-                        return "Partial Match"
-                else:
-                    # Even with low score, if skills match, at least Partial Match
+                if normalized_score >= _tier_perfect_min:
+                    return "Perfect Match"
+                if normalized_score >= _tier_good_min:
+                    return "Good Match"
+                if normalized_score >= _tier_partial_min:
                     return "Partial Match"
+                return "Low Match"
         
-        # Then apply score-based tiers
-        if normalized_score >= 0.85:
+        # Score-based tiers
+        if normalized_score >= _tier_perfect_min:
             return "Perfect Match"
-        elif normalized_score >= 0.70:
+        if normalized_score >= _tier_good_min:
             return "Good Match"
-        elif normalized_score >= 0.50:
+        if normalized_score >= _tier_partial_min:
             return "Partial Match"
+        # Role-only mode: same role family → Partial only if score clears 90% bar
+        role_only = parsed_query.get("role_only", False)
+        if (
+            role_only
+            and query_family
+            and candidate_family
+            and query_family == candidate_family
+            and normalized_score >= _tier_partial_min
+        ):
+            return "Partial Match"
+        return "Low Match"
+
+    def _candidate_satisfies_must_have_all(self, candidate: Dict, parsed_query: Dict) -> bool:
+        """True if candidate has every required skill in filters.must_have_all (exact + stemmed fallback)."""
+        filters = parsed_query.get("filters", {})
+        must_all = filters.get("must_have_all") or []
+        if not must_all:
+            return True
+        candidate_skills_raw = candidate.get("skills", []) or []
+        if isinstance(candidate_skills_raw, str):
+            raw_skills = [s.strip() for s in candidate_skills_raw.split(",") if s.strip()]
+            candidate_skills = normalize_skill_list(raw_skills)
+        elif isinstance(candidate_skills_raw, list):
+            candidate_skills = normalize_skill_list([str(s) for s in candidate_skills_raw if s])
         else:
-            # Role-only mode: same role family → at least Partial Match (never drop as Low Match)
-            role_only = parsed_query.get("role_only", False)
-            if role_only and query_family and candidate_family and query_family == candidate_family:
-                return "Partial Match"
-            return "Low Match"
+            candidate_skills = []
+        required_skills = normalize_skill_list(must_all)
+        has_all_required_skills = True
+        for req_skill in required_skills:
+            if req_skill not in candidate_skills:
+                has_all_required_skills = False
+                break
+        # Comma-separated AND: require exact normalized skill tokens only (no stem overlap shortcut).
+        # Also avoids false positives (e.g. java vs javascript) from loose stem matching.
+        if parsed_query.get("comma_strict_and"):
+            return has_all_required_skills
+        if not has_all_required_skills and stemmed_skill_overlap_ratio(must_all, candidate_skills) >= 1.0:
+            has_all_required_skills = True
+        return has_all_required_skills
+
+    def _apply_comma_strict_must_have_all_filter(
+        self,
+        results: List[Dict[str, Any]],
+        parsed_query: Dict,
+    ) -> List[Dict[str, Any]]:
+        """When query used comma-separated AND (comma_strict_and), drop any candidate missing a required skill."""
+        if not parsed_query.get("comma_strict_and"):
+            return results
+        filtered = [c for c in results if self._candidate_satisfies_must_have_all(c, parsed_query)]
+        if len(filtered) != len(results):
+            logger.info(
+                "comma_strict_and: removed candidates missing one or more must_have_all skills",
+                extra={"before": len(results), "after": len(filtered)},
+            )
+        return filtered
     
     async def search_name(self, candidate_name: str, session) -> List[Dict[str, Any]]:
         """
@@ -1507,14 +1561,13 @@ class AISearch2Service:
         Returns:
             Fit tier string
         """
-        if score >= 0.9:
+        if score >= 0.97:
             return "Perfect Match"
-        elif score >= 0.7:
+        if score >= 0.94:
             return "Good Match"
-        elif score >= 0.5:
+        if score >= 0.90:
             return "Partial Match"
-        else:
-            return "Low Match"
+        return "Low Match"
     
     async def search_semantic(
         self,
@@ -1847,6 +1900,9 @@ class AISearch2Service:
                     for c in processed_results:
                         c["_exact_role_match"] = False
                 
+                processed_results = self._apply_comma_strict_must_have_all_filter(
+                    processed_results, parsed_query
+                )
                 # Sort: exact role matches first, then by score (so exact matches are never pushed out by top_k)
                 processed_results.sort(
                     key=lambda x: (not x.get("_exact_role_match", False), -x.get("score", 0.0))
@@ -3014,6 +3070,7 @@ class AISearch2Service:
             
             unique_results.append(candidate)
         
+        unique_results = self._apply_comma_strict_must_have_all_filter(unique_results, parsed_query)
         # Sort by final combined score
         unique_results.sort(key=lambda x: x["score"], reverse=True)
         
