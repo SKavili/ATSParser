@@ -958,3 +958,4 @@ class AISearch2QueryParser:
         )
 
         return parsed_data
+        
