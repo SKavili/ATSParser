@@ -1,5 +1,6 @@
 """API route definitions."""
 from fastapi import APIRouter, Depends, UploadFile, File, Form, Query, HTTPException, Request
+from fastapi.concurrency import run_in_threadpool
 from sqlalchemy.ext.asyncio import AsyncSession
 from typing import Optional, List
 
@@ -17,6 +18,7 @@ from app.models.job_models import JobCreate, JobCreateResponse, MatchRequest, Ma
 from app.models.ai_search_models import AISearchRequest, AISearchResponse
 from app.models.ai_search_1_models import AISearch1Request, AISearch1Response
 from app.models.ai_search_2_models import AISearch2Request, AISearch2Response
+from app.models.context_search_models import ContextSearchRequest, ContextSearchResponse
 from app.services.resume_indexing_service import ResumeIndexingService
 from app.ats_index_pinecone.ats_index_pinecone_service import AtsIndexPineconeService
 from app.skills.skills_service import SkillsService
@@ -25,6 +27,8 @@ from app.ai_search_1.ai_search_1_controller import AISearch1Controller
 from app.ai_search_2.ai_search_2_controller import AISearch2Controller
 from app.utils.logging import get_logger
 from app.jd_parser import JDExtractor
+from core.services.context_search import search_context_ats_response
+from core.services.context_indexing_service import ContextIndexingService
 
 logger = get_logger(__name__)
 
@@ -317,6 +321,31 @@ async def ats_index_pinecone(
         raise HTTPException(status_code=500, detail=f"Failed to index into ats: {str(e)}")
 
 
+@router.post("/context-index-pinecone")
+async def context_index_pinecone(
+    limit: Optional[int] = Query(None, description="Maximum number of resumes to process"),
+    resume_ids: Optional[List[int]] = Query(None, description="Specific resume IDs to process"),
+    force: bool = Query(False, description="Force re-indexing even if context_pinecone_status is already 1"),
+    session: AsyncSession = Depends(get_db_session),
+):
+    """
+    Index resumes into Pinecone index `ats-context` using structured context text.
+
+    This endpoint is independent from existing indexing endpoints and does not
+    change current ATS search/index logic.
+    """
+    try:
+        indexing_service = ContextIndexingService(session)
+        return await indexing_service.index_resumes(
+            limit=limit,
+            resume_ids=resume_ids,
+            force=force,
+        )
+    except Exception as e:
+        logger.error(f"Error in context-index-pinecone endpoint: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=f"Failed to index into ats-context: {str(e)}")
+
+
 @router.post("/reindex-resumes")
 async def reindex_resumes(
     limit: Optional[int] = Query(None, description="Maximum number of resumes to re-index"),
@@ -485,6 +514,28 @@ async def ai_search_2(
     except Exception as e:
         logger.error(f"AI search v2 failed: {e}", extra={"error": str(e)}, exc_info=True)
         raise HTTPException(status_code=500, detail=f"Search failed: {str(e)}")
+
+
+@router.post("/context-search", response_model=ContextSearchResponse, status_code=200)
+async def context_search(request: ContextSearchRequest):
+    """
+    Context-based semantic candidate search using Pinecone `ats-context` index.
+
+    This endpoint is intentionally separate from existing ATS search endpoints.
+    It does not modify or alter existing ATS search logic.
+    """
+    try:
+        return await run_in_threadpool(
+            search_context_ats_response,
+            role=request.role,
+            skills=request.skills,
+            experience=request.experience,
+            top_k=request.top_k,
+            metadata_filter=request.metadata_filter,
+        )
+    except Exception as e:
+        logger.error(f"Context search failed: {e}", extra={"error": str(e)}, exc_info=True)
+        raise HTTPException(status_code=500, detail=f"Context search failed: {str(e)}")
 
 
 @router.get("/health")
