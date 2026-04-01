@@ -27,7 +27,10 @@ from app.ai_search_1.ai_search_1_controller import AISearch1Controller
 from app.ai_search_2.ai_search_2_controller import AISearch2Controller
 from app.utils.logging import get_logger
 from app.jd_parser import JDExtractor
-from core.services.context_search import search_context_ats_response
+from core.services.context_search import (
+    search_context_ats_response,
+    search_context_ats_response_query,
+)
 from core.services.context_indexing_service import ContextIndexingService
 
 logger = get_logger(__name__)
@@ -525,9 +528,17 @@ async def context_search(request: ContextSearchRequest):
     It does not modify or alter existing ATS search logic.
     """
     try:
+        if request.query and request.query.strip():
+            return await run_in_threadpool(
+                search_context_ats_response_query,
+                query=request.query,
+                top_k=request.top_k,
+                metadata_filter=request.metadata_filter,
+            )
+
         return await run_in_threadpool(
             search_context_ats_response,
-            role=request.role,
+            role=request.role or "",
             skills=request.skills,
             experience=request.experience,
             top_k=request.top_k,

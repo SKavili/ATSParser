@@ -1,13 +1,20 @@
 """Pydantic models for context-based ATS search API."""
 from typing import Any, Dict, List, Optional
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 
 
 class ContextSearchRequest(BaseModel):
     """Request model for ats-context semantic candidate search."""
 
-    role: str = Field(..., description="Target role/designation to search")
+    query: Optional[str] = Field(
+        None,
+        description="Natural language search query (same style as existing ai-search)",
+    )
+    role: Optional[str] = Field(
+        None,
+        description="Target role/designation to search (structured mode)",
+    )
     skills: List[str] = Field(default_factory=list, description="Required/preferred skills")
     experience: Optional[str] = Field(
         "",
@@ -17,6 +24,15 @@ class ContextSearchRequest(BaseModel):
     metadata_filter: Optional[Dict[str, Any]] = Field(
         None, description="Optional Pinecone metadata filter"
     )
+
+    @model_validator(mode="after")
+    def validate_query_or_role(self) -> "ContextSearchRequest":
+        """Require at least one of query or role."""
+        has_query = bool(self.query and self.query.strip())
+        has_role = bool(self.role and self.role.strip())
+        if not has_query and not has_role:
+            raise ValueError("At least one of `query` or `role` is required.")
+        return self
 
 
 class ContextCandidateResult(BaseModel):

@@ -118,11 +118,23 @@ def format_context_results(matches: List[Dict[str, Any]]) -> List[Dict[str, Any]
         meta = match.get("metadata", {}) or {}
         raw_candidate_id = meta.get("candidate_id")
         score = float(match.get("score", 0) or 0)
+        resume_id = None
+        candidate_label = "C0"
+
+        if raw_candidate_id is not None and str(raw_candidate_id).strip():
+            raw_text = str(raw_candidate_id).strip()
+            try:
+                raw_num = int(float(raw_text))
+                resume_id = raw_num
+                candidate_label = f"C{raw_num}"
+            except ValueError:
+                resume_id = raw_text
+                candidate_label = f"C{raw_text}"
 
         formatted_results.append(
             {
-                "candidate_id": f"C{raw_candidate_id}" if raw_candidate_id is not None else "C0",
-                "resume_id": raw_candidate_id,
+                "candidate_id": candidate_label,
+                "resume_id": resume_id,
                 "name": meta.get("name"),
                 "category": meta.get("category"),
                 "mastercategory": meta.get("mastercategory"),
@@ -142,7 +154,11 @@ def format_context_results(matches: List[Dict[str, Any]]) -> List[Dict[str, Any]
     return formatted_results
 
 
-def build_final_response(query: str, matches: List[Dict[str, Any]]) -> Dict[str, Any]:
+def build_final_response(
+    query: str,
+    matches: List[Dict[str, Any]],
+    results_from: str = "primary",
+) -> Dict[str, Any]:
     """Build ATS-style final payload for context-search API."""
     formatted = format_context_results(matches)
     return {
@@ -150,7 +166,7 @@ def build_final_response(query: str, matches: List[Dict[str, Any]]) -> Dict[str,
         "total_results": len(formatted),
         "results": formatted,
         "search_type": "semantic",
-        "results_from": "context_index",
+        "results_from": results_from,
     }
 
 
@@ -166,8 +182,14 @@ def search_context_ats_response(
 
     This is intentionally separate from existing ATS search endpoints.
     """
-    query_text = build_context_query(role=role, skills=skills, experience=experience)
-    query_embedding = generate_embedding(query_text)
+    context_query_text = build_context_query(role=role, skills=skills, experience=experience)
+    query_embedding = generate_embedding(context_query_text)
+
+    # Keep response query human-friendly (similar to existing ai-search),
+    # while still embedding the structured context query internally.
+    role_text = (role or "").strip() or "Candidate"
+    exp_text = (experience or "").strip()
+    response_query = f"{role_text} ({exp_text})" if exp_text else role_text
 
     indexer = ContextIndexer()
     indexer.ensure_index()
@@ -177,7 +199,29 @@ def search_context_ats_response(
         metadata_filter=metadata_filter,
     )
     matches = _extract_matches(raw_result)
-    return build_final_response(query_text, matches)
+    return build_final_response(response_query, matches, results_from="primary")
+
+
+def search_context_ats_response_query(
+    query: str,
+    top_k: int = 20,
+    metadata_filter: Optional[Dict[str, Any]] = None,
+) -> Dict[str, Any]:
+    """Natural-language query search for context index (ai-search style input)."""
+    query_text = (query or "").strip()
+    if not query_text:
+        query_text = "Candidate search"
+
+    query_embedding = generate_embedding(query_text)
+    indexer = ContextIndexer()
+    indexer.ensure_index()
+    raw_result = indexer.query(
+        query_embedding=query_embedding,
+        top_k=top_k,
+        metadata_filter=metadata_filter,
+    )
+    matches = _extract_matches(raw_result)
+    return build_final_response(query_text, matches, results_from="primary")
 
 
 async def _fetch_sample_candidates(limit: int = 5) -> List[Dict[str, Any]]:
