@@ -5,11 +5,11 @@ from typing import Any, Dict, List, Optional
 from pinecone import Pinecone, ServerlessSpec
 
 from app.config import settings
-from core.services.context_builder import build_candidate_context
+from core.services.context_builder import build_context, row_to_index_context_profile
 from core.services.context_embedding import generate_embedding
 
-CONTEXT_INDEX_NAME = "ats-context"
-CONTEXT_MODEL_DIMENSION = 1536  # text-embedding-3-small
+CONTEXT_INDEX_NAME = "all-ats-context"
+CONTEXT_MODEL_DIMENSION = settings.embedding_dimension  # Ollama nomic-embed-text (768)
 
 
 def _iso_now() -> str:
@@ -28,7 +28,7 @@ class ContextIndexer:
         self._index = None
 
     def ensure_index(self) -> None:
-        """Create `ats-context` index if missing, then bind index handle."""
+        """Create context index if missing, then bind index handle."""
         existing = [idx.name for idx in self._pc.list_indexes()]
         if CONTEXT_INDEX_NAME not in existing:
             self._pc.create_index(
@@ -65,7 +65,7 @@ class ContextIndexer:
         }
 
     def upsert_candidates(self, rows: List[Dict[str, Any]]) -> int:
-        """Build context + embedding and upsert candidates into `ats-context`."""
+        """Build context + embedding and upsert candidates into the context Pinecone index."""
         if self._index is None:
             self.ensure_index()
 
@@ -75,7 +75,10 @@ class ContextIndexer:
             if candidate_id is None:
                 continue
 
-            context_text = build_candidate_context(row)
+            profile = row_to_index_context_profile(row)
+            context_text = build_context(profile).strip()
+            if not context_text:
+                context_text = "Candidate professional profile."
             embedding = generate_embedding(context_text)
             metadata = self._metadata_from_row(row)
 

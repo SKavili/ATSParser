@@ -7,8 +7,89 @@ from sqlalchemy import select
 
 from app.database.connection import async_session_maker
 from app.database.models import ResumeMetadata
+from core.services.context_builder import build_context
 from core.services.context_embedding import generate_embedding
-from core.services.context_indexer import ContextIndexer
+from core.services.context_indexer import CONTEXT_INDEX_NAME, ContextIndexer
+
+
+def _structured_search_profile(
+    role: str,
+    skills: List[str],
+    experience: Optional[str],
+) -> Dict[str, Any]:
+    """Build profile dict for build_context from API structured fields."""
+    profile: Dict[str, Any] = {}
+    r = (role or "").strip()
+    if r:
+        profile["role"] = r
+    if experience is not None and str(experience).strip():
+        profile["experience"] = experience
+    cleaned = [s.strip() for s in (skills or []) if s and str(s).strip()]
+    if cleaned:
+        profile["skills"] = cleaned
+    return profile
+
+
+def _ensure_query_text(text: str) -> str:
+    """Non-empty string for embedding."""
+    t = (text or "").strip()
+    return t if t else "Candidate professional profile."
+
+
+def extract_profile_from_query(text: str) -> Dict[str, Any]:
+    """
+    Parse a free-text hiring query into a profile dict for build_context.
+
+    Heuristic only; on failure returns {} so caller can use fallback embedding text.
+    """
+    if not text or not str(text).strip():
+        return {}
+
+    s = str(text).strip()
+    profile: Dict[str, Any] = {}
+
+    # Optional skills: "skills: a, b" or "skilled in a, b"
+    m_sk = re.search(r"(?:skilled in|skills?\s*:)\s*(.+?)(?:\.|$)", s, re.IGNORECASE)
+    if m_sk:
+        skills_part = m_sk.group(1).strip()
+        skills_list = [x.strip() for x in re.split(r"[,;/]", skills_part) if x.strip()]
+        if skills_list:
+            profile["skills"] = skills_list[:30]
+        s = (s[: m_sk.start()] + s[m_sk.end() :]).strip()
+        s = re.sub(r"\s+", " ", s)
+
+    # Experience: 3 years, 3+ years, 5 yrs
+    m_exp = re.search(r"(\d+)\s*\+?\s*(?:years?|yrs?\.?)", s, re.IGNORECASE)
+    if m_exp:
+        profile["experience"] = m_exp.group(1)
+        before = s[: m_exp.start()].strip()
+        before = re.sub(r"\s+with\s*$", "", before, flags=re.IGNORECASE).strip()
+        after_raw = s[m_exp.end() :].strip()
+        after = re.sub(r"^(?:of\s+)?(?:experience\s+)?", "", after_raw, flags=re.IGNORECASE).strip()
+        after = re.sub(r"^(?:in\s+)?", "", after, flags=re.IGNORECASE).strip()
+
+        role_guess = ""
+        if before:
+            role_guess = before
+        elif after:
+            m_as = re.match(r"^(?:as|as a|for)\s+(.+)", after, re.IGNORECASE)
+            if m_as:
+                role_guess = m_as.group(1).strip()
+            else:
+                role_guess = after.split(".")[0].strip()
+        if role_guess:
+            profile["role"] = role_guess.rstrip(" -,/").strip(". ")[:300]
+    else:
+        if s:
+            profile["role"] = s[:300]
+
+    if profile.get("role") == "":
+        profile.pop("role", None)
+
+    if not any(profile.get(k) for k in ("role", "experience", "skills")):
+        return {}
+
+    return profile
 
 
 def _extract_matches(raw_result: Any) -> List[Dict[str, Any]]:
@@ -45,24 +126,6 @@ def _extract_matches(raw_result: Any) -> List[Dict[str, Any]]:
     return normalized
 
 
-def build_context_query(
-    role: str,
-    skills: List[str],
-    experience: Optional[str] = "",
-) -> str:
-    """Build structured context query instead of plain text query."""
-    joined_skills = ", ".join([s.strip() for s in skills if s and s.strip()]) or "N/A"
-    role_text = role.strip() if role and role.strip() else "N/A"
-    exp_text = experience.strip() if experience and experience.strip() else "N/A"
-
-    return (
-        "Looking for Candidate\n"
-        f"Role: {role_text}\n"
-        f"Skills: {joined_skills}\n"
-        f"Experience: {exp_text}"
-    )
-
-
 def search_candidates(
     role: str,
     skills: List[str],
@@ -71,11 +134,12 @@ def search_candidates(
     metadata_filter: Optional[Dict[str, Any]] = None,
 ) -> Dict[str, Any]:
     """
-    Run context-aware semantic search on `ats-context`.
+    Run context-aware semantic search on `all-ats-context`.
 
-    Builds a structured context query, embeds it, and performs Pinecone similarity search.
+    Uses same natural-language format as indexing (build_context).
     """
-    query_text = build_context_query(role=role, skills=skills, experience=experience)
+    profile = _structured_search_profile(role, skills, experience)
+    query_text = _ensure_query_text(build_context(profile))
     query_embedding = generate_embedding(query_text)
 
     indexer = ContextIndexer()
@@ -180,16 +244,11 @@ def search_context_ats_response(
     """
     New context-search response builder for ATS-compatible payloads.
 
-    This is intentionally separate from existing ATS search endpoints.
+    Structured fields are converted with build_context (same format as indexing).
     """
-    context_query_text = build_context_query(role=role, skills=skills, experience=experience)
-    query_embedding = generate_embedding(context_query_text)
-
-    # Keep response query human-friendly (similar to existing ai-search),
-    # while still embedding the structured context query internally.
-    role_text = (role or "").strip() or "Candidate"
-    exp_text = (experience or "").strip()
-    response_query = f"{role_text} ({exp_text})" if exp_text else role_text
+    profile = _structured_search_profile(role, skills, experience)
+    query_text = _ensure_query_text(build_context(profile))
+    query_embedding = generate_embedding(query_text)
 
     indexer = ContextIndexer()
     indexer.ensure_index()
@@ -199,7 +258,7 @@ def search_context_ats_response(
         metadata_filter=metadata_filter,
     )
     matches = _extract_matches(raw_result)
-    return build_final_response(response_query, matches, results_from="primary")
+    return build_final_response(query_text, matches, results_from="primary")
 
 
 def search_context_ats_response_query(
@@ -207,10 +266,16 @@ def search_context_ats_response_query(
     top_k: int = 20,
     metadata_filter: Optional[Dict[str, Any]] = None,
 ) -> Dict[str, Any]:
-    """Natural-language query search for context index (ai-search style input)."""
-    query_text = (query or "").strip()
-    if not query_text:
-        query_text = "Candidate search"
+    """
+    Natural-language query: parse into profile, then embed ONLY via build_context(profile).
+
+    Raw request.query is never embedded directly.
+    """
+    profile = extract_profile_from_query(query or "")
+    if not profile:
+        query_text = _ensure_query_text("")
+    else:
+        query_text = _ensure_query_text(build_context(profile))
 
     query_embedding = generate_embedding(query_text)
     indexer = ContextIndexer()
@@ -274,7 +339,7 @@ async def _run_test_context_pipeline() -> None:
     indexer = ContextIndexer()
     indexer.ensure_index()
     indexed_count = indexer.upsert_candidates(sample_candidates)
-    print(f"Indexed candidates into ats-context: {indexed_count}")
+    print(f"Indexed candidates into {CONTEXT_INDEX_NAME}: {indexed_count}")
 
     search_result = search_candidates(
         role="Python Developer",

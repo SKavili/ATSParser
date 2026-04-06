@@ -5,7 +5,7 @@ from pydantic import BaseModel, Field, model_validator
 
 
 class ContextSearchRequest(BaseModel):
-    """Request model for ats-context semantic candidate search."""
+    """Request model for `all-ats-context` semantic candidate search."""
 
     query: Optional[str] = Field(
         None,

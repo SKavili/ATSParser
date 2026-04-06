@@ -1,52 +1,70 @@
-"""Embedding generation for context-aware candidate memory."""
-from typing import List
+"""Generate embeddings for context pipeline via Ollama (same stack as resume embeddings)."""
+import logging
+from typing import Optional
 
 import httpx
-from httpx import Timeout
+import numpy as np
 
 from app.config import settings
 
-OPENAI_EMBEDDINGS_URL = "https://api.openai.com/v1/embeddings"
-CONTEXT_EMBEDDING_MODEL = "text-embedding-3-small"
+logger = logging.getLogger(__name__)
+
+# Must match settings.embedding_dimension (768 for nomic-embed-text)
+EMBED_MODEL = "nomic-embed-text"
+
+_ollama_model_cache: Optional[str] = None
 
 
-def generate_embedding(text: str) -> List[float]:
-    """
-    Generate embedding using existing project OpenAI configuration.
+def _resolve_model(client: httpx.Client) -> str:
+    """Use installed `nomic-embed-text` tag; same dimension as resume pipeline."""
+    global _ollama_model_cache
+    if _ollama_model_cache:
+        return _ollama_model_cache
+    try:
+        r = client.get(f"{settings.ollama_host}/api/tags", timeout=30.0)
+        r.raise_for_status()
+        models = r.json().get("models", [])
+        names = [m.get("name", "") for m in models]
+        for n in names:
+            if n.startswith(EMBED_MODEL):
+                _ollama_model_cache = n
+                logger.info("Context embedding using Ollama model: %s", _ollama_model_cache)
+                return _ollama_model_cache
+    except Exception as e:
+        logger.warning("Could not list Ollama models: %s", e)
+    raise RuntimeError(
+        f"Ollama embedding model `{EMBED_MODEL}` not found. Run: ollama pull {EMBED_MODEL}"
+    )
 
-    Reuses the same OPENAI_API_KEY source already used in the ATS project
-    (settings.openai_api_key). Does not introduce any new OpenAI setup.
-    """
-    api_key = getattr(settings, "openai_api_key", None)
-    if not api_key or not str(api_key).strip():
-        raise ValueError(
-            "OPENAI_API_KEY is required for context embedding generation."
+
+def generate_embedding(text: str) -> list[float]:
+    """Sync embedding via Ollama; L2-normalized vector (same as EmbeddingService)."""
+    if not text or not text.strip():
+        raise ValueError("Text cannot be empty")
+    if not settings.ollama_host:
+        raise ValueError("OLLAMA_HOST is not configured")
+
+    with httpx.Client(timeout=120.0) as client:
+        model = _resolve_model(client)
+        r = client.post(
+            f"{settings.ollama_host}/api/embeddings",
+            json={"model": model, "prompt": text.strip()},
+            timeout=120.0,
         )
+        r.raise_for_status()
+        data = r.json()
+        emb = data.get("embedding")
+        if not emb:
+            raise RuntimeError("Ollama returned no embedding")
+        if len(emb) != settings.embedding_dimension:
+            raise RuntimeError(
+                f"Embedding length {len(emb)} != EMBEDDING_DIMENSION={settings.embedding_dimension}. "
+                "Prefer `nomic-embed-text` for 768-dim context indexing, or align EMBEDDING_DIMENSION "
+                "with your Ollama embedding model and recreate the Pinecone index."
+            )
 
-    payload = {
-        "model": CONTEXT_EMBEDDING_MODEL,
-        "input": text,
-    }
-
-    with httpx.Client(timeout=Timeout(60.0)) as client:
-        response = client.post(
-            OPENAI_EMBEDDINGS_URL,
-            headers={
-                "Authorization": f"Bearer {str(api_key).strip()}",
-                "Content-Type": "application/json",
-            },
-            json=payload,
-        )
-        response.raise_for_status()
-        data = response.json()
-
-    items = data.get("data", [])
-    if not items:
-        raise RuntimeError("OpenAI embeddings response contains no data")
-
-    embedding = items[0].get("embedding", [])
-    if not embedding:
-        raise RuntimeError("OpenAI embeddings response contains empty embedding")
-
-    return embedding
-
+    arr = np.array(emb, dtype=np.float32)
+    norm = np.linalg.norm(arr)
+    if norm > 0:
+        arr = arr / norm
+    return arr.tolist()

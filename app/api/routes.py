@@ -32,6 +32,7 @@ from core.services.context_search import (
     search_context_ats_response_query,
 )
 from core.services.context_indexing_service import ContextIndexingService
+from core.services.context_indexer import CONTEXT_INDEX_NAME
 
 logger = get_logger(__name__)
 
@@ -326,13 +327,21 @@ async def ats_index_pinecone(
 
 @router.post("/context-index-pinecone")
 async def context_index_pinecone(
-    limit: Optional[int] = Query(None, description="Maximum number of resumes to process"),
+    limit: int = Query(
+        0,
+        ge=0,
+        description="Max resumes to index. 0 = all pending eligible rows (default). Use a positive number to cap batch size.",
+    ),
     resume_ids: Optional[List[int]] = Query(None, description="Specific resume IDs to process"),
     force: bool = Query(False, description="Force re-indexing even if context_pinecone_status is already 1"),
     session: AsyncSession = Depends(get_db_session),
 ):
     """
-    Index resumes into Pinecone index `ats-context` using structured context text.
+    Index resumes into Pinecone index `all-ats-context` using structured context text.
+    Embeddings use Ollama (same host as resume pipeline).
+
+    By default processes all completed rows with ``context_pinecone_status`` 0/NULL
+    (use ``force=true`` to include already-indexed rows). Pass ``limit=N`` to process at most N rows.
 
     This endpoint is independent from existing indexing endpoints and does not
     change current ATS search/index logic.
@@ -346,7 +355,10 @@ async def context_index_pinecone(
         )
     except Exception as e:
         logger.error(f"Error in context-index-pinecone endpoint: {e}", exc_info=True)
-        raise HTTPException(status_code=500, detail=f"Failed to index into ats-context: {str(e)}")
+        raise HTTPException(
+            status_code=500,
+            detail=f"Failed to index into {CONTEXT_INDEX_NAME}: {str(e)}",
+        )
 
 
 @router.post("/reindex-resumes")
@@ -522,7 +534,8 @@ async def ai_search_2(
 @router.post("/context-search", response_model=ContextSearchResponse, status_code=200)
 async def context_search(request: ContextSearchRequest):
     """
-    Context-based semantic candidate search using Pinecone `ats-context` index.
+    Context-based semantic candidate search using Pinecone `all-ats-context` index.
+    Query embeddings use Ollama (same as context indexing).
 
     This endpoint is intentionally separate from existing ATS search endpoints.
     It does not modify or alter existing ATS search logic.

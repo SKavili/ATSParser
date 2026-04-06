@@ -1,4 +1,4 @@
-"""Bulk indexing service for context-based candidate embeddings into `ats-context`."""
+"""Bulk indexing service for context-based candidate embeddings into Pinecone."""
 import asyncio
 from typing import Any, Dict, List, Optional
 
@@ -6,14 +6,14 @@ from sqlalchemy import bindparam, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.utils.logging import get_logger
-from core.services.context_indexer import ContextIndexer
+from core.services.context_indexer import CONTEXT_INDEX_NAME, ContextIndexer
 
 logger = get_logger(__name__)
 
 
 class ContextIndexingService:
     """
-    Index MySQL resume_metadata rows into Pinecone `ats-context`.
+    Index MySQL resume_metadata rows into Pinecone `all-ats-context`.
 
     This service is intentionally separate from existing ATS indexing flows.
     """
@@ -57,10 +57,10 @@ class ContextIndexingService:
         force: bool = False,
     ) -> Dict[str, Any]:
         """
-        Bulk index resumes into `ats-context`.
+        Bulk index resumes into the context Pinecone index.
 
         Args:
-            limit: Optional max rows to process.
+            limit: Max rows to process. ``0`` or ``None`` means no cap (all eligible).
             resume_ids: Optional specific resume IDs.
             force: Mirrors existing style. True means process all eligible rows.
 
@@ -80,7 +80,7 @@ class ContextIndexingService:
                 "processed_ids": [],
                 "failed_ids": [],
                 "skipped_ids": [],
-                "message": "No resumes to index into `ats-context`",
+                "message": f"No resumes to index into `{CONTEXT_INDEX_NAME}`",
             }
 
         await asyncio.to_thread(self.indexer.ensure_index)
@@ -129,7 +129,7 @@ class ContextIndexingService:
             "failed_ids": failed_ids,
             "skipped_ids": skipped_ids,
             "message": (
-                f"Indexed {indexed_count} resumes into Pinecone `ats-context`. "
+                f"Indexed {indexed_count} resumes into Pinecone `{CONTEXT_INDEX_NAME}`. "
                 f"Failed: {failed_count}. Skipped: {len(skipped_ids)}"
             ),
         }
@@ -168,7 +168,7 @@ class ContextIndexingService:
             base_sql += " AND id IN :resume_ids"
 
         base_sql += " ORDER BY id ASC"
-        if limit:
+        if limit is not None and limit > 0:
             base_sql += " LIMIT :limit"
             params["limit"] = limit
 
