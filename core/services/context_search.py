@@ -1,15 +1,165 @@
 """Context query search + end-to-end test helper for ats_context_pipeline."""
 import asyncio
+import json
 import re
 from typing import Any, Dict, List, Optional
 
+import httpx
+from httpx import Timeout
 from sqlalchemy import select
 
+from app.config import settings
 from app.database.connection import async_session_maker
 from app.database.models import ResumeMetadata
+from app.services.llm_service import generate as llm_generate
+from app.services.llm_service import use_openai
+from app.utils.logging import get_logger
 from core.services.context_builder import build_context
 from core.services.context_embedding import generate_embedding
 from core.services.context_indexer import CONTEXT_INDEX_NAME, ContextIndexer
+
+logger = get_logger(__name__)
+
+CONTEXT_QUERY_JSON_SYSTEM = """You extract structured hiring intent for a candidate search profile.
+Return ONLY valid JSON (no markdown, no code fences) with exactly this shape:
+{"role": "", "experience": "", "skills": []}
+
+Rules:
+- "role": job title or primary role if clearly stated; else "".
+- "experience": years as a short string if the query mentions them (e.g. "3", "5+"); else "".
+- "skills": array of distinct skills/technologies explicitly mentioned; else [].
+- Use only information supported by the query; do not invent employers or locations.
+"""
+
+
+def _extract_json_object(raw: str) -> Optional[Dict[str, Any]]:
+    if not raw or not str(raw).strip():
+        return None
+    cleaned = str(raw).strip()
+    cleaned = re.sub(r"```json\s*", "", cleaned)
+    cleaned = re.sub(r"```\s*", "", cleaned)
+    m = re.search(r"\{.*\}", cleaned, re.DOTALL)
+    if m:
+        try:
+            return json.loads(m.group())
+        except json.JSONDecodeError:
+            pass
+    try:
+        return json.loads(cleaned)
+    except json.JSONDecodeError:
+        return None
+
+
+def _profile_from_llm_dict(data: Dict[str, Any]) -> Dict[str, Any]:
+    role = (data.get("role") or "").strip() if isinstance(data.get("role"), (str, int, float)) else ""
+    if not isinstance(role, str):
+        role = str(role).strip()
+    exp = data.get("experience")
+    if exp is not None and not isinstance(exp, str):
+        exp = str(exp).strip()
+    elif isinstance(exp, str):
+        exp = exp.strip()
+    else:
+        exp = ""
+    skills_raw = data.get("skills")
+    skills: List[str] = []
+    if isinstance(skills_raw, list):
+        skills = [str(s).strip() for s in skills_raw if s is not None and str(s).strip()][:30]
+    profile: Dict[str, Any] = {}
+    if role:
+        profile["role"] = role[:300]
+    if exp:
+        profile["experience"] = exp[:100]
+    if skills:
+        profile["skills"] = skills
+    if not any(profile.get(k) for k in ("role", "experience", "skills")):
+        return {}
+    return profile
+
+
+async def parse_natural_language_context_query(query: str) -> Dict[str, Any]:
+    """
+    Parse free-text query via LLM (OpenAI when LLM_MODEL=OpenAI, else Ollama chat), else heuristics.
+
+    Returns profile keys: role, experience, skills — suitable for build_context.
+    """
+    q = (query or "").strip()
+    if not q:
+        return {}
+
+    max_len = getattr(settings, "ai_search_query_max_length", 2000)
+    if len(q) > max_len:
+        q = q[:max_len]
+
+    user_msg = f"Query:\n{q}\n\nRespond with JSON only."
+
+    if use_openai():
+        if not getattr(settings, "openai_api_key", None) or not str(settings.openai_api_key).strip():
+            logger.warning("LLM_MODEL=OpenAI but OPENAI_API_KEY missing; using heuristic query parse")
+            return extract_profile_from_query(q)
+        try:
+            raw = await llm_generate(
+                prompt=user_msg,
+                system_prompt=CONTEXT_QUERY_JSON_SYSTEM,
+                temperature=0.1,
+                timeout_seconds=120.0,
+            )
+            parsed = _extract_json_object(raw or "")
+            if parsed:
+                prof = _profile_from_llm_dict(parsed)
+                if prof:
+                    return prof
+        except Exception as e:
+            logger.warning(f"OpenAI context query parse failed: {e}; using heuristics")
+        return extract_profile_from_query(q)
+
+    # LLM_MODEL=OLLAMA: use Ollama /api/chat for parsing (embeddings still use separate Ollama embeddings API)
+    try:
+        raw = await _ollama_chat_context_json(user_msg)
+        parsed = _extract_json_object(raw or "")
+        if parsed:
+            prof = _profile_from_llm_dict(parsed)
+            if prof:
+                return prof
+    except Exception as e:
+        logger.warning(f"Ollama context query parse failed: {e}; using heuristics")
+
+    return extract_profile_from_query(q)
+
+
+async def _ollama_chat_context_json(user_msg: str) -> str:
+    host = (settings.ollama_host or "").rstrip("/")
+    if not host:
+        raise RuntimeError("OLLAMA_HOST not set")
+    model = (getattr(settings, "context_query_ollama_model", None) or "llama3.1").strip()
+    async with httpx.AsyncClient(timeout=Timeout(120.0)) as client:
+        r = await client.post(
+            f"{host}/api/chat",
+            json={
+                "model": model,
+                "messages": [
+                    {"role": "system", "content": CONTEXT_QUERY_JSON_SYSTEM},
+                    {"role": "user", "content": user_msg},
+                ],
+                "stream": False,
+                "options": {"temperature": 0.1},
+            },
+        )
+        if r.status_code == 404:
+            r = await client.post(
+                f"{host}/api/generate",
+                json={
+                    "model": model,
+                    "prompt": f"{CONTEXT_QUERY_JSON_SYSTEM}\n\n{user_msg}",
+                    "stream": False,
+                    "options": {"temperature": 0.1},
+                },
+            )
+        r.raise_for_status()
+        data = r.json()
+        if "message" in data and isinstance(data["message"], dict):
+            return (data["message"].get("content") or "").strip()
+        return (data.get("response") or "").strip()
 
 
 def _structured_search_profile(
@@ -261,22 +411,12 @@ def search_context_ats_response(
     return build_final_response(query_text, matches, results_from="primary")
 
 
-def search_context_ats_response_query(
-    query: str,
-    top_k: int = 20,
-    metadata_filter: Optional[Dict[str, Any]] = None,
+def _embed_and_query_context_index(
+    query_text: str,
+    top_k: int,
+    metadata_filter: Optional[Dict[str, Any]],
 ) -> Dict[str, Any]:
-    """
-    Natural-language query: parse into profile, then embed ONLY via build_context(profile).
-
-    Raw request.query is never embedded directly.
-    """
-    profile = extract_profile_from_query(query or "")
-    if not profile:
-        query_text = _ensure_query_text("")
-    else:
-        query_text = _ensure_query_text(build_context(profile))
-
+    """Sync embedding + Pinecone query (runs in thread pool from async caller)."""
     query_embedding = generate_embedding(query_text)
     indexer = ContextIndexer()
     indexer.ensure_index()
@@ -287,6 +427,31 @@ def search_context_ats_response_query(
     )
     matches = _extract_matches(raw_result)
     return build_final_response(query_text, matches, results_from="primary")
+
+
+async def search_context_ats_response_query(
+    query: str,
+    top_k: int = 20,
+    metadata_filter: Optional[Dict[str, Any]] = None,
+) -> Dict[str, Any]:
+    """
+    Natural-language query: LLM parse → profile → build_context → Ollama embedding (never raw query).
+
+    When LLM_MODEL=OpenAI, parsing uses llm_service (OpenAI). Otherwise Ollama chat for parsing;
+    vectors always use context_embedding (Ollama /api/embeddings).
+    """
+    profile = await parse_natural_language_context_query(query or "")
+    if not profile:
+        query_text = _ensure_query_text("")
+    else:
+        query_text = _ensure_query_text(build_context(profile))
+
+    return await asyncio.to_thread(
+        _embed_and_query_context_index,
+        query_text,
+        top_k,
+        metadata_filter,
+    )
 
 
 async def _fetch_sample_candidates(limit: int = 5) -> List[Dict[str, Any]]:
@@ -376,7 +541,7 @@ def test_context_pipeline() -> None:
     Steps:
     1) Fetch sample candidates
     2) Build context text
-    3) Generate OpenAI embedding (existing project config)
+    3) Generate Ollama embedding (context_embedding)
     4) Store in Pinecone
     5) Query and print results
     """

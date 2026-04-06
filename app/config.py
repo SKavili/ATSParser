@@ -32,6 +32,8 @@ class Settings(BaseSettings):
     # OLLAMA Configuration
     ollama_host: str = Field("http://localhost:11434", alias="OLLAMA_HOST")
     ollama_api_key: Optional[str] = Field(None, alias="OLLAMA_API_KEY")
+    # Ollama chat model for context-search natural-language parsing when LLM_MODEL=OLLAMA (not embedding model)
+    context_query_ollama_model: str = Field("llama3.1", alias="CONTEXT_QUERY_OLLAMA_MODEL")
 
     # LLM provider: "OpenAI" or "OLLAMA" (used for metadata extraction and AI search; embeddings unchanged)
     llm_model: str = Field("OLLAMA", alias="LLM_MODEL")

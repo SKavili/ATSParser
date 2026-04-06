@@ -535,15 +535,15 @@ async def ai_search_2(
 async def context_search(request: ContextSearchRequest):
     """
     Context-based semantic candidate search using Pinecone `all-ats-context` index.
-    Query embeddings use Ollama (same as context indexing).
+    Natural-language queries: LLM parses intent (OpenAI when ``LLM_MODEL=OpenAI``, else Ollama chat);
+    embeddings use Ollama (same as context indexing). Structured fields skip LLM and use ``build_context`` only.
 
     This endpoint is intentionally separate from existing ATS search endpoints.
     It does not modify or alter existing ATS search logic.
     """
     try:
         if request.query and request.query.strip():
-            return await run_in_threadpool(
-                search_context_ats_response_query,
+            return await search_context_ats_response_query(
                 query=request.query,
                 top_k=request.top_k,
                 metadata_filter=request.metadata_filter,
