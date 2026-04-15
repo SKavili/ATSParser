@@ -325,13 +325,120 @@ def get_fit_tier(score: float) -> str:
     return "Low Match"
 
 
-def format_context_results(matches: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+def _tokenize_for_match(text: str) -> List[str]:
+    """Tokenize free text for lightweight overlap matching."""
+    if not text:
+        return []
+    return [t for t in re.split(r"[^a-z0-9]+", text.lower()) if t]
+
+
+def _calc_role_match_score(query_role: str, candidate_role_text: str) -> float:
+    """Return role text overlap score in [0, 1]."""
+    q_tokens = set(_tokenize_for_match(query_role))
+    c_tokens = set(_tokenize_for_match(candidate_role_text))
+    if not q_tokens or not c_tokens:
+        return 0.0
+    overlap = len(q_tokens.intersection(c_tokens))
+    return overlap / float(len(q_tokens))
+
+
+def _calc_skill_match_score(query_skills: List[str], candidate_skills: List[str]) -> float:
+    """Return skills overlap score in [0, 1]."""
+    q = {s.strip().lower() for s in (query_skills or []) if str(s).strip()}
+    c = {s.strip().lower() for s in (candidate_skills or []) if str(s).strip()}
+    if not q or not c:
+        return 0.0
+    overlap = len(q.intersection(c))
+    return overlap / float(len(q))
+
+
+def _calc_experience_match_score(query_exp: Any, candidate_exp_years: int) -> float:
+    """Return experience alignment score in [0, 1]."""
+    target = extract_years(query_exp)
+    if target <= 0:
+        return 0.0
+    # Full score for meeting/exceeding target; soft penalty when below target.
+    if candidate_exp_years >= target:
+        return 1.0
+    gap = target - max(candidate_exp_years, 0)
+    return max(0.0, 1.0 - (gap / float(max(target, 1))))
+
+
+def _weighted_context_score(
+    similarity: float,
+    query_role: str,
+    query_skills: List[str],
+    query_experience: Any,
+    candidate_role_text: str,
+    candidate_skills: List[str],
+    candidate_experience_years: int,
+) -> Dict[str, float]:
+    """
+    Blend Pinecone similarity with context-aware signals.
+
+    Returns component scores and weighted score in [0, 100].
+    """
+    similarity_clamped = max(0.0, min(1.0, float(similarity or 0.0)))
+    role_score = _calc_role_match_score(query_role, candidate_role_text)
+    skill_score = _calc_skill_match_score(query_skills, candidate_skills)
+    exp_score = _calc_experience_match_score(query_experience, candidate_experience_years)
+
+    weights: Dict[str, float] = {"similarity": 0.7}
+    if query_role and query_role.strip():
+        weights["role"] = 0.1
+    if query_skills:
+        weights["skills"] = 0.15
+    if extract_years(query_experience) > 0:
+        weights["experience"] = 0.05
+
+    total_weight = sum(weights.values()) or 1.0
+    weighted_0_1 = (
+        similarity_clamped * weights.get("similarity", 0.0)
+        + role_score * weights.get("role", 0.0)
+        + skill_score * weights.get("skills", 0.0)
+        + exp_score * weights.get("experience", 0.0)
+    ) / total_weight
+
+    return {
+        "similarity_score": round(similarity_clamped * 100.0, 2),
+        "role_match_score": round(role_score * 100.0, 2),
+        "skills_match_score": round(skill_score * 100.0, 2),
+        "experience_match_score": round(exp_score * 100.0, 2),
+        "weighted_score": round(max(0.0, min(100.0, weighted_0_1 * 100.0)), 2),
+    }
+
+
+def format_context_results(
+    matches: List[Dict[str, Any]],
+    search_profile: Optional[Dict[str, Any]] = None,
+) -> List[Dict[str, Any]]:
     """Convert context index matches into ATS-compatible response rows."""
+    profile = search_profile or {}
+    query_role = str(profile.get("role") or "").strip()
+    query_skills = [str(s).strip() for s in (profile.get("skills") or []) if str(s).strip()]
+    query_experience = profile.get("experience")
+
     formatted_results: List[Dict[str, Any]] = []
     for match in matches:
         meta = match.get("metadata", {}) or {}
         raw_candidate_id = meta.get("candidate_id")
         score = float(match.get("score", 0) or 0)
+        candidate_skills = split_skills(meta.get("skills"))
+        candidate_exp_years = extract_years(meta.get("experience"))
+        candidate_role_text = " ".join(
+            str(v).strip()
+            for v in [meta.get("role"), meta.get("jobrole"), meta.get("designation")]
+            if str(v).strip()
+        )
+        scoring = _weighted_context_score(
+            similarity=score,
+            query_role=query_role,
+            query_skills=query_skills,
+            query_experience=query_experience,
+            candidate_role_text=candidate_role_text,
+            candidate_skills=candidate_skills,
+            candidate_experience_years=candidate_exp_years,
+        )
         resume_id = None
         candidate_label = "C0"
 
@@ -354,17 +461,29 @@ def format_context_results(matches: List[Dict[str, Any]]) -> List[Dict[str, Any]
                 "mastercategory": meta.get("mastercategory"),
                 "designation": meta.get("role"),
                 "jobrole": meta.get("jobrole"),
-                "experience_years": extract_years(meta.get("experience")),
-                "skills": split_skills(meta.get("skills")),
+                "experience_years": candidate_exp_years,
+                "skills": candidate_skills,
                 "location": meta.get("location", ""),
                 "email": meta.get("email"),
                 "mobile": meta.get("mobile"),
                 "filename": meta.get("filename"),
-                "score": round(score * 100, 2),
-                "fit_tier": get_fit_tier(score),
+                "score": scoring["weighted_score"],
+                "weighted_score": scoring["weighted_score"],
+                "similarity_score": scoring["similarity_score"],
+                "skills_match_score": scoring["skills_match_score"],
+                "experience_match_score": scoring["experience_match_score"],
+                "role_match_score": scoring["role_match_score"],
+                "fit_tier": get_fit_tier(scoring["weighted_score"] / 100.0),
             }
         )
 
+    formatted_results.sort(
+        key=lambda row: (
+            float(row.get("weighted_score", 0) or 0),
+            float(row.get("similarity_score", 0) or 0),
+        ),
+        reverse=True,
+    )
     return formatted_results
 
 
@@ -372,9 +491,10 @@ def build_final_response(
     query: str,
     matches: List[Dict[str, Any]],
     results_from: str = "primary",
+    search_profile: Optional[Dict[str, Any]] = None,
 ) -> Dict[str, Any]:
     """Build ATS-style final payload for context-search API."""
-    formatted = format_context_results(matches)
+    formatted = format_context_results(matches, search_profile=search_profile)
     return {
         "query": query,
         "total_results": len(formatted),
@@ -408,13 +528,19 @@ def search_context_ats_response(
         metadata_filter=metadata_filter,
     )
     matches = _extract_matches(raw_result)
-    return build_final_response(query_text, matches, results_from="primary")
+    return build_final_response(
+        query_text,
+        matches,
+        results_from="primary",
+        search_profile=profile,
+    )
 
 
 def _embed_and_query_context_index(
     query_text: str,
     top_k: int,
     metadata_filter: Optional[Dict[str, Any]],
+    search_profile: Optional[Dict[str, Any]] = None,
 ) -> Dict[str, Any]:
     """Sync embedding + Pinecone query (runs in thread pool from async caller)."""
     query_embedding = generate_embedding(query_text)
@@ -426,7 +552,12 @@ def _embed_and_query_context_index(
         metadata_filter=metadata_filter,
     )
     matches = _extract_matches(raw_result)
-    return build_final_response(query_text, matches, results_from="primary")
+    return build_final_response(
+        query_text,
+        matches,
+        results_from="primary",
+        search_profile=search_profile,
+    )
 
 
 async def search_context_ats_response_query(
@@ -451,6 +582,7 @@ async def search_context_ats_response_query(
         query_text,
         top_k,
         metadata_filter,
+        profile,
     )
 
 

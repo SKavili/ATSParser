@@ -488,10 +488,12 @@ class AISearch2Service:
         filters = parsed_query.get("filters", {})
         pinecone_filter = {}
         
-        # Handle must_have_all (mandatory skills - strict enforcement)
-        # Note: Pinecone doesn't support $all operator, so we use $and with multiple $in conditions
-        # Each skill must be present in the skills array
+        # Handle must_have_all (mandatory skills)
+        # Pinecone doesn't support $all; multi-skill strict mode uses $and of $in per skill.
+        # When comma_strict_and is False and multiple skills are required, skip Pinecone skill
+        # filters (too harsh recall-wise); overlap is enforced in relevance / hybrid scoring.
         must_have_all = filters.get("must_have_all", [])
+        comma_strict_and = bool(parsed_query.get("comma_strict_and"))
         if must_have_all:
             # Normalize skills to canonical forms (e.g., "react.js" → "react", "angularjs" → "angular")
             normalized_skills = normalize_skill_list(must_have_all)
@@ -499,10 +501,16 @@ class AISearch2Service:
                 if len(normalized_skills) == 1:
                     # Single skill - use $in
                     pinecone_filter["skills"] = {"$in": normalized_skills}
-                else:
-                    # Multiple skills - use $and to require all
+                elif comma_strict_and:
+                    # Comma-separated AND intent: require every skill in Pinecone
                     skill_conditions = [{"skills": {"$in": [skill]}} for skill in normalized_skills]
                     pinecone_filter["$and"] = skill_conditions
+                else:
+                    logger.info(
+                        "Soft skill filter: omitting Pinecone $and for multiple must_have_all "
+                        "(comma_strict_and=false); scoring enforces overlap downstream",
+                        extra={"must_have_all_count": len(normalized_skills)},
+                    )
         
         # Handle must_have_one_of_groups (OR groups)
         must_have_one_of_groups = filters.get("must_have_one_of_groups", [])
@@ -2738,6 +2746,76 @@ class AISearch2Service:
             logger.error(f"Semantic search failed: {e}", extra={"error": str(e)})
             raise
     
+    def _merge_pinecone_matches_by_resume_max_score(
+        self,
+        matches: List[Dict[str, Any]],
+    ) -> List[Dict[str, Any]]:
+        """Keep the highest-similarity chunk per resume_id (used after OR-branch retrievals)."""
+        best: Dict[Any, Dict[str, Any]] = {}
+        for m in matches:
+            meta = m.get("metadata") or {}
+            rid = meta.get("resume_id")
+            if rid is None:
+                continue
+            try:
+                sc = float(m.get("score", 0.0) or 0.0)
+            except (TypeError, ValueError):
+                sc = 0.0
+            old = best.get(rid)
+            if old is None or sc > float(old.get("score", 0.0) or 0.0):
+                best[rid] = m
+        return list(best.values())
+    
+    async def _search_broad_mode_role_or_phrases(
+        self,
+        parsed_query: Dict,
+        top_k: int,
+        role_or_phrases: List[str],
+    ) -> List[Dict[str, Any]]:
+        """
+        OR intent: one embedding + Pinecone query per role phrase, merge by resume_id (max score),
+        then shared hybrid processing / ranking.
+        """
+        import asyncio
+        
+        pinecone_filter = self.build_pinecone_filter(parsed_query)
+        if self.vector_db is None:
+            self.vector_db = await get_vector_db_service()
+        
+        branch_fetch_k = min(max(top_k * 5, 50), 500)
+        
+        async def _query_branch(phrase: str) -> List[Dict[str, Any]]:
+            p = str(phrase).strip()
+            text_to_embed = expand_query_for_embedding(p) or p
+            emb = await self.embedding_service.generate_embedding(text_to_embed)
+            return await self.vector_db.query_vectors(
+                query_vector=emb,
+                top_k=branch_fetch_k,
+                filter_dict=pinecone_filter,
+            )
+        
+        tasks = [_query_branch(p) for p in role_or_phrases if str(p).strip()]
+        branch_lists = await asyncio.gather(*tasks)
+        all_raw: List[Dict[str, Any]] = []
+        for bl in branch_lists:
+            all_raw.extend(bl)
+        merged = self._merge_pinecone_matches_by_resume_max_score(all_raw)
+        merged.sort(
+            key=lambda x: float(x.get("score", 0.0) or 0.0),
+            reverse=True,
+        )
+        processed_results = self._process_broad_search_results(merged, parsed_query, top_k)
+        logger.info(
+            "Broad search OR mode: merged role_or_phrases retrievals",
+            extra={
+                "branch_count": len(role_or_phrases),
+                "raw_matches": len(all_raw),
+                "after_resume_merge": len(merged),
+                "final_count": len(processed_results),
+            },
+        )
+        return processed_results
+    
     async def _search_broad_mode(
         self,
         parsed_query: Dict,
@@ -2754,9 +2832,17 @@ class AISearch2Service:
         Returns:
             List of candidate results with fit tiers
         """
-        import asyncio
-        
         try:
+            role_or_phrases = parsed_query.get("role_or_phrases") or []
+            if (
+                isinstance(role_or_phrases, list)
+                and len(role_or_phrases) >= 2
+                and all(str(p).strip() for p in role_or_phrases)
+            ):
+                return await self._search_broad_mode_role_or_phrases(
+                    parsed_query, top_k, role_or_phrases
+                )
+            
             # Get text for embedding
             text_for_embedding = parsed_query.get("text_for_embedding", "")
             if not text_for_embedding or not text_for_embedding.strip():
@@ -2988,6 +3074,13 @@ class AISearch2Service:
             else:
                 text_for_embedding = "candidate resume"
 
+        # OR queries: keyword overlap should cover every branch phrase, not only the combined query string
+        rop = parsed_query.get("role_or_phrases") or []
+        if isinstance(rop, list) and len(rop) >= 2:
+            joined = " ".join(str(p).strip() for p in rop if p and str(p).strip())
+            if joined:
+                text_for_embedding = joined
+
         # Deduplicate by resume_id
         seen_resume_ids = set()
         unique_results = []
@@ -3089,13 +3182,17 @@ class AISearch2Service:
         score = 0.0
         filters = parsed_query.get("filters", {})
         
-        # Skills matching (same as before)
+        # Skills matching (alias-normalized; set membership, not substring on joined blob)
         must_have_all = filters.get("must_have_all", [])
         if must_have_all:
-            candidate_skills = [s.lower() for s in candidate.get("skills", [])]
-            matched_skills = sum(1 for skill in must_have_all if skill.lower() in " ".join(candidate_skills))
-            if matched_skills > 0:
-                skill_match_ratio = matched_skills / len(must_have_all)
+            required = normalize_skill_list([str(s) for s in must_have_all if s])
+            raw_cand = candidate.get("skills", []) or []
+            if isinstance(raw_cand, str):
+                raw_cand = [s.strip() for s in raw_cand.split(",") if s.strip()]
+            candidate_skills = normalize_skill_list([str(s) for s in raw_cand if s])
+            matched = sum(1 for r in required if r in candidate_skills)
+            if matched > 0 and required:
+                skill_match_ratio = matched / len(required)
                 score += 30.0 * skill_match_ratio
         
         # Experience matching (same as before)
