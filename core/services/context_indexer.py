@@ -1,5 +1,4 @@
 """Pinecone indexer for context-based candidate memory."""
-from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
 
 from pinecone import Pinecone, ServerlessSpec
@@ -10,10 +9,6 @@ from core.services.context_embedding import generate_embedding
 
 CONTEXT_INDEX_NAME = "all-ats-context"
 CONTEXT_MODEL_DIMENSION = settings.embedding_dimension  # Ollama nomic-embed-text (768)
-
-
-def _iso_now() -> str:
-    return datetime.now(timezone.utc).isoformat()
 
 
 class ContextIndexer:
@@ -44,7 +39,6 @@ class ContextIndexer:
         self._index = self._pc.Index(CONTEXT_INDEX_NAME)
 
     def _metadata_from_row(self, row: Dict[str, Any]) -> Dict[str, Any]:
-        now = _iso_now()
         return {
             "entity": "candidate",
             "candidate_id": row.get("id"),
@@ -60,8 +54,9 @@ class ContextIndexer:
             "email": str(row.get("email") or ""),
             "mobile": str(row.get("mobile") or ""),
             "filename": str(row.get("filename") or ""),
-            "created_at": str(row.get("created_at") or now),
-            "updated_at": str(row.get("updated_at") or now),
+            # Preserve DB timestamps only; do not inject current time fallback.
+            "created_at": str(row.get("created_at") or ""),
+            "updated_at": str(row.get("updated_at") or ""),
         }
 
     def upsert_candidates(self, rows: List[Dict[str, Any]]) -> int:

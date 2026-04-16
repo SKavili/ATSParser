@@ -182,11 +182,15 @@ class ContextIndexingService:
         return rows
 
     async def _update_context_status(self, resume_id: int, status: int) -> None:
-        """Update context_pinecone_status for a resume row."""
+        """Update context_pinecone_status for a resume row.
+
+        Keep updated_at unchanged for this technical status update.
+        """
         stmt = text(
             """
             UPDATE resume_metadata
-            SET context_pinecone_status = :status
+            SET context_pinecone_status = :status,
+                updated_at = updated_at
             WHERE id = :resume_id
             """
         )
