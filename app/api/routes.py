@@ -305,7 +305,10 @@ async def index_pinecone(
 async def ats_index_pinecone(
     limit: Optional[int] = Query(None, description="Maximum number of resumes to process"),
     resume_ids: Optional[List[int]] = Query(None, description="Specific resume IDs to process"),
-    force: bool = Query(True, description="If true, index all completed resumes into `ats` (ignores pinecone_status)"),
+    force: bool = Query(
+        True,
+        description="If true, re-index all completed resumes into `ats` (ignores ats_pinecone_status_all)",
+    ),
     session: AsyncSession = Depends(get_db_session),
 ):
     """Index resumes into Pinecone index `ats` only (no namespaces).

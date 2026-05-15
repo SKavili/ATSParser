@@ -47,14 +47,14 @@ class AtsIndexPineconeService:
         Args:
             limit: Max number of resumes to process.
             resume_ids: Optional list of specific resume IDs.
-            force: When True, indexes all `completed` resumes (ignores old
-                `pinecone_status`). When False, indexes only those whose
-                `pinecone_status` is still 0/NULL (incremental mode).
+            force: When True, indexes all `completed` resumes (ignores
+                `ats_pinecone_status_all`). When False, indexes only rows where
+                `ats_pinecone_status_all` is 0/NULL (incremental mode).
         """
         try:
             vector_db = await self._get_vector_db()
 
-            pending_resumes = await self.resume_repo.get_pending_pinecone_resumes(
+            pending_resumes = await self.resume_repo.get_pending_ats_pinecone_resumes(
                 limit=limit,
                 resume_ids=resume_ids,
                 force=force,
@@ -218,6 +218,8 @@ class AtsIndexPineconeService:
             # Upsert into a single Pinecone index `ats` (no namespaces).
             await vector_db.upsert_vectors(vectors_to_store)
 
+            await self.resume_repo.update_ats_pinecone_status_all(resume.id, 1)
+
             logger.info(
                 "Successfully indexed resume into `ats`",
                 extra=safe_extra(
@@ -226,6 +228,7 @@ class AtsIndexPineconeService:
                         "vector_count": len(vectors_to_store),
                         "mastercategory": resume.mastercategory,
                         "category": resume.category,
+                        "ats_pinecone_status_all": 1,
                     }
                 ),
             )
